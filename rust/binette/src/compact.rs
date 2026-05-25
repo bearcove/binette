@@ -387,7 +387,7 @@ impl<'a> CompactReader<'a> {
         Ok(bytes)
     }
 
-    fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], CompactError> {
+    pub(crate) fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], CompactError> {
         self.require(len)?;
         let bytes = &self.input[self.position..self.position + len];
         self.position += len;
