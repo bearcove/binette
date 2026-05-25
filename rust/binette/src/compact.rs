@@ -45,6 +45,24 @@ pub enum CompactError {
     #[error("compact enum variant index {variant_index} is out of range at byte {position}")]
     UnknownVariantIndex { position: usize, variant_index: u32 },
 
+    #[error("{aggregate} entries are not in canonical byte order at byte {position}")]
+    NonCanonicalOrder {
+        position: usize,
+        aggregate: &'static str,
+    },
+
+    #[error("{aggregate} contains duplicate canonical key bytes at byte {position}")]
+    DuplicateCanonicalKey {
+        position: usize,
+        aggregate: &'static str,
+    },
+
+    #[error("NaN is not a valid {aggregate} key payload at byte {position}")]
+    NanCanonicalKey {
+        position: usize,
+        aggregate: &'static str,
+    },
+
     #[error("unsupported compact skip at byte {position}: {reason}")]
     Unsupported {
         position: usize,
@@ -72,6 +90,10 @@ impl<'a> CompactReader<'a> {
 
     pub fn is_empty(&self) -> bool {
         self.remaining() == 0
+    }
+
+    pub(crate) fn consumed_from(&self, start: usize) -> &'a [u8] {
+        &self.input[start..self.position]
     }
 
     // r[impl binette.aggregate.schema-driven-skip]

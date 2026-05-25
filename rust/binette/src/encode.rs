@@ -41,6 +41,15 @@ pub enum EncodeError {
         variant: String,
     },
 
+    #[error("NaN is not a valid set element or map key for {shape}")]
+    NanCanonicalKey { shape: &'static Shape },
+
+    #[error("{aggregate} contains duplicate canonical key bytes for {shape}")]
+    DuplicateCanonicalKey {
+        shape: &'static Shape,
+        aggregate: &'static str,
+    },
+
     #[error("unsupported encode for {shape}: {reason}")]
     Unsupported {
         shape: &'static Shape,
@@ -455,14 +464,8 @@ impl WriterPlanExecutor<'_> {
             WriterNode::Enum { variants } => self.encode_enum(peek, variants),
             WriterNode::Tuple { elements } => self.encode_tuple(peek, elements),
             WriterNode::List { element } => self.encode_list(peek, element),
-            WriterNode::Set { element } => {
-                let _ = element;
-                Err(unsupported_peek(peek, "set encode is not implemented yet"))
-            }
-            WriterNode::Map { key, value } => {
-                let _ = (key, value);
-                Err(unsupported_peek(peek, "map encode is not implemented yet"))
-            }
+            WriterNode::Set { element } => self.encode_set(peek, element),
+            WriterNode::Map { key, value } => self.encode_map(peek, key, value),
             WriterNode::Array {
                 dimensions,
                 element,
@@ -565,6 +568,65 @@ impl WriterPlanExecutor<'_> {
         write_u32(self.out, list.len())?;
         for item in list.iter() {
             self.encode_node(item, element)?;
+        }
+        Ok(())
+    }
+
+    // r[impl binette.aggregate.set]
+    // r[impl binette.aggregate.set-map.canonical]
+    // r[impl binette.aggregate.set-map.float-keys]
+    fn encode_set(
+        &mut self,
+        peek: Peek<'_, 'static>,
+        element: &WriterNode,
+    ) -> Result<(), EncodeError> {
+        let set = peek.into_set()?;
+        let mut elements = Vec::with_capacity(set.len());
+        for item in set.iter() {
+            validate_canonical_key(item, element)?;
+            elements.push(encode_to_canonical_bytes(item, element)?);
+        }
+
+        elements.sort();
+        reject_duplicate_canonical_keys(peek, "set", elements.iter().map(Vec::as_slice))?;
+
+        write_u32(self.out, elements.len())?;
+        for element in elements {
+            self.out.extend_from_slice(&element);
+        }
+        Ok(())
+    }
+
+    // r[impl binette.aggregate.map]
+    // r[impl binette.aggregate.set-map.canonical]
+    // r[impl binette.aggregate.set-map.float-keys]
+    fn encode_map(
+        &mut self,
+        peek: Peek<'_, 'static>,
+        key_node: &WriterNode,
+        value_node: &WriterNode,
+    ) -> Result<(), EncodeError> {
+        let map = peek.into_map()?;
+        let mut entries = Vec::with_capacity(map.len());
+        for (key, value) in map.iter() {
+            validate_canonical_key(key, key_node)?;
+            entries.push((
+                encode_to_canonical_bytes(key, key_node)?,
+                encode_to_canonical_bytes(value, value_node)?,
+            ));
+        }
+
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        reject_duplicate_canonical_keys(
+            peek,
+            "map",
+            entries.iter().map(|entry| entry.0.as_slice()),
+        )?;
+
+        write_u32(self.out, entries.len())?;
+        for (key, value) in entries {
+            self.out.extend_from_slice(&key);
+            self.out.extend_from_slice(&value);
         }
         Ok(())
     }
@@ -770,6 +832,152 @@ fn compact_bytes<'mem>(peek: Peek<'mem, 'static>) -> Result<Option<&'mem [u8]>, 
     match peek.shape().def {
         Def::List(_) | Def::Slice(_) => Ok(peek.into_list_like()?.as_bytes()),
         _ => Ok(None),
+    }
+}
+
+fn encode_to_canonical_bytes(
+    peek: Peek<'_, 'static>,
+    node: &WriterNode,
+) -> Result<Vec<u8>, EncodeError> {
+    let mut bytes = Vec::new();
+    WriterPlanExecutor { out: &mut bytes }.encode_node(peek, node)?;
+    Ok(bytes)
+}
+
+fn reject_duplicate_canonical_keys<'a>(
+    peek: Peek<'_, 'static>,
+    aggregate: &'static str,
+    keys: impl Iterator<Item = &'a [u8]>,
+) -> Result<(), EncodeError> {
+    let mut previous = None;
+    for key in keys {
+        if previous == Some(key) {
+            return Err(EncodeError::DuplicateCanonicalKey {
+                shape: peek.shape(),
+                aggregate,
+            });
+        }
+        previous = Some(key);
+    }
+    Ok(())
+}
+
+fn validate_canonical_key(peek: Peek<'_, 'static>, node: &WriterNode) -> Result<(), EncodeError> {
+    let peek = peek.innermost_peek();
+    match node {
+        WriterNode::Primitive(Primitive::F32) => {
+            if peek.get::<f32>()?.is_nan() {
+                return Err(EncodeError::NanCanonicalKey {
+                    shape: peek.shape(),
+                });
+            }
+        }
+        WriterNode::Primitive(Primitive::F64) => {
+            if peek.get::<f64>()?.is_nan() {
+                return Err(EncodeError::NanCanonicalKey {
+                    shape: peek.shape(),
+                });
+            }
+        }
+        WriterNode::Primitive(_) | WriterNode::Dynamic | WriterNode::External => {}
+        WriterNode::Struct { fields } => {
+            let struct_peek = peek.into_struct()?;
+            for field in fields {
+                validate_canonical_key(
+                    struct_peek
+                        .field(field.facet_index)
+                        .map_err(|source| field_error(peek.shape(), &field.name, source))?,
+                    &field.node,
+                )?;
+            }
+        }
+        WriterNode::Enum { variants } => {
+            let enum_peek = peek.into_enum()?;
+            let facet_index = enum_peek
+                .variant_index()
+                .map_err(|_| unsupported_peek(peek, "enum variant index is not available"))?;
+            if let Some(variant) = variants
+                .iter()
+                .find(|variant| variant.facet_index == facet_index)
+            {
+                validate_variant_payload_key(peek, enum_peek, &variant.payload)?;
+            }
+        }
+        WriterNode::Tuple { elements } => {
+            let tuple_peek = peek.into_tuple()?;
+            for element in elements {
+                let element_peek = tuple_peek
+                    .field(element.facet_index)
+                    .ok_or_else(|| unsupported_peek(peek, "tuple field is missing"))?;
+                validate_canonical_key(element_peek, &element.node)?;
+            }
+        }
+        WriterNode::List { element } => {
+            for item in peek.into_list_like()?.iter() {
+                validate_canonical_key(item, element)?;
+            }
+        }
+        WriterNode::Set { element } => {
+            for item in peek.into_set()?.iter() {
+                validate_canonical_key(item, element)?;
+            }
+        }
+        WriterNode::Map { key, value } => {
+            for (item_key, item_value) in peek.into_map()?.iter() {
+                validate_canonical_key(item_key, key)?;
+                validate_canonical_key(item_value, value)?;
+            }
+        }
+        WriterNode::Array { element, .. } => {
+            for item in peek.into_list_like()?.iter() {
+                validate_canonical_key(item, element)?;
+            }
+        }
+        WriterNode::Option { element } => {
+            if let Some(inner) = peek.into_option()?.value() {
+                validate_canonical_key(inner, element)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_variant_payload_key(
+    enum_shape: Peek<'_, 'static>,
+    enum_peek: facet_reflect::PeekEnum<'_, 'static>,
+    payload: &WriterVariantPayloadPlan,
+) -> Result<(), EncodeError> {
+    match payload {
+        WriterVariantPayloadPlan::Unit => Ok(()),
+        WriterVariantPayloadPlan::Newtype(element) => {
+            let field = enum_peek
+                .field(element.facet_index)
+                .map_err(|_| unsupported_peek(enum_shape, "enum payload field is not available"))?
+                .ok_or_else(|| unsupported_peek(enum_shape, "enum payload field is missing"))?;
+            validate_canonical_key(field, &element.node)
+        }
+        WriterVariantPayloadPlan::Tuple(elements) => {
+            for element in elements {
+                let field = enum_peek
+                    .field(element.facet_index)
+                    .map_err(|_| unsupported_peek(enum_shape, "enum tuple field is not available"))?
+                    .ok_or_else(|| unsupported_peek(enum_shape, "enum tuple field is missing"))?;
+                validate_canonical_key(field, &element.node)?;
+            }
+            Ok(())
+        }
+        WriterVariantPayloadPlan::Struct(fields) => {
+            for field in fields {
+                let field_peek = enum_peek
+                    .field(field.facet_index)
+                    .map_err(|_| {
+                        unsupported_peek(enum_shape, "enum struct field is not available")
+                    })?
+                    .ok_or_else(|| unsupported_peek(enum_shape, "enum struct field is missing"))?;
+                validate_canonical_key(field_peek, &field.node)?;
+            }
+            Ok(())
+        }
     }
 }
 
