@@ -1,10 +1,10 @@
 +++
 title = "Compatibility"
-description = "Schema evolution and translation planning for Binette values"
+description = "Schema evolution and translation planning for binette values"
 weight = 16
 +++
 
-Binette schemas are stable enough to store compact bytes for a long time, but
+binette schemas are stable enough to store compact bytes for a long time, but
 schemas still evolve. Compatibility is the question: can a value written using
 one schema be read using another schema without losing the value's meaning?
 
@@ -26,7 +26,7 @@ one schema be read using another schema without losing the value's meaning?
 >
 > Fields present in the writer schema but absent from the reader schema are
 > skipped during decode by walking the writer schema for that field. Compact
-> Binette does not add per-field length wrappers solely to make field skipping
+> binette does not add per-field length wrappers solely to make field skipping
 > trivial.
 
 > r[binette.compat.fill-defaults]
@@ -39,12 +39,12 @@ one schema be read using another schema without losing the value's meaning?
 > r[binette.compat.defaultability-metadata]
 >
 > Schema dumps MAY carry defaultability metadata for compatibility analysis.
-> Defaultability metadata is not part of the Binette schema model and is not
+> Defaultability metadata is not part of the binette schema model and is not
 > type-ID hash input. Tooling SHOULD distinguish at least:
 >
 > - no default provider
 > - default provider exists but is opaque to portable tooling
-> - literal default value is available as a Binette value
+> - literal default value is available as a binette value
 >
 > Opaque defaults can make local decoding possible without making generated
 > cross-language code able to reproduce the default.

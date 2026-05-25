@@ -1,22 +1,22 @@
 +++
-title = "Binette"
+title = "binette"
 description = "Binary serialization format for typed values"
 weight = 13
 +++
 
-Binette is a language-independent binary serialization format for typed values.
+binette is a language-independent binary serialization format for typed values.
 It defines a small value model, a self-describing byte form, and a compact byte
 form for values whose type is known out of band.
 
-Binette does not depend on any programming language, reflection system, RPC
+binette does not depend on any programming language, reflection system, RPC
 protocol, or transport. Those systems may map their own type information onto
-the Binette value model, but that mapping is outside the core byte format.
+the binette value model, but that mapping is outside the core byte format.
 
 # Value model
 
 > r[binette.value-model]
 >
-> A Binette value is one of the following kinds:
+> A binette value is one of the following kinds:
 >
 > | Kind | Shape |
 > |------|-------|
@@ -56,26 +56,26 @@ the Binette value model, but that mapping is outside the core byte format.
 > `external attachment` is a schema-driven value kind. Its in-band compact
 > representation is the unit value; the actual value is carried by an envelope
 > that walks the same schema and supplies an ordered attachment list. Core
-> self-describing Binette has no dedicated external-attachment tag.
+> self-describing binette has no dedicated external-attachment tag.
 
 > r[binette.value-kind.preserved]
 >
-> The Binette value kind is part of the value, not an implementation detail of
-> the body bytes. A decoded generic Binette value includes one kind from
+> The binette value kind is part of the value, not an implementation detail of
+> the body bytes. A decoded generic binette value includes one kind from
 > `r[binette.value-model]`.
 >
 > Self-describing form carries the kind as the leading tag byte. For
 > compact-capable kinds, compact form omits that tag byte, but the external
 > schema supplies the same kind the tag would have supplied. Body grammars may
 > reuse the same byte skeleton without merging the corresponding value kinds;
-> for example, `list`, `set`, and rank-1 `array` are distinct Binette kinds even
+> for example, `list`, `set`, and rank-1 `array` are distinct binette kinds even
 > though each contains a sequence of element bytes.
 
 # Encoding forms
 
 > r[binette.forms]
 >
-> Binette defines two byte forms for values:
+> binette defines two byte forms for values:
 >
 > - **Self-describing form**: every value begins with a tag byte from
 >   `r[binette.tags]` that identifies the value kind. Aggregate bodies contain
@@ -88,9 +88,9 @@ the Binette value model, but that mapping is outside the core byte format.
 > r[binette.mode.self-describing]
 >
 > A self-describing value is decoded using only the fixed tag vocabulary and
-> payload rules in this document. The leading tag selects the Binette value kind
+> payload rules in this document. The leading tag selects the binette value kind
 > and the body grammar for the bytes that follow. The value can be materialized
-> as a generic Binette value without any external schema.
+> as a generic binette value without any external schema.
 
 > r[binette.mode.compact]
 >
@@ -98,12 +98,12 @@ the Binette value model, but that mapping is outside the core byte format.
 > aggregate structure. Scalar payloads and aggregate counts have the same byte
 > representation in compact form as they do inside self-describing form. The
 > schema, not the body skeleton alone, determines
-> whether those bytes are a list, set, array, tuple, struct, or other Binette kind.
+> whether those bytes are a list, set, array, tuple, struct, or other binette kind.
 
 # Self-describing tags
 
 Self-describing mode prefixes each value with one tag byte from this table. The
-assigned bytes are the permanent bootstrap contract for Binette.
+assigned bytes are the permanent bootstrap contract for binette.
 
 > r[binette.tags]
 >
@@ -156,7 +156,7 @@ assigned bytes are the permanent bootstrap contract for Binette.
 > dynamic value `0x1B`), the tag byte is followed
 > by the body defined in `r[binette.aggregate.*]` for that kind. Within a
 > self-describing aggregate body, every element, key, value, and field-value
-> is itself a self-described Binette value beginning with its own tag byte. The
+> is itself a self-described binette value beginning with its own tag byte. The
 > sole exceptions are field and variant *names* in
 > `r[binette.aggregate.struct.self-describing]` and
 > `r[binette.aggregate.enum.self-describing]`, which are emitted as raw
@@ -173,7 +173,7 @@ assigned bytes are the permanent bootstrap contract for Binette.
 > ```
 >
 > A decoder that does not understand an extension tag or extension ID preserves
-> the payload as an opaque extension value in the generic Binette value.
+> the payload as an opaque extension value in the generic binette value.
 
 > r[binette.tags.forward-contract]
 >
@@ -187,7 +187,7 @@ assigned bytes are the permanent bootstrap contract for Binette.
 
 > r[binette.endianness]
 >
-> All fixed-width numeric values in Binette are little-endian.
+> All fixed-width numeric values in binette are little-endian.
 
 > r[binette.length.u32]
 >
@@ -198,7 +198,7 @@ assigned bytes are the permanent bootstrap contract for Binette.
 
 > r[binette.length.canonical-width]
 >
-> Length and count widths are part of the canonical Binette byte format.
+> Length and count widths are part of the canonical binette byte format.
 
 # Scalar encoding
 
@@ -311,7 +311,7 @@ assigned bytes are the permanent bootstrap contract for Binette.
 > Canonical ordering is an encoder requirement and a canonical-validation
 > requirement, not an unconditional tax on every trusted decode path.
 >
-> A decoder that is validating Binette bytes for interchange, storage, hashing, or
+> A decoder that is validating binette bytes for interchange, storage, hashing, or
 > diagnostics MUST verify that set elements and map entries appear in strictly
 > ascending canonical order and MUST reject noncanonical order.
 >
@@ -330,7 +330,7 @@ assigned bytes are the permanent bootstrap contract for Binette.
 > Because of that:
 >
 > - `NaN` bit patterns are invalid as set elements or map keys in either mode;
->   Binette set/map keys require portable equality and canonical ordering across
+>   binette set/map keys require portable equality and canonical ordering across
 >   implementations.
 > - Positive and negative zero have distinct byte patterns and are therefore
 >   distinct set elements / map keys.
@@ -395,7 +395,7 @@ assigned bytes are the permanent bootstrap contract for Binette.
 > r[binette.aggregate.schema-driven-skip]
 >
 > A compact decoder that needs to ignore a value MUST skip it by walking the
-> sender schema for that value. Compact Binette MUST NOT add an extra field or
+> sender schema for that value. compact binette MUST NOT add an extra field or
 > payload length solely to make struct fields or enum payload fields skippable.
 > Variable-length primitives and aggregates still carry their own intrinsic
 > lengths and counts as defined by their value grammar.
@@ -423,7 +423,7 @@ assigned bytes are the permanent bootstrap contract for Binette.
 
 > r[binette.aggregate.dynamic-value]
 >
-> A dynamic value carries an arbitrary Binette value whose concrete type is not
+> A dynamic value carries an arbitrary binette value whose concrete type is not
 > fixed by the surrounding schema. Its content is always one self-described
 > value beginning with a tag byte from `r[binette.tags]`.
 >
@@ -453,8 +453,8 @@ assigned bytes are the permanent bootstrap contract for Binette.
 
 # Related specifications
 
-Compact schemas and type identity are part of Binette. The companion
-[Binette schemas](./schemas/) specification defines the schema model used by
+Compact schemas and type identity are part of binette. The companion
+[binette schemas](./schemas/) specification defines the schema model used by
 compact mode and the content-hash scheme for stable schema identifiers.
 [Schema bundles](./bundles/) define how schemas travel with compact bytes, and
 [compatibility](./compatibility/) defines schema comparison and translation

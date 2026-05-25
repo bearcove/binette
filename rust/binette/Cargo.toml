@@ -14,3 +14,10 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+blake3.workspace = true
+facet-core.workspace = true
+facet-value.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+facet.workspace = true
