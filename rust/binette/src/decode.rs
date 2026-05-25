@@ -12,6 +12,7 @@ use crate::plan::{
 };
 use crate::registry::SchemaRegistry;
 use crate::schema::{Primitive, Schema, SchemaKind, TypeId, TypeRef, VariantPayload};
+use crate::value::{Value, decode_dynamic_value_from_reader};
 
 #[derive(Debug, Error)]
 pub enum DecodeError {
@@ -20,6 +21,9 @@ pub enum DecodeError {
 
     #[error(transparent)]
     Compact(#[from] CompactError),
+
+    #[error(transparent)]
+    SelfDescribing(#[from] crate::value::SelfDescribingError),
 
     #[error(transparent)]
     Alloc(#[from] AllocError),
@@ -110,8 +114,19 @@ impl DecodeExecutor<'_, '_> {
             } => self.decode_array_plan(partial, dimensions, element),
             PlanNode::Enum { variants } => self.decode_enum_plan(partial, variants),
             PlanNode::Option { element } => self.decode_option_plan(partial, element),
-            PlanNode::Dynamic => Err(self.unsupported("dynamic decode is not implemented yet")),
+            PlanNode::Dynamic => self.decode_dynamic(partial),
         }
+    }
+
+    fn decode_dynamic(
+        &mut self,
+        partial: Partial<'static, false>,
+    ) -> Result<Partial<'static, false>, DecodeError> {
+        let position = self.reader.position();
+        let value = decode_dynamic_value_from_reader(&mut self.reader)?;
+        let value = facet_value_from_binette_value(value)
+            .map_err(|reason| DecodeError::Unsupported { position, reason })?;
+        Ok(partial.set(value)?)
     }
 
     fn decode_struct_plan(
@@ -367,7 +382,7 @@ impl DecodeExecutor<'_, '_> {
                 element,
             } => self.decode_array_kind(partial, dimensions, element, env),
             SchemaKind::Option { element } => self.decode_option_kind(partial, element, env),
-            SchemaKind::Dynamic => Err(self.unsupported("dynamic decode is not implemented yet")),
+            SchemaKind::Dynamic => self.decode_dynamic(partial),
             SchemaKind::External { .. } => Ok(partial.set(())?),
         }
     }
@@ -587,13 +602,6 @@ impl DecodeExecutor<'_, '_> {
             Primitive::Char => Ok(partial.set(self.reader.read_char()?)?),
             Primitive::String => Ok(partial.set(self.reader.read_string()?)?),
             Primitive::Bytes | Primitive::Payload => Ok(partial.set(self.reader.read_byte_vec()?)?),
-        }
-    }
-
-    fn unsupported(&self, reason: &'static str) -> DecodeError {
-        DecodeError::Unsupported {
-            position: self.reader.position(),
-            reason,
         }
     }
 
@@ -1036,6 +1044,61 @@ impl DecodeExecutor<'_, '_> {
             })
         })
     }
+}
+
+fn facet_value_from_binette_value(value: Value) -> Result<facet_value::Value, &'static str> {
+    match value {
+        Value::Unit => Ok(facet_value::Value::NULL),
+        Value::Bool(value) => Ok(facet_value::Value::from(value)),
+        Value::U8(value) => Ok(facet_value::Value::from(u64::from(value))),
+        Value::U16(value) => Ok(facet_value::Value::from(u64::from(value))),
+        Value::U32(value) => Ok(facet_value::Value::from(u64::from(value))),
+        Value::U64(value) => Ok(facet_value::Value::from(value)),
+        Value::U128(value) => u64::try_from(value)
+            .map(facet_value::Value::from)
+            .map_err(|_| "u128 dynamic value does not fit facet_value number"),
+        Value::I8(value) => Ok(facet_value::Value::from(i64::from(value))),
+        Value::I16(value) => Ok(facet_value::Value::from(i64::from(value))),
+        Value::I32(value) => Ok(facet_value::Value::from(i64::from(value))),
+        Value::I64(value) => Ok(facet_value::Value::from(value)),
+        Value::I128(value) => i64::try_from(value)
+            .map(facet_value::Value::from)
+            .map_err(|_| "i128 dynamic value does not fit facet_value number"),
+        Value::F32(value) => Ok(facet_value::Value::from(f64::from(value))),
+        Value::F64(value) => Ok(facet_value::Value::from(value)),
+        Value::Char(value) => Ok(facet_value::Value::from(value.to_string())),
+        Value::String(value) => Ok(facet_value::Value::from(value)),
+        Value::Bytes(value) | Value::Payload(value) => Ok(facet_value::Value::from(value)),
+        Value::List(values) => facet_array_from_binette_values(values),
+        Value::Struct(fields) => {
+            let mut object = facet_value::VObject::with_capacity(fields.len());
+            for field in fields {
+                object.insert(field.name, facet_value_from_binette_value(field.value)?);
+            }
+            Ok(object.into())
+        }
+        Value::Option(None) => Ok(facet_value::Value::NULL),
+        Value::Option(Some(value)) | Value::Dynamic(value) => {
+            facet_value_from_binette_value(*value)
+        }
+        Value::Set(_)
+        | Value::Map(_)
+        | Value::Array(_)
+        | Value::Tuple(_)
+        | Value::Enum(_)
+        | Value::ExternalAttachment
+        | Value::Extension(_) => {
+            Err("binette dynamic value kind cannot be represented as facet_value")
+        }
+    }
+}
+
+fn facet_array_from_binette_values(values: Vec<Value>) -> Result<facet_value::Value, &'static str> {
+    let mut array = facet_value::VArray::with_capacity(values.len());
+    for value in values {
+        array.push(facet_value_from_binette_value(value)?);
+    }
+    Ok(array.into())
 }
 
 #[derive(Default)]

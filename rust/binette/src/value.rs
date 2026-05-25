@@ -170,6 +170,12 @@ pub fn decode_dynamic_value_from_slice(input: &[u8]) -> Result<Value, SelfDescri
     decode_self_described_from_slice(input)
 }
 
+pub(crate) fn decode_dynamic_value_from_reader(
+    reader: &mut CompactReader<'_>,
+) -> Result<Value, SelfDescribingError> {
+    decode_self_described_value(reader)
+}
+
 // r[impl binette.tags]
 // r[impl binette.tags.scalar-payload]
 // r[impl binette.tags.aggregate-payload]

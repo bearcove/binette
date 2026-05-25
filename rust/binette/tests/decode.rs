@@ -6,6 +6,7 @@ use binette::{
     decode_from_slice, encode_to_vec, encode_to_vec_with_plan, primitive_type_id, writer_plan_for,
 };
 use facet::Facet;
+use facet_value::{VArray, VObject, Value as FacetValue};
 
 fn registry_for(bundle: &SchemaBundle) -> SchemaRegistry {
     let mut registry = SchemaRegistry::new();
@@ -136,6 +137,37 @@ fn encode_then_decode_nested_compact_shapes() {
     let decoded =
         decode_from_slice::<Nested>(&bytes, writer_plan.root(), &writer_registry).unwrap();
 
+    assert_eq!(decoded, expected);
+}
+
+// r[verify binette.aggregate.dynamic-value]
+#[test]
+fn encode_then_decode_facet_value_as_compact_dynamic_value() {
+    #[derive(Debug, Facet, PartialEq)]
+    struct Holder {
+        value: FacetValue,
+    }
+
+    let mut object = VObject::new();
+    object.insert("name", FacetValue::from("binette"));
+    object.insert("count", FacetValue::from(3u64));
+
+    let mut items = VArray::new();
+    items.push(FacetValue::from(true));
+    items.push(FacetValue::NULL);
+    object.insert("items", FacetValue::from(items));
+
+    let expected = Holder {
+        value: FacetValue::from(object),
+    };
+    let writer_plan = writer_plan_for::<Holder>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+
+    let bytes = encode_to_vec_with_plan(&expected, &writer_plan).unwrap();
+    assert_eq!(bytes[0], 0x17);
+
+    let decoded =
+        decode_from_slice::<Holder>(&bytes, writer_plan.root(), &writer_registry).unwrap();
     assert_eq!(decoded, expected);
 }
 

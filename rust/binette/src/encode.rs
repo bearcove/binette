@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use facet_core::{Def, Facet, FieldError, Shape, Type, UserType};
-use facet_reflect::{Peek, ReflectError};
+use facet_core::{Def, DynValueKind, Facet, FieldError, Shape, Type, UserType};
+use facet_reflect::{Peek, PeekDynamicValue, ReflectError};
 use thiserror::Error;
 
 use crate::error::SchemaError;
@@ -11,11 +11,15 @@ use crate::registry::SchemaRegistry;
 use crate::schema::{
     Field, Primitive, Schema, SchemaBundle, SchemaKind, TypeId, TypeRef, Variant, VariantPayload,
 };
+use crate::value::{Value, encode_dynamic_value_to_vec};
 
 #[derive(Debug, Error)]
 pub enum EncodeError {
     #[error(transparent)]
     Schema(#[from] SchemaError),
+
+    #[error(transparent)]
+    SelfDescribing(#[from] crate::value::SelfDescribingError),
 
     #[error(transparent)]
     Reflect(#[from] ReflectError),
@@ -471,12 +475,16 @@ impl WriterPlanExecutor<'_> {
                 element,
             } => self.encode_array(peek, dimensions, element),
             WriterNode::Option { element } => self.encode_option(peek, element),
-            WriterNode::Dynamic => Err(unsupported_peek(
-                peek,
-                "dynamic encode is not implemented yet",
-            )),
+            WriterNode::Dynamic => self.encode_dynamic(peek),
             WriterNode::External => self.encode_primitive(peek, Primitive::Unit),
         }
+    }
+
+    fn encode_dynamic(&mut self, peek: Peek<'_, 'static>) -> Result<(), EncodeError> {
+        let value = value_from_dynamic_peek(peek)?;
+        self.out
+            .extend_from_slice(&encode_dynamic_value_to_vec(&value)?);
+        Ok(())
     }
 
     // r[impl binette.aggregate.struct.compact]
@@ -1015,4 +1023,67 @@ fn unsupported_shape(shape: &'static Shape, reason: &'static str) -> EncodeError
 
 fn unsupported_peek(peek: Peek<'_, 'static>, reason: &'static str) -> EncodeError {
     unsupported_shape(peek.shape(), reason)
+}
+
+fn value_from_dynamic_peek(peek: Peek<'_, 'static>) -> Result<Value, EncodeError> {
+    value_from_dynamic(peek.into_dynamic_value()?)
+}
+
+fn value_from_dynamic(dynamic: PeekDynamicValue<'_, 'static>) -> Result<Value, EncodeError> {
+    match dynamic.kind() {
+        DynValueKind::Null => Ok(Value::Unit),
+        DynValueKind::Bool => dynamic
+            .as_bool()
+            .map(Value::Bool)
+            .ok_or_else(|| unsupported_peek(dynamic.peek(), "dynamic bool is unavailable")),
+        DynValueKind::Number => {
+            if let Some(value) = dynamic.as_i64() {
+                Ok(Value::I64(value))
+            } else if let Some(value) = dynamic.as_u64() {
+                Ok(Value::U64(value))
+            } else if let Some(value) = dynamic.as_f64() {
+                Ok(Value::F64(value))
+            } else {
+                Err(unsupported_peek(
+                    dynamic.peek(),
+                    "dynamic number is unavailable",
+                ))
+            }
+        }
+        DynValueKind::String => dynamic
+            .as_str()
+            .map(|value| Value::String(value.to_owned()))
+            .ok_or_else(|| unsupported_peek(dynamic.peek(), "dynamic string is unavailable")),
+        DynValueKind::Bytes => dynamic
+            .as_bytes()
+            .map(|value| Value::Bytes(value.to_vec()))
+            .ok_or_else(|| unsupported_peek(dynamic.peek(), "dynamic bytes are unavailable")),
+        DynValueKind::Array => {
+            let iter = dynamic
+                .array_iter()
+                .ok_or_else(|| unsupported_peek(dynamic.peek(), "dynamic array is unavailable"))?;
+            Ok(Value::List(
+                iter.map(value_from_dynamic_peek)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        DynValueKind::Object => {
+            let iter = dynamic
+                .object_iter()
+                .ok_or_else(|| unsupported_peek(dynamic.peek(), "dynamic object is unavailable"))?;
+            Ok(Value::Struct(
+                iter.map(|(name, value)| {
+                    Ok(crate::value::FieldValue {
+                        name: name.to_owned(),
+                        value: value_from_dynamic_peek(value)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, EncodeError>>()?,
+            ))
+        }
+        DynValueKind::DateTime | DynValueKind::QName | DynValueKind::Uuid => Err(unsupported_peek(
+            dynamic.peek(),
+            "dynamic extended value kind is not supported yet",
+        )),
+    }
 }
