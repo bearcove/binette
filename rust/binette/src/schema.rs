@@ -1,3 +1,5 @@
+use crate::value::Value;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct TypeId(pub u64);
@@ -22,20 +24,20 @@ impl TypeRef {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SchemaBundle {
     pub schemas: Vec<Schema>,
     pub root: TypeRef,
     pub attachments: Vec<AttachmentDeclaration>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AttachmentDeclaration {
     pub kind: String,
     pub metadata_schema: Option<TypeRef>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Schema {
     pub id: TypeId,
     pub type_params: Vec<String>,
@@ -45,7 +47,7 @@ pub struct Schema {
 // r[impl binette.schema.kinds]
 // r[impl binette.schema.array]
 // r[impl binette.schema.dynamic]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SchemaKind {
     Primitive(Primitive),
     Struct {
@@ -79,25 +81,25 @@ pub enum SchemaKind {
     Dynamic,
     External {
         kind: String,
-        metadata: facet_value::Value,
+        metadata: Value,
     },
 }
 
 // r[impl binette.schema.fields]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Field {
     pub name: String,
     pub type_ref: TypeRef,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Variant {
     pub name: String,
     pub index: u32,
     pub payload: VariantPayload,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum VariantPayload {
     Unit,
     Newtype { type_ref: TypeRef },

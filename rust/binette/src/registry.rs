@@ -35,6 +35,7 @@ impl SchemaRegistry {
     }
 
     // r[impl binette.schema.registry.install]
+    // r[impl binette.bundle.registry]
     pub fn install_bundle(&mut self, bundle: &SchemaBundle) -> Result<(), SchemaError> {
         let batch = VerifiedSchemaBatch::new(&self.schemas, &bundle.schemas)?;
         batch.validate_type_ref(&bundle.root, &[])?;
@@ -176,7 +177,8 @@ impl<'a> VerifiedSchemaBatch<'a> {
                 self.validate_type_ref(element, scope)
             }
             SchemaKind::Option { element } => self.validate_type_ref(element, scope),
-            SchemaKind::External { .. } => Err(SchemaError::ExternalMetadataHashUnsupported),
+            // r[impl binette.schema.external]
+            SchemaKind::External { kind, metadata: _ } => self.validate_name(kind),
         }
     }
 

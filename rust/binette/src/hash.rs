@@ -1,5 +1,6 @@
 use crate::error::SchemaError;
 use crate::schema::{Primitive, Schema, SchemaKind, TypeId, TypeRef, VariantPayload};
+use crate::value::encode_self_described_to_vec;
 
 // r[impl binette.type-id.hash.primitives]
 pub fn primitive_type_id(primitive: Primitive) -> TypeId {
@@ -127,8 +128,11 @@ impl SchemaHasher {
             SchemaKind::Dynamic => {
                 self.feed_string("dynamic");
             }
-            SchemaKind::External { .. } => {
-                return Err(SchemaError::ExternalMetadataHashUnsupported);
+            // r[impl binette.type-id.hash.external]
+            SchemaKind::External { kind, metadata } => {
+                self.feed_string("external");
+                self.feed_string(kind);
+                self.inner.update(&encode_self_described_to_vec(metadata)?);
             }
         }
         Ok(())

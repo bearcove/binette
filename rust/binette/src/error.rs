@@ -2,6 +2,7 @@ use facet_core::ScalarType;
 use thiserror::Error;
 
 use crate::schema::{Primitive, TypeId};
+use crate::value::SelfDescribingError;
 
 #[derive(Debug, Error)]
 pub enum SchemaError {
@@ -20,8 +21,8 @@ pub enum SchemaError {
     #[error("recursive schema extraction is not implemented yet for {type_name}")]
     RecursiveSchemaUnsupported { type_name: &'static str },
 
-    #[error("external attachment metadata hashing is not implemented yet")]
-    ExternalMetadataHashUnsupported,
+    #[error("invalid external attachment metadata")]
+    ExternalMetadata(#[from] SelfDescribingError),
 
     #[error("schema declared id {declared:?} but canonical content hashes to {computed:?}")]
     SchemaIdMismatch { declared: TypeId, computed: TypeId },
