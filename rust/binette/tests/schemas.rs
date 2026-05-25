@@ -1,6 +1,7 @@
 use binette::{
     Field, Primitive, Schema, SchemaBundle, SchemaError, SchemaKind, SchemaRegistry, TypeId,
-    TypeRef, VariantPayload, primitive_type_id, schema_bundle_for, schema_type_id,
+    TypeRef, VariantPayload, primitive_type_id, recursive_schema_type_ids, schema_bundle_for,
+    schema_type_id,
 };
 use facet::Facet;
 
@@ -22,10 +23,84 @@ fn concrete_id(type_ref: &TypeRef) -> TypeId {
     }
 }
 
+fn rewrite_schema_type_ids(schema: &mut Schema, replacements: &[(TypeId, TypeId)]) {
+    if let Some((_, replacement)) = replacements
+        .iter()
+        .find(|(original, _)| *original == schema.id)
+    {
+        schema.id = *replacement;
+    }
+    rewrite_kind_type_ids(&mut schema.kind, replacements);
+}
+
+fn rewrite_kind_type_ids(kind: &mut SchemaKind, replacements: &[(TypeId, TypeId)]) {
+    match kind {
+        SchemaKind::Primitive(_) | SchemaKind::Dynamic | SchemaKind::External { .. } => {}
+        SchemaKind::Struct { fields, .. } => {
+            for field in fields {
+                rewrite_type_ref_ids(&mut field.type_ref, replacements);
+            }
+        }
+        SchemaKind::Enum { variants, .. } => {
+            for variant in variants {
+                rewrite_payload_type_ids(&mut variant.payload, replacements);
+            }
+        }
+        SchemaKind::Tuple { elements } => {
+            for element in elements {
+                rewrite_type_ref_ids(element, replacements);
+            }
+        }
+        SchemaKind::List { element }
+        | SchemaKind::Set { element }
+        | SchemaKind::Array { element, .. }
+        | SchemaKind::Option { element } => rewrite_type_ref_ids(element, replacements),
+        SchemaKind::Map { key, value } => {
+            rewrite_type_ref_ids(key, replacements);
+            rewrite_type_ref_ids(value, replacements);
+        }
+    }
+}
+
+fn rewrite_payload_type_ids(payload: &mut VariantPayload, replacements: &[(TypeId, TypeId)]) {
+    match payload {
+        VariantPayload::Unit => {}
+        VariantPayload::Newtype { type_ref } => rewrite_type_ref_ids(type_ref, replacements),
+        VariantPayload::Tuple { elements } => {
+            for element in elements {
+                rewrite_type_ref_ids(element, replacements);
+            }
+        }
+        VariantPayload::Struct { fields } => {
+            for field in fields {
+                rewrite_type_ref_ids(&mut field.type_ref, replacements);
+            }
+        }
+    }
+}
+
+fn rewrite_type_ref_ids(type_ref: &mut TypeRef, replacements: &[(TypeId, TypeId)]) {
+    match type_ref {
+        TypeRef::Concrete { type_id, args } => {
+            if let Some((_, replacement)) = replacements
+                .iter()
+                .find(|(original, _)| original == type_id)
+            {
+                *type_id = *replacement;
+            }
+            for arg in args {
+                rewrite_type_ref_ids(arg, replacements);
+            }
+        }
+        TypeRef::Var { .. } => {}
+    }
+}
+
 // r[verify binette.schema.model]
 // r[verify binette.schema.fields]
 // r[verify binette.schema.name]
 // r[verify binette.type-id]
+// r[verify binette.hash.recursive.non-recursive]
 // r[verify binette.type-id.hash]
 // r[verify binette.type-id.hash.struct]
 #[test]
@@ -271,6 +346,165 @@ fn registry_installs_bundle_after_verifying_declared_ids() {
 
     assert!(registry.contains(concrete_id(&bundle.root)));
     assert_eq!(registry.len(), bundle.schemas.len());
+}
+
+// r[verify binette.hash.recursive]
+// r[verify binette.schema.registry.recursive]
+#[test]
+fn registry_installs_self_recursive_schema_group() {
+    let provisional = TypeId(1);
+    let mut node = Schema {
+        id: provisional,
+        type_params: Vec::new(),
+        kind: SchemaKind::Struct {
+            name: "Node".to_owned(),
+            fields: vec![Field {
+                name: "next".to_owned(),
+                type_ref: TypeRef::concrete(provisional),
+            }],
+        },
+    };
+
+    let final_id = recursive_schema_type_ids(&[node.clone()]).unwrap()[0];
+    rewrite_schema_type_ids(&mut node, &[(provisional, final_id)]);
+
+    let bundle = SchemaBundle {
+        root: TypeRef::concrete(final_id),
+        schemas: vec![node],
+        attachments: Vec::new(),
+    };
+    let mut registry = SchemaRegistry::new();
+    registry.install_bundle(&bundle).unwrap();
+
+    assert!(registry.contains(final_id));
+    assert_eq!(registry.len(), 1);
+}
+
+// r[verify binette.hash.recursive]
+// r[verify binette.schema.registry.recursive]
+#[test]
+fn recursive_hashing_is_stable_for_mutual_recursion() {
+    let provisional_a = TypeId(1);
+    let provisional_b = TypeId(2);
+    let mut first = Schema {
+        id: provisional_a,
+        type_params: Vec::new(),
+        kind: SchemaKind::Struct {
+            name: "First".to_owned(),
+            fields: vec![Field {
+                name: "second".to_owned(),
+                type_ref: TypeRef::concrete(provisional_b),
+            }],
+        },
+    };
+    let mut second = Schema {
+        id: provisional_b,
+        type_params: Vec::new(),
+        kind: SchemaKind::Struct {
+            name: "Second".to_owned(),
+            fields: vec![Field {
+                name: "first".to_owned(),
+                type_ref: TypeRef::concrete(provisional_a),
+            }],
+        },
+    };
+
+    let forward = recursive_schema_type_ids(&[first.clone(), second.clone()]).unwrap();
+    let reverse = recursive_schema_type_ids(&[second.clone(), first.clone()]).unwrap();
+    assert_eq!(forward, vec![reverse[1], reverse[0]]);
+    let replacements = [(provisional_a, forward[0]), (provisional_b, forward[1])];
+    rewrite_schema_type_ids(&mut first, &replacements);
+    rewrite_schema_type_ids(&mut second, &replacements);
+
+    let bundle = SchemaBundle {
+        root: TypeRef::concrete(forward[0]),
+        schemas: vec![second, first],
+        attachments: Vec::new(),
+    };
+    let mut registry = SchemaRegistry::new();
+    registry.install_bundle(&bundle).unwrap();
+
+    assert!(registry.contains(forward[0]));
+    assert!(registry.contains(forward[1]));
+    assert_eq!(registry.len(), 2);
+}
+
+// r[verify binette.hash.recursive]
+#[test]
+fn recursive_hashing_deduplicates_identical_canonical_entries() {
+    let mut left = Schema {
+        id: TypeId(1),
+        type_params: Vec::new(),
+        kind: SchemaKind::Struct {
+            name: "Node".to_owned(),
+            fields: vec![Field {
+                name: "next".to_owned(),
+                type_ref: TypeRef::concrete(TypeId(1)),
+            }],
+        },
+    };
+    let mut right = Schema {
+        id: TypeId(2),
+        type_params: Vec::new(),
+        kind: SchemaKind::Struct {
+            name: "Node".to_owned(),
+            fields: vec![Field {
+                name: "next".to_owned(),
+                type_ref: TypeRef::concrete(TypeId(2)),
+            }],
+        },
+    };
+
+    let final_ids = recursive_schema_type_ids(&[left.clone(), right.clone()]).unwrap();
+    assert_eq!(final_ids[0], final_ids[1]);
+    rewrite_schema_type_ids(&mut left, &[(TypeId(1), final_ids[0])]);
+    rewrite_schema_type_ids(&mut right, &[(TypeId(2), final_ids[1])]);
+
+    let bundle = SchemaBundle {
+        root: TypeRef::concrete(final_ids[0]),
+        schemas: vec![left, right],
+        attachments: Vec::new(),
+    };
+    let mut registry = SchemaRegistry::new();
+    registry.install_bundle(&bundle).unwrap();
+
+    assert_eq!(registry.len(), 1);
+}
+
+// r[verify binette.schema.registry.recursive]
+#[test]
+fn registry_rejects_recursive_schema_id_mismatch() {
+    let provisional = TypeId(1);
+    let mut node = Schema {
+        id: provisional,
+        type_params: Vec::new(),
+        kind: SchemaKind::Struct {
+            name: "Node".to_owned(),
+            fields: vec![Field {
+                name: "next".to_owned(),
+                type_ref: TypeRef::concrete(provisional),
+            }],
+        },
+    };
+
+    let final_id = recursive_schema_type_ids(&[node.clone()]).unwrap()[0];
+    rewrite_schema_type_ids(&mut node, &[(provisional, final_id)]);
+    node.id = TypeId(0xDEAD);
+    rewrite_kind_type_ids(&mut node.kind, &[(final_id, TypeId(0xDEAD))]);
+
+    let bundle = SchemaBundle {
+        root: TypeRef::concrete(TypeId(0xDEAD)),
+        schemas: vec![node],
+        attachments: Vec::new(),
+    };
+    let err = SchemaRegistry::new().install_bundle(&bundle).unwrap_err();
+    assert!(matches!(
+        err,
+        SchemaError::SchemaIdMismatch {
+            declared: TypeId(0xDEAD),
+            computed,
+        } if computed == final_id
+    ));
 }
 
 // r[verify binette.schema.registry.install]

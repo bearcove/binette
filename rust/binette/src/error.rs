@@ -65,7 +65,4 @@ pub enum SchemaError {
 
     #[error("tuple schema arity must be at least one")]
     InvalidTupleArity,
-
-    #[error("recursive registry verification is not implemented yet for {type_id:?}")]
-    RecursiveRegistryUnsupported { type_id: TypeId },
 }

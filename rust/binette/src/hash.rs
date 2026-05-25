@@ -1,12 +1,14 @@
+use std::collections::{HashMap, HashSet};
+
 use crate::error::SchemaError;
 use crate::schema::{Primitive, Schema, SchemaKind, TypeId, TypeRef, VariantPayload};
 use crate::value::encode_self_described_to_vec;
 
 // r[impl binette.type-id.hash.primitives]
 pub fn primitive_type_id(primitive: Primitive) -> TypeId {
-    let mut hasher = SchemaHasher::default();
+    let mut hasher = SchemaHasher::new(None);
     hasher.feed_string(primitive.hash_tag());
-    hasher.finish()
+    hash_type_id(&hasher.into_bytes())
 }
 
 // r[impl binette.type-id.hash]
@@ -16,6 +18,7 @@ pub fn primitive_type_id(primitive: Primitive) -> TypeId {
 // r[impl binette.type-id.hash.container]
 // r[impl binette.type-id.hash.tuple]
 // r[impl binette.type-id.hash.dynamic]
+// r[impl binette.hash.recursive.non-recursive]
 pub fn schema_type_id(schema: &Schema) -> Result<TypeId, SchemaError> {
     type_id_for_kind(&schema.kind, &schema.type_params)
 }
@@ -30,17 +33,112 @@ pub(crate) fn type_id_for_kind(
     kind: &SchemaKind,
     type_params: &[String],
 ) -> Result<TypeId, SchemaError> {
-    let mut hasher = SchemaHasher::default();
+    Ok(hash_type_id(&type_id_hash_bytes(kind, type_params, None)?))
+}
+
+pub(crate) fn recursive_type_id_map(
+    group: &[&Schema],
+) -> Result<HashMap<TypeId, TypeId>, SchemaError> {
+    let group_ids = group.iter().map(|schema| schema.id).collect::<HashSet<_>>();
+    recursive_type_id_map_with_group_ids(group, &group_ids)
+}
+
+// r[impl binette.hash.recursive]
+pub fn recursive_schema_type_ids(schemas: &[Schema]) -> Result<Vec<TypeId>, SchemaError> {
+    let group = schemas.iter().collect::<Vec<_>>();
+    let map = recursive_type_id_map(&group)?;
+    Ok(schemas
+        .iter()
+        .map(|schema| {
+            map.get(&schema.id)
+                .copied()
+                .expect("recursive hash map contains every group schema")
+        })
+        .collect())
+}
+
+fn recursive_type_id_map_with_group_ids(
+    group: &[&Schema],
+    group_ids: &HashSet<TypeId>,
+) -> Result<HashMap<TypeId, TypeId>, SchemaError> {
+    let mut entries = Vec::<RecursiveHashEntry>::new();
+
+    for schema in group {
+        let bytes = type_id_hash_bytes(&schema.kind, &schema.type_params, Some(group_ids))?;
+        if let Some(existing) = entries.iter_mut().find(|entry| entry.bytes == bytes) {
+            existing.original_ids.push(schema.id);
+        } else {
+            entries.push(RecursiveHashEntry {
+                original_ids: vec![schema.id],
+                preliminary: hash_type_id(&bytes),
+                bytes,
+            });
+        }
+    }
+
+    entries.sort_by(|left, right| {
+        left.preliminary
+            .0
+            .cmp(&right.preliminary.0)
+            .then_with(|| left.bytes.cmp(&right.bytes))
+    });
+
+    let mut group_hash_input = Vec::with_capacity(entries.len() * 8);
+    for entry in &entries {
+        group_hash_input.extend_from_slice(&entry.preliminary.0.to_le_bytes());
+    }
+    let group_hash = hash_type_id(&group_hash_input);
+
+    let mut result = HashMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let mut final_hash_input = Vec::with_capacity(16);
+        final_hash_input.extend_from_slice(&group_hash.0.to_le_bytes());
+        final_hash_input.extend_from_slice(&(index as u64).to_le_bytes());
+        let final_id = hash_type_id(&final_hash_input);
+        for original_id in &entry.original_ids {
+            result.insert(*original_id, final_id);
+        }
+    }
+
+    Ok(result)
+}
+
+struct RecursiveHashEntry {
+    original_ids: Vec<TypeId>,
+    preliminary: TypeId,
+    bytes: Vec<u8>,
+}
+
+fn type_id_hash_bytes(
+    kind: &SchemaKind,
+    type_params: &[String],
+    sentinel_group: Option<&HashSet<TypeId>>,
+) -> Result<Vec<u8>, SchemaError> {
+    let mut hasher = SchemaHasher::new(sentinel_group);
     hasher.feed_kind(kind, type_params)?;
-    Ok(hasher.finish())
+    Ok(hasher.into_bytes())
 }
 
-#[derive(Default)]
-struct SchemaHasher {
-    inner: blake3::Hasher,
+fn hash_type_id(bytes: &[u8]) -> TypeId {
+    let hash = blake3::hash(bytes);
+    let mut out = [0; 8];
+    out.copy_from_slice(&hash.as_bytes()[..8]);
+    TypeId(u64::from_le_bytes(out))
 }
 
-impl SchemaHasher {
+struct SchemaHasher<'a> {
+    bytes: Vec<u8>,
+    sentinel_group: Option<&'a HashSet<TypeId>>,
+}
+
+impl<'a> SchemaHasher<'a> {
+    fn new(sentinel_group: Option<&'a HashSet<TypeId>>) -> Self {
+        Self {
+            bytes: Vec::new(),
+            sentinel_group,
+        }
+    }
+
     fn feed_kind(&mut self, kind: &SchemaKind, type_params: &[String]) -> Result<(), SchemaError> {
         match kind {
             SchemaKind::Primitive(primitive) => {
@@ -132,7 +230,8 @@ impl SchemaHasher {
             SchemaKind::External { kind, metadata } => {
                 self.feed_string("external");
                 self.feed_string(kind);
-                self.inner.update(&encode_self_described_to_vec(metadata)?);
+                self.bytes
+                    .extend_from_slice(&encode_self_described_to_vec(metadata)?);
             }
         }
         Ok(())
@@ -149,7 +248,14 @@ impl SchemaHasher {
         match type_ref {
             TypeRef::Concrete { type_id, args } => {
                 self.feed_string("concrete");
-                self.feed_u64(type_id.0);
+                if self
+                    .sentinel_group
+                    .is_some_and(|group| group.contains(type_id))
+                {
+                    self.feed_u64(0);
+                } else {
+                    self.feed_u64(type_id.0);
+                }
                 if !args.is_empty() {
                     self.feed_string("args");
                     self.feed_len(args.len());
@@ -167,7 +273,7 @@ impl SchemaHasher {
 
     fn feed_string(&mut self, value: &str) {
         self.feed_len(value.len());
-        self.inner.update(value.as_bytes());
+        self.bytes.extend_from_slice(value.as_bytes());
     }
 
     fn feed_len(&mut self, len: usize) {
@@ -175,18 +281,15 @@ impl SchemaHasher {
     }
 
     fn feed_u32(&mut self, value: u32) {
-        self.inner.update(&value.to_le_bytes());
+        self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
     fn feed_u64(&mut self, value: u64) {
-        self.inner.update(&value.to_le_bytes());
+        self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    fn finish(self) -> TypeId {
-        let hash = self.inner.finalize();
-        let mut bytes = [0; 8];
-        bytes.copy_from_slice(&hash.as_bytes()[..8]);
-        TypeId(u64::from_le_bytes(bytes))
+    fn into_bytes(self) -> Vec<u8> {
+        self.bytes
     }
 }
 

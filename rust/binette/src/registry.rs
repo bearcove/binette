@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::error::SchemaError;
-use crate::hash::{primitive_for_type_id, primitive_type_id, schema_type_id};
+use crate::hash::{
+    primitive_for_type_id, primitive_type_id, recursive_type_id_map, schema_type_id,
+};
 use crate::schema::{Schema, SchemaBundle, SchemaKind, TypeId, TypeRef, VariantPayload};
 
 #[derive(Debug, Default, Clone)]
@@ -71,7 +73,7 @@ impl<'a> VerifiedSchemaBatch<'a> {
     ) -> Result<Self, SchemaError> {
         let batch = Self::collect(existing, incoming)?;
         batch.validate_schemas()?;
-        batch.reject_batch_cycles()?;
+        batch.verify_declared_ids()?;
         Ok(batch)
     }
 
@@ -82,7 +84,7 @@ impl<'a> VerifiedSchemaBatch<'a> {
         let batch = Self::collect(existing, &bundle.schemas)?;
         batch.validate_self_contained_bundle(bundle)?;
         batch.validate_schemas()?;
-        batch.reject_batch_cycles()?;
+        batch.verify_declared_ids()?;
         Ok(batch)
     }
 
@@ -93,14 +95,6 @@ impl<'a> VerifiedSchemaBatch<'a> {
         let mut schemas = HashMap::new();
 
         for schema in incoming {
-            let computed = schema_type_id(schema)?;
-            if computed != schema.id {
-                return Err(SchemaError::SchemaIdMismatch {
-                    declared: schema.id,
-                    computed,
-                });
-            }
-
             if let SchemaKind::Primitive(primitive) = schema.kind
                 && schema.id == primitive_type_id(primitive)
             {
@@ -412,30 +406,68 @@ impl<'a> VerifiedSchemaBatch<'a> {
             .or_else(|| self.existing.get(&type_id))
     }
 
-    fn reject_batch_cycles(&self) -> Result<(), SchemaError> {
-        let mut visiting = HashSet::new();
-        let mut visited = HashSet::new();
-
-        for type_id in self.schemas.keys().copied() {
-            self.visit_for_cycles(type_id, &mut visiting, &mut visited)?;
+    // r[impl binette.schema.registry.recursive]
+    fn verify_declared_ids(&self) -> Result<(), SchemaError> {
+        for component in self.strongly_connected_components() {
+            if component.len() == 1 && !self.has_self_dependency(component[0]) {
+                let schema = self
+                    .schemas
+                    .get(&component[0])
+                    .expect("SCCs only contain batch schemas");
+                let computed = schema_type_id(schema)?;
+                if computed != schema.id {
+                    return Err(SchemaError::SchemaIdMismatch {
+                        declared: schema.id,
+                        computed,
+                    });
+                }
+            } else {
+                let schemas = component
+                    .iter()
+                    .map(|type_id| {
+                        self.schemas
+                            .get(type_id)
+                            .expect("SCCs only contain batch schemas")
+                    })
+                    .collect::<Vec<_>>();
+                let computed = recursive_type_id_map(&schemas)?;
+                for schema in schemas {
+                    let computed = computed
+                        .get(&schema.id)
+                        .copied()
+                        .expect("recursive hash map contains every group schema");
+                    if computed != schema.id {
+                        return Err(SchemaError::SchemaIdMismatch {
+                            declared: schema.id,
+                            computed,
+                        });
+                    }
+                }
+            }
         }
 
         Ok(())
     }
 
-    fn visit_for_cycles(
-        &self,
-        type_id: TypeId,
-        visiting: &mut HashSet<TypeId>,
-        visited: &mut HashSet<TypeId>,
-    ) -> Result<(), SchemaError> {
-        if !self.schemas.contains_key(&type_id) || visited.contains(&type_id) {
-            return Ok(());
+    fn strongly_connected_components(&self) -> Vec<Vec<TypeId>> {
+        let mut state = TarjanState::default();
+
+        for type_id in self.schemas.keys().copied() {
+            if !state.indices.contains_key(&type_id) {
+                self.connect_component(type_id, &mut state);
+            }
         }
 
-        if !visiting.insert(type_id) {
-            return Err(SchemaError::RecursiveRegistryUnsupported { type_id });
-        }
+        state.components
+    }
+
+    fn connect_component(&self, type_id: TypeId, state: &mut TarjanState) {
+        let index = state.next_index;
+        state.next_index += 1;
+        state.indices.insert(type_id, index);
+        state.lowlinks.insert(type_id, index);
+        state.stack.push(type_id);
+        state.on_stack.insert(type_id);
 
         let mut deps = Vec::new();
         self.collect_batch_deps(
@@ -448,12 +480,42 @@ impl<'a> VerifiedSchemaBatch<'a> {
         );
 
         for dep in deps {
-            self.visit_for_cycles(dep, visiting, visited)?;
+            if !state.indices.contains_key(&dep) {
+                self.connect_component(dep, state);
+                let dep_lowlink = state.lowlinks[&dep];
+                let lowlink = state.lowlinks[&type_id];
+                state.lowlinks.insert(type_id, lowlink.min(dep_lowlink));
+            } else if state.on_stack.contains(&dep) {
+                let dep_index = state.indices[&dep];
+                let lowlink = state.lowlinks[&type_id];
+                state.lowlinks.insert(type_id, lowlink.min(dep_index));
+            }
         }
 
-        visiting.remove(&type_id);
-        visited.insert(type_id);
-        Ok(())
+        if state.lowlinks[&type_id] == state.indices[&type_id] {
+            let mut component = Vec::new();
+            while let Some(member) = state.stack.pop() {
+                state.on_stack.remove(&member);
+                component.push(member);
+                if member == type_id {
+                    break;
+                }
+            }
+            state.components.push(component);
+        }
+    }
+
+    fn has_self_dependency(&self, type_id: TypeId) -> bool {
+        let mut deps = Vec::new();
+        self.collect_batch_deps(
+            &self
+                .schemas
+                .get(&type_id)
+                .expect("SCCs only contain batch schemas")
+                .kind,
+            &mut deps,
+        );
+        deps.contains(&type_id)
     }
 
     fn collect_batch_deps(&self, kind: &SchemaKind, out: &mut Vec<TypeId>) {
@@ -517,4 +579,14 @@ impl<'a> VerifiedSchemaBatch<'a> {
             TypeRef::Var { .. } => {}
         }
     }
+}
+
+#[derive(Default)]
+struct TarjanState {
+    next_index: usize,
+    indices: HashMap<TypeId, usize>,
+    lowlinks: HashMap<TypeId, usize>,
+    stack: Vec<TypeId>,
+    on_stack: HashSet<TypeId>,
+    components: Vec<Vec<TypeId>>,
 }
