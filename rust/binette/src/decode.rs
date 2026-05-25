@@ -6,7 +6,10 @@ use thiserror::Error;
 
 use crate::compact::{CompactError, CompactReader};
 use crate::hash::primitive_for_type_id;
-use crate::plan::{PlanError, PlanNode, ReaderPlan, StructFieldPlan, reader_plan_for};
+use crate::plan::{
+    EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, ReaderPlan, StructFieldPlan,
+    reader_plan_for,
+};
 use crate::registry::SchemaRegistry;
 use crate::schema::{Primitive, Schema, SchemaKind, TypeId, TypeRef, VariantPayload};
 
@@ -32,6 +35,13 @@ pub enum DecodeError {
 
     #[error("unbound writer type parameter {name} at byte {position}")]
     UnboundTypeParameter { position: usize, name: String },
+
+    #[error("writer enum variant {variant} ({variant_index}) cannot be read at byte {position}")]
+    UnreadableWriterVariant {
+        position: usize,
+        variant_index: u32,
+        variant: String,
+    },
 
     #[error("unsupported decode at byte {position}: {reason}")]
     Unsupported {
@@ -96,6 +106,7 @@ impl DecodeExecutor<'_, '_> {
                 dimensions,
                 element,
             } => self.decode_array_plan(partial, dimensions, element),
+            PlanNode::Enum { variants } => self.decode_enum_plan(partial, variants),
             PlanNode::Option { element } => self.decode_option_plan(partial, element),
             PlanNode::Set { .. } => Err(self.unsupported("set decode is not implemented yet")),
             PlanNode::Map { .. } => Err(self.unsupported("map decode is not implemented yet")),
@@ -178,6 +189,61 @@ impl DecodeExecutor<'_, '_> {
             partial = partial.end()?;
         }
         Ok(partial)
+    }
+
+    // r[impl binette.compat.enum]
+    // r[impl binette.compat.enum.unknown-variant]
+    fn decode_enum_plan(
+        &mut self,
+        mut partial: Partial<'static, false>,
+        variants: &[EnumVariantPlan],
+    ) -> Result<Partial<'static, false>, DecodeError> {
+        let position = self.reader.position();
+        let variant_index = self.reader.read_u32()?;
+        let variant = variants
+            .iter()
+            .find(|variant| match variant {
+                EnumVariantPlan::Read { writer_index, .. }
+                | EnumVariantPlan::Reject { writer_index, .. } => *writer_index == variant_index,
+            })
+            .ok_or(CompactError::UnknownVariantIndex {
+                position,
+                variant_index,
+            })?;
+
+        match variant {
+            EnumVariantPlan::Read {
+                reader_index,
+                payload,
+                ..
+            } => {
+                partial = partial.select_nth_variant(*reader_index)?;
+                self.decode_enum_payload_plan(partial, payload)
+            }
+            EnumVariantPlan::Reject { name, .. } => Err(DecodeError::UnreadableWriterVariant {
+                position,
+                variant_index,
+                variant: name.clone(),
+            }),
+        }
+    }
+
+    // r[impl binette.compat.enum.payload]
+    fn decode_enum_payload_plan(
+        &mut self,
+        mut partial: Partial<'static, false>,
+        payload: &EnumPayloadPlan,
+    ) -> Result<Partial<'static, false>, DecodeError> {
+        match payload {
+            EnumPayloadPlan::Unit => Ok(partial),
+            EnumPayloadPlan::Newtype(element) => {
+                partial = partial.begin_nth_field(0)?;
+                partial = self.decode_node(partial, element)?;
+                Ok(partial.end()?)
+            }
+            EnumPayloadPlan::Tuple(elements) => self.decode_tuple_plan(partial, elements),
+            EnumPayloadPlan::Struct(fields) => self.decode_struct_plan(partial, fields),
+        }
     }
 
     fn decode_option_plan(

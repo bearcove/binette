@@ -40,6 +40,9 @@ pub enum PlanNode {
         dimensions: Vec<u64>,
         element: Box<PlanNode>,
     },
+    Enum {
+        variants: Vec<EnumVariantPlan>,
+    },
     Option {
         element: Box<PlanNode>,
     },
@@ -59,6 +62,28 @@ pub enum StructFieldPlan {
         name: String,
         writer_type: TypeRef,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnumVariantPlan {
+    Read {
+        writer_index: u32,
+        reader_index: usize,
+        name: String,
+        payload: EnumPayloadPlan,
+    },
+    Reject {
+        writer_index: u32,
+        name: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnumPayloadPlan {
+    Unit,
+    Newtype(Box<PlanNode>),
+    Tuple(Vec<PlanNode>),
+    Struct(Vec<StructFieldPlan>),
 }
 
 #[derive(Debug, Error)]
@@ -338,10 +363,14 @@ impl PlanBuilder<'_> {
                 })
             }
             (SchemaKind::Dynamic, SchemaKind::Dynamic) => Ok(PlanNode::Dynamic),
-            (SchemaKind::Enum { .. }, SchemaKind::Enum { .. }) => Err(PlanError::Unsupported {
-                path: path.to_owned(),
-                reason: "enum evolution planning is not implemented yet",
-            }),
+            (
+                SchemaKind::Enum {
+                    variants: writer, ..
+                },
+                SchemaKind::Enum {
+                    variants: reader, ..
+                },
+            ) => self.plan_enum(writer, &writer_input.env, reader, &reader_input.env, path),
             _ => Err(self.type_mismatch(path, writer_input.type_ref, reader_input.type_ref)),
         }
     }
@@ -403,6 +432,96 @@ impl PlanBuilder<'_> {
         Ok(PlanNode::Struct { fields })
     }
 
+    // r[impl binette.compat.enum]
+    // r[impl binette.compat.enum.unknown-variant]
+    // r[impl binette.compat.enum.missing-variant]
+    // r[impl binette.compat.enum.payload]
+    fn plan_enum(
+        &mut self,
+        writer_variants: &[crate::schema::Variant],
+        writer_env: &Env,
+        reader_variants: &[crate::schema::Variant],
+        reader_env: &Env,
+        path: &str,
+    ) -> Result<PlanNode, PlanError> {
+        let reader_by_name = reader_variants
+            .iter()
+            .enumerate()
+            .map(|(index, variant)| (variant.name.as_str(), (index, variant)))
+            .collect::<HashMap<_, _>>();
+
+        let variants = writer_variants
+            .iter()
+            .map(|writer_variant| {
+                if let Some((reader_index, reader_variant)) =
+                    reader_by_name.get(writer_variant.name.as_str())
+                {
+                    Ok::<EnumVariantPlan, PlanError>(EnumVariantPlan::Read {
+                        writer_index: writer_variant.index,
+                        reader_index: *reader_index,
+                        name: writer_variant.name.clone(),
+                        payload: self.plan_variant_payload(
+                            &writer_variant.payload,
+                            writer_env,
+                            &reader_variant.payload,
+                            reader_env,
+                            &format!("{path}.{}", writer_variant.name),
+                        )?,
+                    })
+                } else {
+                    Ok::<EnumVariantPlan, PlanError>(EnumVariantPlan::Reject {
+                        writer_index: writer_variant.index,
+                        name: writer_variant.name.clone(),
+                    })
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(PlanNode::Enum { variants })
+    }
+
+    fn plan_variant_payload(
+        &mut self,
+        writer_payload: &crate::schema::VariantPayload,
+        writer_env: &Env,
+        reader_payload: &crate::schema::VariantPayload,
+        reader_env: &Env,
+        path: &str,
+    ) -> Result<EnumPayloadPlan, PlanError> {
+        match (writer_payload, reader_payload) {
+            (crate::schema::VariantPayload::Unit, crate::schema::VariantPayload::Unit) => {
+                Ok(EnumPayloadPlan::Unit)
+            }
+            (
+                crate::schema::VariantPayload::Newtype { type_ref: writer },
+                crate::schema::VariantPayload::Newtype { type_ref: reader },
+            ) => Ok(EnumPayloadPlan::Newtype(Box::new(
+                self.plan_type(writer, writer_env, reader, reader_env, path)?,
+            ))),
+            (
+                crate::schema::VariantPayload::Tuple { elements: writer },
+                crate::schema::VariantPayload::Tuple { elements: reader },
+            ) => Ok(EnumPayloadPlan::Tuple(self.plan_tuple_elements(
+                writer, writer_env, reader, reader_env, path,
+            )?)),
+            (
+                crate::schema::VariantPayload::Struct { fields: writer },
+                crate::schema::VariantPayload::Struct { fields: reader },
+            ) => {
+                let PlanNode::Struct { fields } =
+                    self.plan_struct(writer, writer_env, reader, reader_env, path)?
+                else {
+                    unreachable!("plan_struct always returns PlanNode::Struct");
+                };
+                Ok(EnumPayloadPlan::Struct(fields))
+            }
+            _ => Err(PlanError::Unsupported {
+                path: path.to_owned(),
+                reason: "enum variant payload kind differs",
+            }),
+        }
+    }
+
     fn plan_tuple(
         &mut self,
         writer: &[TypeRef],
@@ -411,6 +530,19 @@ impl PlanBuilder<'_> {
         reader_env: &Env,
         path: &str,
     ) -> Result<PlanNode, PlanError> {
+        let elements = self.plan_tuple_elements(writer, writer_env, reader, reader_env, path)?;
+
+        Ok(PlanNode::Tuple { elements })
+    }
+
+    fn plan_tuple_elements(
+        &mut self,
+        writer: &[TypeRef],
+        writer_env: &Env,
+        reader: &[TypeRef],
+        reader_env: &Env,
+        path: &str,
+    ) -> Result<Vec<PlanNode>, PlanError> {
         if writer.len() != reader.len() {
             return Err(PlanError::Unsupported {
                 path: path.to_owned(),
@@ -418,7 +550,7 @@ impl PlanBuilder<'_> {
             });
         }
 
-        let elements = writer
+        writer
             .iter()
             .zip(reader)
             .enumerate()
@@ -431,9 +563,7 @@ impl PlanBuilder<'_> {
                     &format!("{path}.{index}"),
                 )
             })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(PlanNode::Tuple { elements })
+            .collect()
     }
 
     fn resolve_type_ref(

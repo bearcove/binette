@@ -186,6 +186,101 @@ fn encode_then_decode_enum_payloads() {
     assert_eq!(decoded, expected);
 }
 
+// r[verify binette.compat.enum]
+// r[verify binette.compat.enum.payload]
+#[test]
+fn decodes_enum_variants_by_name_and_payload_plan() {
+    mod writer {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        #[allow(dead_code)]
+        #[repr(u8)]
+        pub enum Event {
+            Started,
+            Failed { code: u16, message: String },
+        }
+    }
+
+    mod reader {
+        use facet::Facet;
+
+        #[derive(Debug, Facet, PartialEq)]
+        #[allow(dead_code)]
+        #[repr(u8)]
+        pub enum Event {
+            Failed { message: String, code: u16 },
+            Started,
+        }
+    }
+
+    let writer_plan = writer_plan_for::<writer::Event>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let bytes = encode_to_vec_with_plan(
+        &writer::Event::Failed {
+            code: 404,
+            message: "gone".to_owned(),
+        },
+        &writer_plan,
+    )
+    .unwrap();
+
+    let decoded =
+        decode_from_slice::<reader::Event>(&bytes, writer_plan.root(), &writer_registry).unwrap();
+
+    assert_eq!(
+        decoded,
+        reader::Event::Failed {
+            message: "gone".to_owned(),
+            code: 404,
+        }
+    );
+}
+
+// r[verify binette.compat.enum.unknown-variant]
+#[test]
+fn decode_rejects_writer_only_enum_variant_at_runtime() {
+    mod writer {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        #[allow(dead_code)]
+        #[repr(u8)]
+        pub enum Event {
+            Started,
+            Failed { code: u16 },
+        }
+    }
+
+    mod reader {
+        use facet::Facet;
+
+        #[derive(Debug, Facet)]
+        #[allow(dead_code)]
+        #[repr(u8)]
+        pub enum Event {
+            Started,
+        }
+    }
+
+    let writer_plan = writer_plan_for::<writer::Event>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let bytes =
+        encode_to_vec_with_plan(&writer::Event::Failed { code: 500 }, &writer_plan).unwrap();
+
+    let err = decode_from_slice::<reader::Event>(&bytes, writer_plan.root(), &writer_registry)
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        DecodeError::UnreadableWriterVariant {
+            variant_index: 1,
+            variant,
+            ..
+        } if variant == "Failed"
+    ));
+}
+
 #[test]
 fn decode_rejects_trailing_bytes() {
     #[derive(Debug, Facet)]

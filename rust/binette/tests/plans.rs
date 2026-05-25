@@ -1,6 +1,6 @@
 use binette::{
-    PlanError, PlanNode, SchemaBundle, SchemaRegistry, StructFieldPlan, TypeRef, reader_plan_for,
-    schema_bundle_for,
+    EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, SchemaBundle, SchemaRegistry,
+    StructFieldPlan, TypeRef, reader_plan_for, schema_bundle_for,
 };
 use facet::Facet;
 
@@ -189,5 +189,142 @@ fn incompatible_field_type_fails_before_payload_decode() {
     assert!(matches!(
         err,
         PlanError::TypeMismatch { path, .. } if path == "$.id"
+    ));
+}
+
+// r[verify binette.compat.enum]
+// r[verify binette.compat.enum.payload]
+#[test]
+fn enum_variants_are_planned_by_name_not_index() {
+    mod writer {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        #[allow(dead_code)]
+        #[repr(u8)]
+        pub enum Event {
+            Started,
+            Moved(u32, u32),
+            Failed { code: u16 },
+        }
+    }
+
+    mod reader {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        #[allow(dead_code)]
+        #[repr(u8)]
+        pub enum Event {
+            Moved(u32, u32),
+            Started,
+            Failed { code: u16 },
+        }
+    }
+
+    let writer_bundle = schema_bundle_for::<writer::Event>().unwrap();
+    let writer_registry = registry_for(&writer_bundle);
+
+    let plan = reader_plan_for::<reader::Event>(&writer_bundle.root, &writer_registry).unwrap();
+    let PlanNode::Enum { variants } = plan.root else {
+        panic!("expected enum plan, got {:#?}", plan.root);
+    };
+
+    assert!(matches!(
+        &variants[0],
+        EnumVariantPlan::Read {
+            writer_index: 0,
+            reader_index: 1,
+            name,
+            payload: EnumPayloadPlan::Unit,
+        } if name == "Started"
+    ));
+    assert!(matches!(
+        &variants[1],
+        EnumVariantPlan::Read {
+            writer_index: 1,
+            reader_index: 0,
+            name,
+            payload: EnumPayloadPlan::Tuple(elements),
+        } if name == "Moved" && elements.len() == 2
+    ));
+}
+
+// r[verify binette.compat.enum.missing-variant]
+// r[verify binette.compat.enum.unknown-variant]
+#[test]
+fn writer_only_enum_variants_become_runtime_reject_steps() {
+    mod writer {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        #[allow(dead_code)]
+        #[repr(u8)]
+        pub enum Event {
+            Started,
+            Failed { code: u16 },
+        }
+    }
+
+    mod reader {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        #[allow(dead_code)]
+        #[repr(u8)]
+        pub enum Event {
+            Started,
+        }
+    }
+
+    let writer_bundle = schema_bundle_for::<writer::Event>().unwrap();
+    let writer_registry = registry_for(&writer_bundle);
+
+    let plan = reader_plan_for::<reader::Event>(&writer_bundle.root, &writer_registry).unwrap();
+    let PlanNode::Enum { variants } = plan.root else {
+        panic!("expected enum plan, got {:#?}", plan.root);
+    };
+
+    assert!(matches!(
+        &variants[1],
+        EnumVariantPlan::Reject {
+            writer_index: 1,
+            name,
+        } if name == "Failed"
+    ));
+}
+
+// r[verify binette.compat.enum.payload]
+#[test]
+fn enum_payload_mismatch_fails_before_payload_decode() {
+    mod writer {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        #[allow(dead_code)]
+        #[repr(u8)]
+        pub enum Event {
+            Moved(u32),
+        }
+    }
+
+    mod reader {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        #[allow(dead_code)]
+        #[repr(u8)]
+        pub enum Event {
+            Moved(String),
+        }
+    }
+
+    let writer_bundle = schema_bundle_for::<writer::Event>().unwrap();
+    let writer_registry = registry_for(&writer_bundle);
+
+    let err = reader_plan_for::<reader::Event>(&writer_bundle.root, &writer_registry).unwrap_err();
+    assert!(matches!(
+        err,
+        PlanError::TypeMismatch { path, .. } if path == "$.Moved"
     ));
 }
