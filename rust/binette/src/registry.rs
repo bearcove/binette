@@ -34,6 +34,12 @@ impl SchemaRegistry {
         self.schemas.values()
     }
 
+    // r[impl binette.schema.registry+2]
+    // r[impl binette.bundle.self-contained]
+    pub fn validate_self_contained_bundle(&self, bundle: &SchemaBundle) -> Result<(), SchemaError> {
+        VerifiedSchemaBatch::for_self_contained(&self.schemas, bundle).map(|_| ())
+    }
+
     // r[impl binette.schema.registry.install]
     // r[impl binette.bundle.registry]
     pub fn install_bundle(&mut self, bundle: &SchemaBundle) -> Result<(), SchemaError> {
@@ -60,6 +66,27 @@ struct VerifiedSchemaBatch<'a> {
 
 impl<'a> VerifiedSchemaBatch<'a> {
     fn new(
+        existing: &'a HashMap<TypeId, Schema>,
+        incoming: &[Schema],
+    ) -> Result<Self, SchemaError> {
+        let batch = Self::collect(existing, incoming)?;
+        batch.validate_schemas()?;
+        batch.reject_batch_cycles()?;
+        Ok(batch)
+    }
+
+    fn for_self_contained(
+        existing: &'a HashMap<TypeId, Schema>,
+        bundle: &SchemaBundle,
+    ) -> Result<Self, SchemaError> {
+        let batch = Self::collect(existing, &bundle.schemas)?;
+        batch.validate_self_contained_bundle(bundle)?;
+        batch.validate_schemas()?;
+        batch.reject_batch_cycles()?;
+        Ok(batch)
+    }
+
+    fn collect(
         existing: &'a HashMap<TypeId, Schema>,
         incoming: &[Schema],
     ) -> Result<Self, SchemaError> {
@@ -104,14 +131,22 @@ impl<'a> VerifiedSchemaBatch<'a> {
             schemas.insert(schema.id, schema.clone());
         }
 
-        let batch = Self { existing, schemas };
-        batch.validate_schemas()?;
-        batch.reject_batch_cycles()?;
-        Ok(batch)
+        Ok(Self { existing, schemas })
     }
 
     fn into_schemas(self) -> Vec<Schema> {
         self.schemas.into_values().collect()
+    }
+
+    fn validate_self_contained_bundle(&self, bundle: &SchemaBundle) -> Result<(), SchemaError> {
+        let mut visited = HashSet::new();
+        self.validate_self_contained_type_ref(&bundle.root, &[], &mut visited)?;
+        for attachment in &bundle.attachments {
+            if let Some(metadata_schema) = &attachment.metadata_schema {
+                self.validate_self_contained_type_ref(metadata_schema, &[], &mut visited)?;
+            }
+        }
+        Ok(())
     }
 
     fn validate_schemas(&self) -> Result<(), SchemaError> {
@@ -249,6 +284,124 @@ impl<'a> VerifiedSchemaBatch<'a> {
                 } else {
                     Err(SchemaError::UnknownTypeParameter { name: name.clone() })
                 }
+            }
+        }
+    }
+
+    fn validate_self_contained_type_ref(
+        &self,
+        type_ref: &TypeRef,
+        scope: &[String],
+        visited: &mut HashSet<TypeId>,
+    ) -> Result<(), SchemaError> {
+        match type_ref {
+            TypeRef::Concrete { type_id, args } => {
+                if primitive_for_type_id(*type_id).is_some() {
+                    if !args.is_empty() {
+                        return Err(SchemaError::TypeArgumentArity {
+                            type_id: *type_id,
+                            expected: 0,
+                            actual: args.len(),
+                        });
+                    }
+                } else {
+                    let schema = self
+                        .schema(*type_id)
+                        .ok_or(SchemaError::MissingBundleSchema { type_id: *type_id })?;
+                    if schema.type_params.len() != args.len() {
+                        return Err(SchemaError::TypeArgumentArity {
+                            type_id: *type_id,
+                            expected: schema.type_params.len(),
+                            actual: args.len(),
+                        });
+                    }
+
+                    if visited.insert(*type_id) {
+                        self.validate_self_contained_kind(
+                            &schema.kind,
+                            &schema.type_params,
+                            visited,
+                        )?;
+                    }
+                }
+
+                for arg in args {
+                    self.validate_self_contained_type_ref(arg, scope, visited)?;
+                }
+
+                Ok(())
+            }
+            TypeRef::Var { name } => {
+                if scope.contains(name) {
+                    Ok(())
+                } else {
+                    Err(SchemaError::UnknownTypeParameter { name: name.clone() })
+                }
+            }
+        }
+    }
+
+    fn validate_self_contained_kind(
+        &self,
+        kind: &SchemaKind,
+        scope: &[String],
+        visited: &mut HashSet<TypeId>,
+    ) -> Result<(), SchemaError> {
+        match kind {
+            SchemaKind::Primitive(_) | SchemaKind::Dynamic | SchemaKind::External { .. } => Ok(()),
+            SchemaKind::Struct { fields, .. } => {
+                for field in fields {
+                    self.validate_self_contained_type_ref(&field.type_ref, scope, visited)?;
+                }
+                Ok(())
+            }
+            SchemaKind::Enum { variants, .. } => {
+                for variant in variants {
+                    self.validate_self_contained_variant_payload(&variant.payload, scope, visited)?;
+                }
+                Ok(())
+            }
+            SchemaKind::Tuple { elements } => {
+                for element in elements {
+                    self.validate_self_contained_type_ref(element, scope, visited)?;
+                }
+                Ok(())
+            }
+            SchemaKind::List { element } | SchemaKind::Set { element } => {
+                self.validate_self_contained_type_ref(element, scope, visited)
+            }
+            SchemaKind::Map { key, value } => {
+                self.validate_self_contained_type_ref(key, scope, visited)?;
+                self.validate_self_contained_type_ref(value, scope, visited)
+            }
+            SchemaKind::Array { element, .. } | SchemaKind::Option { element } => {
+                self.validate_self_contained_type_ref(element, scope, visited)
+            }
+        }
+    }
+
+    fn validate_self_contained_variant_payload(
+        &self,
+        payload: &VariantPayload,
+        scope: &[String],
+        visited: &mut HashSet<TypeId>,
+    ) -> Result<(), SchemaError> {
+        match payload {
+            VariantPayload::Unit => Ok(()),
+            VariantPayload::Newtype { type_ref } => {
+                self.validate_self_contained_type_ref(type_ref, scope, visited)
+            }
+            VariantPayload::Tuple { elements } => {
+                for element in elements {
+                    self.validate_self_contained_type_ref(element, scope, visited)?;
+                }
+                Ok(())
+            }
+            VariantPayload::Struct { fields } => {
+                for field in fields {
+                    self.validate_self_contained_type_ref(&field.type_ref, scope, visited)?;
+                }
+                Ok(())
             }
         }
     }

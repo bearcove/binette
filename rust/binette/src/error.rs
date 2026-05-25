@@ -39,6 +39,9 @@ pub enum SchemaError {
     #[error("unknown concrete type id {type_id:?}")]
     UnknownTypeId { type_id: TypeId },
 
+    #[error("self-contained bundle is missing schema {type_id:?}")]
+    MissingBundleSchema { type_id: TypeId },
+
     #[error("unknown type parameter {name}")]
     UnknownTypeParameter { name: String },
 

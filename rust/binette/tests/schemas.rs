@@ -295,6 +295,53 @@ fn registry_treats_primitive_schemas_as_builtin() {
     assert!(registry.is_empty());
 }
 
+// r[verify binette.bundle.self-contained]
+// r[verify binette.schema.registry+2]
+#[test]
+fn registry_validates_self_contained_bundles() {
+    #[derive(Facet)]
+    struct Account {
+        id: u64,
+        lucky: Option<u32>,
+    }
+
+    let bundle = schema_bundle_for::<Account>().unwrap();
+    SchemaRegistry::new()
+        .validate_self_contained_bundle(&bundle)
+        .unwrap();
+
+    let account = schema(&bundle, concrete_id(&bundle.root));
+    let SchemaKind::Struct { fields, .. } = &account.kind else {
+        panic!("expected struct schema, got {account:#?}");
+    };
+    let option_id = concrete_id(&fields[1].type_ref);
+
+    let mut missing_option = bundle.clone();
+    missing_option
+        .schemas
+        .retain(|schema| schema.id != option_id);
+    let err = SchemaRegistry::new()
+        .validate_self_contained_bundle(&missing_option)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        SchemaError::MissingBundleSchema { type_id } if type_id == option_id
+    ));
+
+    let mut registry = SchemaRegistry::new();
+    let option_schema = schema(&bundle, option_id).clone();
+    registry
+        .install_bundle(&SchemaBundle {
+            schemas: vec![option_schema],
+            root: TypeRef::concrete(option_id),
+            attachments: Vec::new(),
+        })
+        .unwrap();
+    registry
+        .validate_self_contained_bundle(&missing_option)
+        .unwrap();
+}
+
 // r[verify binette.schema.registry.install]
 #[test]
 fn registry_rejects_schema_id_mismatch() {
