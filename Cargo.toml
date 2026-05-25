@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+  "rust/binette",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.91"
+authors = ["Amos Wenger <amos@bearcove.eu>"]
+license = "MIT OR Apache-2.0"
+description = "Compact binary value format with schemas and compatibility tooling"
+repository = "https://github.com/bearcove/binette"
+homepage = "https://github.com/bearcove/binette"
+documentation = "https://docs.rs/binette"
+keywords = ["binary", "schema", "encoding", "compatibility"]
+categories = ["encoding", "data-structures"]
+
+[workspace.dependencies]

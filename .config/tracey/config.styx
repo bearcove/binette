@@ -1,0 +1,14 @@
+@schema {id crate:tracey-config@1, cli tracey}
+
+specs (
+    {
+        name binette
+        include (docs/content/spec/*.md)
+        impls (
+            {
+                name rust
+                include (rust/**/*.rs)
+            }
+        )
+    }
+)
