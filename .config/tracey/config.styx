@@ -9,6 +9,14 @@ specs (
                 name rust
                 include (rust/**/*.rs)
             }
+            {
+                name typescript
+                include (typescript/**/*.ts)
+                exclude (
+                    typescript/*/dist/**
+                    typescript/*/dist-test/**
+                )
+            }
         )
     }
 )

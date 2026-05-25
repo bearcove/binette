@@ -1,3 +1,6 @@
 /target/
 /docs/public/
 /.cache/
+/node_modules/
+/typescript/*/dist/
+/typescript/*/dist-test/
