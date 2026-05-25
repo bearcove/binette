@@ -1,6 +1,6 @@
 use binette::{
-    Primitive, Schema, SchemaBundle, SchemaKind, TypeId, TypeRef, VariantPayload,
-    primitive_type_id, schema_bundle_for,
+    Field, Primitive, Schema, SchemaBundle, SchemaError, SchemaKind, SchemaRegistry, TypeId,
+    TypeRef, VariantPayload, primitive_type_id, schema_bundle_for, schema_type_id,
 };
 use facet::Facet;
 
@@ -233,4 +233,121 @@ fn transparent_facet_wrapper_uses_inner_type_identity() {
         TypeRef::concrete(primitive_type_id(Primitive::String))
     );
     assert!(bundle.schemas.is_empty());
+}
+
+// r[verify binette.schema.registry.install]
+#[test]
+fn registry_installs_bundle_after_verifying_declared_ids() {
+    #[derive(Facet)]
+    struct Account {
+        id: u64,
+        lucky: Option<u32>,
+    }
+
+    let mut bundle = schema_bundle_for::<Account>().unwrap();
+    bundle.schemas.reverse();
+
+    let mut registry = SchemaRegistry::new();
+    registry.install_bundle(&bundle).unwrap();
+
+    assert!(registry.contains(concrete_id(&bundle.root)));
+    assert_eq!(registry.len(), bundle.schemas.len());
+}
+
+// r[verify binette.schema.registry.install]
+#[test]
+fn registry_treats_primitive_schemas_as_builtin() {
+    let primitive = Primitive::U8;
+    let type_id = primitive_type_id(primitive);
+    let bundle = SchemaBundle {
+        schemas: vec![Schema {
+            id: type_id,
+            type_params: Vec::new(),
+            kind: SchemaKind::Primitive(primitive),
+        }],
+        root: TypeRef::concrete(type_id),
+        attachments: Vec::new(),
+    };
+
+    let mut registry = SchemaRegistry::new();
+    registry.install_bundle(&bundle).unwrap();
+
+    assert!(registry.contains(type_id));
+    assert!(registry.get(type_id).is_none());
+    assert!(registry.is_empty());
+}
+
+// r[verify binette.schema.registry.install]
+#[test]
+fn registry_rejects_schema_id_mismatch() {
+    #[derive(Facet)]
+    struct Account {
+        id: u64,
+    }
+
+    let mut bundle = schema_bundle_for::<Account>().unwrap();
+    bundle.schemas[0].id = TypeId(0);
+
+    let err = SchemaRegistry::new().install_bundle(&bundle).unwrap_err();
+    assert!(matches!(
+        err,
+        SchemaError::SchemaIdMismatch {
+            declared: TypeId(0),
+            ..
+        }
+    ));
+}
+
+// r[verify binette.schema.registry.install]
+#[test]
+fn registry_rejects_unknown_type_references() {
+    let missing = TypeId(0xABCD);
+    let mut schema = Schema {
+        id: TypeId(0),
+        type_params: Vec::new(),
+        kind: SchemaKind::Struct {
+            name: "Dangling".to_owned(),
+            fields: vec![Field {
+                name: "missing".to_owned(),
+                type_ref: TypeRef::concrete(missing),
+            }],
+        },
+    };
+    schema.id = schema_type_id(&schema).unwrap();
+    let bundle = SchemaBundle {
+        root: TypeRef::concrete(schema.id),
+        schemas: vec![schema],
+        attachments: Vec::new(),
+    };
+
+    let err = SchemaRegistry::new().install_bundle(&bundle).unwrap_err();
+    assert!(matches!(
+        err,
+        SchemaError::UnknownTypeId { type_id } if type_id == missing
+    ));
+}
+
+// r[verify binette.schema.registry.install]
+#[test]
+fn registry_rejects_root_type_argument_arity_mismatch() {
+    #[derive(Facet)]
+    struct Wrapper<T> {
+        value: T,
+    }
+
+    let mut bundle = schema_bundle_for::<Wrapper<u32>>().unwrap();
+    let TypeRef::Concrete { type_id, .. } = bundle.root else {
+        panic!("unexpected root {:#?}", bundle.root);
+    };
+    bundle.root = TypeRef::concrete(type_id);
+
+    let err = SchemaRegistry::new().install_bundle(&bundle).unwrap_err();
+    assert!(matches!(
+        err,
+        SchemaError::TypeArgumentArity {
+            type_id: found,
+            expected: 1,
+            actual: 0,
+        } if found == type_id
+    ));
 }

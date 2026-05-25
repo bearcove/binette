@@ -142,15 +142,27 @@ depends only on the binette schema model defined here.
 
 > r[binette.schema.registry+2]
 >
-> A schema registry maps type IDs to schemas. Before installing non-primitive
-> schemas into a registry, a consumer MUST verify the declared IDs against the
-> schemas' canonical content.
+> A schema registry maps type IDs to schemas. It is the lookup context used by
+> compact decoders, schema validation, compatibility tooling, and translation
+> planning.
+
+> r[binette.schema.registry.install]
+>
+> Before installing non-primitive schemas into a registry, a consumer MUST verify
+> the declared IDs against the schemas' canonical content. Primitive type IDs are
+> built-in constants and do not need registry entries.
 >
 > Schema references may point to schemas already in the registry or to other
 > schemas being installed in the same batch. Batch order is not significant:
 > a consumer first indexes the batch by declared type ID, then resolves
 > references against the combined existing registry and batch. Duplicate
 > non-identical declarations for the same type ID are invalid.
+>
+> A concrete type reference with type arguments is valid only when the referenced
+> schema declares the same number of type parameters. A type-variable reference
+> is valid only inside the declaration that binds that type parameter.
+
+> r[binette.schema.registry.recursive]
 >
 > Verification is performed over the reference graph of the batch being
 > installed. Strongly connected components are verified in dependency order:
