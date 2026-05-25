@@ -7,7 +7,7 @@ use crate::error::SchemaError;
 use crate::facet::schema_bundle_for_shape;
 use crate::hash::primitive_for_type_id;
 use crate::registry::SchemaRegistry;
-use crate::schema::{Field, Schema, SchemaKind, TypeId, TypeRef};
+use crate::schema::{Field, Schema, SchemaBundle, SchemaKind, TypeId, TypeRef};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReaderPlan {
@@ -146,6 +146,44 @@ pub fn reader_plan_for_shape(
     Ok(ReaderPlan { root })
 }
 
+// r[impl binette.compat.plan]
+pub fn reader_plan_for_bundle(
+    writer_root: &TypeRef,
+    writer_registry: &SchemaRegistry,
+    reader_root: &TypeRef,
+    reader_registry: &SchemaRegistry,
+) -> Result<ReaderPlan, PlanError> {
+    let mut builder = PlanBuilder {
+        writer_registry,
+        reader_registry,
+    };
+    let root = builder.plan_type(
+        writer_root,
+        &Env::default(),
+        reader_root,
+        &Env::default(),
+        "$",
+    )?;
+    Ok(ReaderPlan { root })
+}
+
+// r[impl binette.compat.plan]
+pub fn reader_plan_for_bundles(
+    writer_bundle: &SchemaBundle,
+    reader_bundle: &SchemaBundle,
+) -> Result<ReaderPlan, PlanError> {
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry.install_bundle(writer_bundle)?;
+    let mut reader_registry = SchemaRegistry::new();
+    reader_registry.install_bundle(reader_bundle)?;
+    reader_plan_for_bundle(
+        &writer_bundle.root,
+        &writer_registry,
+        &reader_bundle.root,
+        &reader_registry,
+    )
+}
+
 struct PlanBuilder<'a> {
     writer_registry: &'a SchemaRegistry,
     reader_registry: &'a SchemaRegistry,
@@ -185,6 +223,7 @@ struct SchemaPlanInput<'a> {
 }
 
 impl PlanBuilder<'_> {
+    // r[impl binette.compat.type-compat]
     // r[impl binette.compat.type-compat.basic]
     fn plan_type(
         &mut self,
@@ -422,6 +461,7 @@ impl PlanBuilder<'_> {
 
         for (reader_index, reader_field) in reader_fields.iter().enumerate() {
             if !matched_readers[reader_index] {
+                // r[impl binette.compat.fill-defaults]
                 return Err(PlanError::MissingReaderField {
                     path: path.to_owned(),
                     field: reader_field.name.clone(),
