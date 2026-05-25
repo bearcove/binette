@@ -75,6 +75,16 @@ fn compact_skip_uses_u32_lengths_for_strings() {
     ));
 }
 
+// r[verify binette.scalar.never]
+#[test]
+fn compact_skip_rejects_never_values() {
+    let mut reader = CompactReader::new(&[]);
+    let err = reader
+        .skip_value(&primitive_ref(Primitive::Never), &SchemaRegistry::new())
+        .unwrap_err();
+    assert!(matches!(err, CompactError::NeverValue { position: 0 }));
+}
+
 // r[verify binette.aggregate.struct.compact]
 // r[verify binette.aggregate.schema-driven-skip]
 #[test]
@@ -188,6 +198,7 @@ fn compact_skip_rejects_invalid_option_tags() {
 }
 
 // r[verify binette.aggregate.external-attachment]
+// r[verify binette.value-model.external-form]
 #[test]
 fn compact_walk_collects_external_attachment_slots_in_value_order() {
     let external = schema_with_id(SchemaKind::External {

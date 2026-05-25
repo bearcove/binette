@@ -106,6 +106,7 @@ fn schema_format_encodes_enum_variants_and_payloads() {
 }
 
 // r[verify binette.bundle.format]
+// r[verify binette.bundle.model]
 // r[verify binette.bundle.attachments]
 // r[verify binette.bundle.registry]
 #[test]

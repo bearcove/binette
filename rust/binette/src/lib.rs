@@ -5,6 +5,7 @@
 mod compact;
 mod compatibility;
 mod decode;
+mod dump;
 mod encode;
 mod error;
 mod facet;
@@ -21,6 +22,12 @@ pub use compatibility::{
     CompatibilityStatus, compatibility_report,
 };
 pub use decode::{DecodeError, decode_from_slice, decode_from_slice_with_plan};
+pub use dump::{
+    DeclarationMetadata, Defaultability, FieldMetadata, ProducerMetadata, SchemaDump,
+    SchemaSnapshot, decode_schema_dump_from_slice, decode_schema_snapshot_from_slice,
+    encode_schema_dump_to_vec, encode_schema_snapshot_to_vec, schema_dump_from_value,
+    schema_dump_to_value, schema_snapshot_from_value, schema_snapshot_to_value,
+};
 pub use encode::{
     EncodeError, WriterPlan, encode_to_vec, encode_to_vec_with_plan, writer_plan_for,
     writer_plan_for_shape,

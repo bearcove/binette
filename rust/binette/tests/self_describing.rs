@@ -8,7 +8,16 @@ use binette::{
 // r[verify binette.mode.self-describing]
 // r[verify binette.tags]
 // r[verify binette.tags.scalar-payload]
+// r[verify binette.endianness]
 // r[verify binette.length.canonical-width]
+// r[verify binette.scalar.bytes]
+// r[verify binette.scalar.char]
+// r[verify binette.scalar.float]
+// r[verify binette.scalar.signed]
+// r[verify binette.scalar.unit]
+// r[verify binette.scalar.unsigned]
+// r[verify binette.value-kind.preserved]
+// r[verify binette.value-model]
 #[test]
 fn self_describing_scalars_use_fixed_tags_and_payloads() {
     let value = Value::String("binette".to_owned());
@@ -28,6 +37,18 @@ fn self_describing_scalars_use_fixed_tags_and_payloads() {
             value: 0x02,
         })
     ));
+
+    for (value, bytes) in [
+        (Value::Unit, vec![0x00]),
+        (Value::U16(0x1234), vec![0x03, 0x34, 0x12]),
+        (Value::I16(-2), vec![0x08, 0xFE, 0xFF]),
+        (Value::F32(1.0), vec![0x0C, 0x00, 0x00, 0x80, 0x3F]),
+        (Value::Char('\u{00E9}'), vec![0x0E, 0xE9, 0x00, 0x00, 0x00]),
+        (Value::Bytes(vec![1, 2, 3]), vec![0x10, 3, 0, 0, 0, 1, 2, 3]),
+    ] {
+        assert_eq!(encode_self_described_to_vec(&value).unwrap(), bytes);
+        assert_eq!(decode_self_described_from_slice(&bytes).unwrap(), value);
+    }
 }
 
 // r[verify binette.aggregate.struct.self-describing]

@@ -2,6 +2,7 @@ use crate::value::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
+// r[impl binette.type-id]
 pub struct TypeId(pub u64);
 
 // r[impl binette.schema.type-ref]
@@ -47,6 +48,7 @@ pub struct Schema {
 // r[impl binette.schema.kinds]
 // r[impl binette.schema.array]
 // r[impl binette.schema.dynamic]
+// r[impl binette.schema.extension]
 #[derive(Debug, Clone, PartialEq)]
 pub enum SchemaKind {
     Primitive(Primitive),
@@ -108,6 +110,7 @@ pub enum VariantPayload {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// r[impl binette.schema.primitive]
 pub enum Primitive {
     Bool,
     U8,

@@ -66,13 +66,27 @@ stored as a compatibility snapshot.
 
 > r[binette.bundle.dump]
 >
-> A schema dump is a bundle plus producer metadata that is not part of the core
-> schema model. Tooling MAY attach producer metadata such as source-language
-> names, field defaultability, documentation strings, or source locations.
-> Producer metadata MUST NOT affect binette type IDs.
+> A schema dump is a bundle plus producer metadata that is not part of the
+> core schema model. Encoded for interchange, a dump is a self-described
+> binette struct with exactly these fields, emitted in this order by canonical
+> encoders:
+>
+> - `bundle`: a schema bundle encoded by `r[binette.bundle.format]`
+> - `metadata`: producer metadata
+>
+> Producer metadata contains zero or more declaration metadata entries. A
+> declaration metadata entry names a `type_id` and MAY carry source-language
+> names, field defaultability, documentation strings, or source locations for
+> that declaration. Producer metadata MUST NOT affect binette type IDs.
 
 > r[binette.bundle.snapshot]
 >
-> Compatibility tools compare schema snapshots, not live values. A snapshot
-> records the bundle roots and producer metadata needed to answer whether data
-> written with one schema set can be read with another schema set.
+> Compatibility tools compare schema snapshots, not live values. Encoded for
+> interchange, a snapshot is a self-described binette struct with exactly one
+> field:
+>
+> - `dumps`: a list of schema dumps encoded by `r[binette.bundle.dump]`
+>
+> The bundle root in each dump records the value root being compared. The dump
+> metadata records the producer facts needed to answer whether data written
+> with one schema set can be read with another schema set.

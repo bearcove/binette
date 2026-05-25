@@ -26,6 +26,7 @@ fn concrete_id(type_ref: &TypeRef) -> TypeId {
 // r[verify binette.schema.fields]
 // r[verify binette.schema.name]
 // r[verify binette.type-id]
+// r[verify binette.type-id.hash]
 // r[verify binette.type-id.hash.struct]
 #[test]
 fn facet_struct_shape_extracts_to_binette_schema() {
@@ -273,6 +274,8 @@ fn registry_installs_bundle_after_verifying_declared_ids() {
 }
 
 // r[verify binette.schema.registry.install]
+// r[verify binette.schema.primitive]
+// r[verify binette.type-id.hash.primitives]
 #[test]
 fn registry_treats_primitive_schemas_as_builtin() {
     let primitive = Primitive::U8;

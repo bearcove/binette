@@ -40,7 +40,7 @@ one schema be read using another schema without losing the value's meaning?
 >
 > Schema dumps MAY carry defaultability metadata for compatibility analysis.
 > Defaultability metadata is not part of the binette schema model and is not
-> type-ID hash input. Tooling SHOULD distinguish at least:
+> type-ID hash input. Tooling SHOULD distinguish at least these states:
 >
 > - no default provider
 > - default provider exists but is opaque to portable tooling
