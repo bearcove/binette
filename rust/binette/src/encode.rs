@@ -543,6 +543,7 @@ impl WriterPlanExecutor<'_> {
         }
     }
 
+    // r[impl binette.aggregate.tuple]
     fn encode_tuple(
         &mut self,
         peek: Peek<'_, 'static>,

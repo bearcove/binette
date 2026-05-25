@@ -156,6 +156,7 @@ impl ExtractCtx {
         param_map: &[(facet_core::ConstTypeId, String)],
     ) -> Result<SchemaKind, SchemaError> {
         match struct_type.kind {
+            // r[impl binette.schema.tuple]
             StructKind::Tuple => {
                 let elements = struct_type
                     .fields

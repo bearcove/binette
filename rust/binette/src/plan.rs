@@ -522,6 +522,7 @@ impl PlanBuilder<'_> {
         }
     }
 
+    // r[impl binette.compat.tuple]
     fn plan_tuple(
         &mut self,
         writer: &[TypeRef],
@@ -535,6 +536,7 @@ impl PlanBuilder<'_> {
         Ok(PlanNode::Tuple { elements })
     }
 
+    // r[impl binette.compat.tuple]
     fn plan_tuple_elements(
         &mut self,
         writer: &[TypeRef],

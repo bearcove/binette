@@ -104,6 +104,24 @@ fn facet_container_shapes_keep_distinct_binette_kinds() {
     ));
 }
 
+// r[verify binette.schema.tuple]
+// r[verify binette.type-id.hash.tuple]
+#[test]
+fn facet_tuple_shape_extracts_non_empty_tuple_schema() {
+    let bundle = schema_bundle_for::<(u16, String)>().unwrap();
+    let tuple = schema(&bundle, concrete_id(&bundle.root));
+
+    assert_eq!(
+        tuple.kind,
+        SchemaKind::Tuple {
+            elements: vec![
+                TypeRef::concrete(primitive_type_id(Primitive::U16)),
+                TypeRef::concrete(primitive_type_id(Primitive::String)),
+            ],
+        }
+    );
+}
+
 // r[verify binette.schema.fields]
 // r[verify binette.type-id.hash.enum]
 #[test]

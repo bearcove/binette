@@ -139,6 +139,21 @@ fn encode_then_decode_nested_compact_shapes() {
     assert_eq!(decoded, expected);
 }
 
+// r[verify binette.aggregate.tuple]
+#[test]
+fn encode_then_decode_tuple_values() {
+    let expected = (7u16, "seven".to_owned());
+    let writer_plan = writer_plan_for::<(u16, String)>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+
+    let bytes = encode_to_vec_with_plan(&expected, &writer_plan).unwrap();
+    assert_eq!(bytes, [7, 0, 5, 0, 0, 0, b's', b'e', b'v', b'e', b'n']);
+
+    let decoded =
+        decode_from_slice::<(u16, String)>(&bytes, writer_plan.root(), &writer_registry).unwrap();
+    assert_eq!(decoded, expected);
+}
+
 // r[verify binette.aggregate.set]
 // r[verify binette.aggregate.map]
 // r[verify binette.aggregate.set-map.canonical]

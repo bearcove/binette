@@ -192,6 +192,23 @@ fn incompatible_field_type_fails_before_payload_decode() {
     ));
 }
 
+// r[verify binette.compat.tuple]
+#[test]
+fn tuple_arity_mismatch_fails_before_payload_decode() {
+    let writer_bundle = schema_bundle_for::<(u16, u16)>().unwrap();
+    let writer_registry = registry_for(&writer_bundle);
+
+    let err =
+        reader_plan_for::<(u16, u16, u16)>(&writer_bundle.root, &writer_registry).unwrap_err();
+    assert!(matches!(
+        err,
+        PlanError::Unsupported {
+            path,
+            reason: "tuple arity differs"
+        } if path == "$"
+    ));
+}
+
 // r[verify binette.compat.enum]
 // r[verify binette.compat.enum.payload]
 #[test]

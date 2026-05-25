@@ -136,6 +136,7 @@ impl DecodeExecutor<'_, '_> {
         Ok(partial)
     }
 
+    // r[impl binette.aggregate.tuple]
     fn decode_tuple_plan(
         &mut self,
         mut partial: Partial<'static, false>,
@@ -422,6 +423,7 @@ impl DecodeExecutor<'_, '_> {
         }
     }
 
+    // r[impl binette.aggregate.tuple]
     fn decode_tuple_kind(
         &mut self,
         mut partial: Partial<'static, false>,
