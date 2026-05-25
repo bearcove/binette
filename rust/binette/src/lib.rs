@@ -1,6 +1,7 @@
 //! binette is a compact binary value format with schemas, stable type
 //! identities, compatibility tooling, and support for long-lived data.
 
+mod compact;
 mod error;
 mod facet;
 mod hash;
@@ -8,6 +9,7 @@ mod plan;
 mod registry;
 mod schema;
 
+pub use compact::{CompactError, CompactReader};
 pub use error::SchemaError;
 pub use facet::{schema_bundle_for, schema_bundle_for_shape};
 pub use hash::{primitive_for_type_id, primitive_type_id, schema_type_id};
