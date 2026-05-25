@@ -1,6 +1,6 @@
 use binette::{
-    CompactError, CompactReader, Primitive, SchemaBundle, SchemaRegistry, TypeRef,
-    primitive_type_id, schema_bundle_for,
+    CompactError, CompactReader, Field, Primitive, Schema, SchemaBundle, SchemaKind,
+    SchemaRegistry, TypeId, TypeRef, Value, primitive_type_id, schema_bundle_for, schema_type_id,
 };
 use facet::Facet;
 
@@ -12,6 +12,16 @@ fn registry_for(bundle: &SchemaBundle) -> SchemaRegistry {
 
 fn primitive_ref(primitive: Primitive) -> TypeRef {
     TypeRef::concrete(primitive_type_id(primitive))
+}
+
+fn schema_with_id(kind: SchemaKind) -> Schema {
+    let mut schema = Schema {
+        id: TypeId(0),
+        type_params: Vec::new(),
+        kind,
+    };
+    schema.id = schema_type_id(&schema).unwrap();
+    schema
 }
 
 fn bytes_with_u32_len(bytes: &[u8]) -> Vec<u8> {
@@ -175,4 +185,72 @@ fn compact_skip_rejects_invalid_option_tags() {
             value: 0x02
         }
     ));
+}
+
+// r[verify binette.aggregate.external-attachment]
+#[test]
+fn compact_walk_collects_external_attachment_slots_in_value_order() {
+    let external = schema_with_id(SchemaKind::External {
+        kind: "channel".to_owned(),
+        metadata: Value::String("ordered".to_owned()),
+    });
+    let option = schema_with_id(SchemaKind::Option {
+        element: TypeRef::concrete(external.id),
+    });
+    let list = schema_with_id(SchemaKind::List {
+        element: TypeRef::concrete(external.id),
+    });
+    let root = schema_with_id(SchemaKind::Struct {
+        name: "Envelope".to_owned(),
+        fields: vec![
+            Field {
+                name: "head".to_owned(),
+                type_ref: TypeRef::concrete(external.id),
+            },
+            Field {
+                name: "maybe".to_owned(),
+                type_ref: TypeRef::concrete(option.id),
+            },
+            Field {
+                name: "items".to_owned(),
+                type_ref: TypeRef::concrete(list.id),
+            },
+        ],
+    });
+    let bundle = SchemaBundle {
+        root: TypeRef::concrete(root.id),
+        schemas: vec![root, list, option, external],
+        attachments: Vec::new(),
+    };
+    let registry = registry_for(&bundle);
+
+    let mut reader = CompactReader::new(&[0x00, 0x02, 0x00, 0x00, 0x00]);
+    let slots = reader
+        .external_attachment_slots(&bundle.root, &registry)
+        .unwrap();
+    assert!(reader.is_empty());
+    assert_eq!(
+        slots
+            .iter()
+            .map(|slot| (slot.byte_position, slot.kind, slot.metadata))
+            .collect::<Vec<_>>(),
+        [
+            (0, "channel", &Value::String("ordered".to_owned())),
+            (5, "channel", &Value::String("ordered".to_owned())),
+            (5, "channel", &Value::String("ordered".to_owned())),
+        ]
+    );
+
+    let mut reader = CompactReader::new(&[0x01, 0x00, 0x00, 0x00, 0x00]);
+    let slots = reader
+        .external_attachment_slots(&bundle.root, &registry)
+        .unwrap();
+    assert!(reader.is_empty());
+    assert_eq!(
+        slots
+            .iter()
+            .map(|slot| (slot.byte_position, slot.kind))
+            .collect::<Vec<_>>(),
+        [(0, "channel"), (1, "channel")]
+    );
 }

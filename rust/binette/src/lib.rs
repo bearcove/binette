@@ -14,7 +14,7 @@ mod schema;
 mod schema_format;
 mod value;
 
-pub use compact::{CompactError, CompactReader};
+pub use compact::{CompactError, CompactReader, ExternalAttachmentSlot};
 pub use decode::{DecodeError, decode_from_slice, decode_from_slice_with_plan};
 pub use encode::{
     EncodeError, WriterPlan, encode_to_vec, encode_to_vec_with_plan, writer_plan_for,

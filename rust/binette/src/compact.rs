@@ -3,6 +3,14 @@ use thiserror::Error;
 use crate::hash::primitive_for_type_id;
 use crate::registry::SchemaRegistry;
 use crate::schema::{Primitive, SchemaKind, TypeId, TypeRef, VariantPayload};
+use crate::value::Value;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExternalAttachmentSlot<'schema> {
+    pub byte_position: usize,
+    pub kind: &'schema str,
+    pub metadata: &'schema Value,
+}
 
 #[derive(Debug, Error)]
 pub enum CompactError {
@@ -102,15 +110,29 @@ impl<'a> CompactReader<'a> {
         type_ref: &TypeRef,
         registry: &SchemaRegistry,
     ) -> Result<(), CompactError> {
+        let mut ignore_external = |_| {};
         let mut env = Env::default();
-        self.skip_type(type_ref, registry, &mut env)
+        self.walk_type(type_ref, registry, &mut env, &mut ignore_external)
     }
 
-    fn skip_type(
+    // r[impl binette.aggregate.external-attachment]
+    pub fn external_attachment_slots<'schema>(
         &mut self,
         type_ref: &TypeRef,
-        registry: &SchemaRegistry,
+        registry: &'schema SchemaRegistry,
+    ) -> Result<Vec<ExternalAttachmentSlot<'schema>>, CompactError> {
+        let mut slots = Vec::new();
+        let mut env = Env::default();
+        self.walk_type(type_ref, registry, &mut env, &mut |slot| slots.push(slot))?;
+        Ok(slots)
+    }
+
+    fn walk_type<'schema>(
+        &mut self,
+        type_ref: &TypeRef,
+        registry: &'schema SchemaRegistry,
         env: &mut Env,
+        on_external: &mut impl FnMut(ExternalAttachmentSlot<'schema>),
     ) -> Result<(), CompactError> {
         match type_ref {
             TypeRef::Concrete { type_id, args } => {
@@ -123,7 +145,7 @@ impl<'a> CompactReader<'a> {
                     type_id: *type_id,
                 })?;
                 let mark = env.push(&schema.type_params, args);
-                let result = self.skip_kind(&schema.kind, registry, env);
+                let result = self.walk_kind(&schema.kind, registry, env, on_external);
                 env.truncate(mark);
                 result
             }
@@ -134,22 +156,23 @@ impl<'a> CompactReader<'a> {
                         name: name.clone(),
                     }
                 })?;
-                self.skip_type(&resolved, registry, env)
+                self.walk_type(&resolved, registry, env, on_external)
             }
         }
     }
 
-    fn skip_kind(
+    fn walk_kind<'schema>(
         &mut self,
-        kind: &SchemaKind,
-        registry: &SchemaRegistry,
+        kind: &'schema SchemaKind,
+        registry: &'schema SchemaRegistry,
         env: &mut Env,
+        on_external: &mut impl FnMut(ExternalAttachmentSlot<'schema>),
     ) -> Result<(), CompactError> {
         match kind {
             SchemaKind::Primitive(primitive) => self.skip_primitive(*primitive),
             SchemaKind::Struct { fields, .. } => {
                 for field in fields {
-                    self.skip_type(&field.type_ref, registry, env)?;
+                    self.walk_type(&field.type_ref, registry, env, on_external)?;
                 }
                 Ok(())
             }
@@ -163,26 +186,26 @@ impl<'a> CompactReader<'a> {
                         position,
                         variant_index,
                     })?;
-                self.skip_variant_payload(&variant.payload, registry, env)
+                self.walk_variant_payload(&variant.payload, registry, env, on_external)
             }
             SchemaKind::Tuple { elements } => {
                 for element in elements {
-                    self.skip_type(element, registry, env)?;
+                    self.walk_type(element, registry, env, on_external)?;
                 }
                 Ok(())
             }
             SchemaKind::List { element } | SchemaKind::Set { element } => {
                 let count = self.read_u32()?;
                 for _ in 0..count {
-                    self.skip_type(element, registry, env)?;
+                    self.walk_type(element, registry, env, on_external)?;
                 }
                 Ok(())
             }
             SchemaKind::Map { key, value } => {
                 let count = self.read_u32()?;
                 for _ in 0..count {
-                    self.skip_type(key, registry, env)?;
-                    self.skip_type(value, registry, env)?;
+                    self.walk_type(key, registry, env, on_external)?;
+                    self.walk_type(value, registry, env, on_external)?;
                 }
                 Ok(())
             }
@@ -197,7 +220,7 @@ impl<'a> CompactReader<'a> {
                         })
                 })?;
                 for _ in 0..count {
-                    self.skip_type(element, registry, env)?;
+                    self.walk_type(element, registry, env, on_external)?;
                 }
                 Ok(())
             }
@@ -205,7 +228,7 @@ impl<'a> CompactReader<'a> {
                 let position = self.position;
                 match self.read_u8()? {
                     0x00 => Ok(()),
-                    0x01 => self.skip_type(element, registry, env),
+                    0x01 => self.walk_type(element, registry, env, on_external),
                     value => Err(CompactError::InvalidOptionTag { position, value }),
                 }
             }
@@ -213,28 +236,38 @@ impl<'a> CompactReader<'a> {
                 position: self.position,
                 reason: "dynamic compact values require self-describing skip",
             }),
-            SchemaKind::External { .. } => Ok(()),
+            SchemaKind::External { kind, metadata } => {
+                on_external(ExternalAttachmentSlot {
+                    byte_position: self.position,
+                    kind,
+                    metadata,
+                });
+                Ok(())
+            }
         }
     }
 
-    fn skip_variant_payload(
+    fn walk_variant_payload<'schema>(
         &mut self,
-        payload: &VariantPayload,
-        registry: &SchemaRegistry,
+        payload: &'schema VariantPayload,
+        registry: &'schema SchemaRegistry,
         env: &mut Env,
+        on_external: &mut impl FnMut(ExternalAttachmentSlot<'schema>),
     ) -> Result<(), CompactError> {
         match payload {
             VariantPayload::Unit => Ok(()),
-            VariantPayload::Newtype { type_ref } => self.skip_type(type_ref, registry, env),
+            VariantPayload::Newtype { type_ref } => {
+                self.walk_type(type_ref, registry, env, on_external)
+            }
             VariantPayload::Tuple { elements } => {
                 for element in elements {
-                    self.skip_type(element, registry, env)?;
+                    self.walk_type(element, registry, env, on_external)?;
                 }
                 Ok(())
             }
             VariantPayload::Struct { fields } => {
                 for field in fields {
-                    self.skip_type(&field.type_ref, registry, env)?;
+                    self.walk_type(&field.type_ref, registry, env, on_external)?;
                 }
                 Ok(())
             }
