@@ -1,14 +1,45 @@
-use facet_core::{Def, Facet, Shape, Type, UserType};
-use facet_reflect::{HasFields, Peek, ReflectError};
+use std::collections::HashMap;
+
+use facet_core::{Def, Facet, FieldError, Shape, Type, UserType};
+use facet_reflect::{Peek, ReflectError};
 use thiserror::Error;
+
+use crate::error::SchemaError;
+use crate::facet::schema_bundle_for_shape;
+use crate::hash::primitive_for_type_id;
+use crate::registry::SchemaRegistry;
+use crate::schema::{
+    Field, Primitive, Schema, SchemaBundle, SchemaKind, TypeId, TypeRef, Variant, VariantPayload,
+};
 
 #[derive(Debug, Error)]
 pub enum EncodeError {
+    #[error(transparent)]
+    Schema(#[from] SchemaError),
+
     #[error(transparent)]
     Reflect(#[from] ReflectError),
 
     #[error("value length {len} exceeds binette u32 length limit")]
     LengthOverflow { len: usize },
+
+    #[error("writer type id {type_id:?} is not installed in the writer schema")]
+    UnknownWriterType { type_id: TypeId },
+
+    #[error("unbound writer type parameter {name}")]
+    UnboundTypeParameter { name: String },
+
+    #[error("writer plan field {field} is not present on {shape}")]
+    MissingField {
+        shape: &'static Shape,
+        field: String,
+    },
+
+    #[error("writer plan enum variant {variant} is not present on {shape}")]
+    MissingVariant {
+        shape: &'static Shape,
+        variant: String,
+    },
 
     #[error("unsupported encode for {shape}: {reason}")]
     Unsupported {
@@ -17,166 +48,721 @@ pub enum EncodeError {
     },
 }
 
+pub struct WriterPlan {
+    bundle: SchemaBundle,
+    root: WriterNode,
+}
+
+impl WriterPlan {
+    pub fn schema_bundle(&self) -> &SchemaBundle {
+        &self.bundle
+    }
+
+    pub fn root(&self) -> &TypeRef {
+        &self.bundle.root
+    }
+}
+
+// r[impl binette.schema.model]
+// r[impl binette.mode.compact]
+pub fn writer_plan_for<T: Facet<'static>>() -> Result<WriterPlan, EncodeError> {
+    writer_plan_for_shape(T::SHAPE)
+}
+
+// r[impl binette.schema.model]
+// r[impl binette.mode.compact]
+pub fn writer_plan_for_shape(shape: &'static Shape) -> Result<WriterPlan, EncodeError> {
+    let bundle = schema_bundle_for_shape(shape)?;
+    let mut registry = SchemaRegistry::new();
+    registry.install_bundle(&bundle)?;
+
+    let root = WriterPlanBuilder {
+        registry: &registry,
+    }
+    .plan_type(&bundle.root, &Env::default(), shape)?;
+
+    Ok(WriterPlan { bundle, root })
+}
+
 // r[impl binette.mode.compact]
 pub fn encode_to_vec<T: Facet<'static>>(value: &T) -> Result<Vec<u8>, EncodeError> {
+    let plan = writer_plan_for::<T>()?;
+    encode_to_vec_with_plan(value, &plan)
+}
+
+// r[impl binette.mode.compact]
+pub fn encode_to_vec_with_plan<T: Facet<'static>>(
+    value: &T,
+    plan: &WriterPlan,
+) -> Result<Vec<u8>, EncodeError> {
     let mut out = Vec::new();
-    encode_peek(&mut out, Peek::new(value))?;
+    encode_with_plan(&mut out, Peek::new(value), plan)?;
     Ok(out)
 }
 
-fn encode_peek(out: &mut Vec<u8>, peek: Peek<'_, 'static>) -> Result<(), EncodeError> {
-    if let Some(string) = peek.as_str() {
-        return encode_bytes(out, string.as_bytes());
-    }
+fn encode_with_plan(
+    out: &mut Vec<u8>,
+    peek: Peek<'_, 'static>,
+    plan: &WriterPlan,
+) -> Result<(), EncodeError> {
+    WriterPlanExecutor { out }.encode_node(peek, &plan.root)
+}
 
-    if let Some(bytes) = compact_bytes(peek)? {
-        return encode_bytes(out, bytes);
-    }
+#[derive(Debug, Clone)]
+enum WriterNode {
+    Primitive(Primitive),
+    Struct {
+        fields: Vec<WriterFieldPlan>,
+    },
+    Enum {
+        variants: Vec<WriterVariantPlan>,
+    },
+    Tuple {
+        elements: Vec<WriterTupleElementPlan>,
+    },
+    List {
+        element: Box<WriterNode>,
+    },
+    Set {
+        element: Box<WriterNode>,
+    },
+    Map {
+        key: Box<WriterNode>,
+        value: Box<WriterNode>,
+    },
+    Array {
+        dimensions: Vec<u64>,
+        element: Box<WriterNode>,
+    },
+    Option {
+        element: Box<WriterNode>,
+    },
+    Dynamic,
+    External,
+}
 
-    match peek.shape().def {
-        Def::Option(_) => encode_option(out, peek),
-        Def::List(_) => encode_list(out, peek),
-        Def::Array(_) => encode_array(out, peek),
-        Def::Slice(_) => encode_list(out, peek),
-        Def::Map(_) => Err(unsupported(peek, "map encode is not implemented yet")),
-        Def::Set(_) => Err(unsupported(peek, "set encode is not implemented yet")),
-        Def::DynamicValue(_) => Err(unsupported(peek, "dynamic encode is not implemented yet")),
-        Def::Pointer(pointer) if pointer.pointee().is_some() => {
-            let pointer = peek.into_pointer()?;
-            let inner = pointer
-                .borrow_inner()
-                .ok_or_else(|| unsupported(peek, "null pointer cannot be encoded"))?;
-            encode_peek(out, inner)
+#[derive(Debug, Clone)]
+struct WriterFieldPlan {
+    facet_index: usize,
+    name: String,
+    node: WriterNode,
+}
+
+#[derive(Debug, Clone)]
+struct WriterTupleElementPlan {
+    facet_index: usize,
+    node: WriterNode,
+}
+
+#[derive(Debug, Clone)]
+struct WriterVariantPlan {
+    facet_index: usize,
+    wire_index: u32,
+    payload: WriterVariantPayloadPlan,
+}
+
+#[derive(Debug, Clone)]
+enum WriterVariantPayloadPlan {
+    Unit,
+    Newtype(WriterTupleElementPlan),
+    Tuple(Vec<WriterTupleElementPlan>),
+    Struct(Vec<WriterFieldPlan>),
+}
+
+struct WriterPlanBuilder<'a> {
+    registry: &'a SchemaRegistry,
+}
+
+impl WriterPlanBuilder<'_> {
+    fn plan_type(
+        &self,
+        type_ref: &TypeRef,
+        env: &Env,
+        shape: &'static Shape,
+    ) -> Result<WriterNode, EncodeError> {
+        let type_ref = self.resolve_type_ref(type_ref, env)?;
+        match type_ref {
+            TypeRef::Concrete { type_id, args } => {
+                if let Some(primitive) = primitive_for_type_id(type_id) {
+                    if !args.is_empty() {
+                        return Err(unsupported_shape(
+                            shape,
+                            "primitive type reference has type arguments",
+                        ));
+                    }
+                    return Ok(WriterNode::Primitive(primitive));
+                }
+
+                let schema = self
+                    .registry
+                    .get(type_id)
+                    .ok_or(EncodeError::UnknownWriterType { type_id })?;
+                let env = Env::bind(schema, &args);
+                self.plan_kind(&schema.kind, &env, shape)
+            }
+            TypeRef::Var { name } => Err(EncodeError::UnboundTypeParameter { name }),
         }
-        _ => match peek.shape().ty {
-            Type::User(UserType::Struct(_)) => encode_struct(out, peek),
-            Type::User(UserType::Enum(_)) => encode_enum(out, peek),
-            _ => encode_scalar(out, peek),
-        },
+    }
+
+    fn resolve_type_ref(&self, type_ref: &TypeRef, env: &Env) -> Result<TypeRef, EncodeError> {
+        match type_ref {
+            TypeRef::Concrete { type_id, args } => Ok(TypeRef::Concrete {
+                type_id: *type_id,
+                args: args
+                    .iter()
+                    .map(|arg| self.resolve_type_ref(arg, env))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            TypeRef::Var { name } => env
+                .resolve(name)
+                .cloned()
+                .ok_or_else(|| EncodeError::UnboundTypeParameter { name: name.clone() }),
+        }
+    }
+
+    fn plan_kind(
+        &self,
+        kind: &SchemaKind,
+        env: &Env,
+        shape: &'static Shape,
+    ) -> Result<WriterNode, EncodeError> {
+        let shape = schema_shape(shape);
+        match kind {
+            SchemaKind::Primitive(primitive) => Ok(WriterNode::Primitive(*primitive)),
+            SchemaKind::Struct { fields, .. } => self.plan_struct(fields, env, shape),
+            SchemaKind::Enum { variants, .. } => self.plan_enum(variants, env, shape),
+            SchemaKind::Tuple { elements } => self.plan_tuple(elements, env, shape),
+            SchemaKind::List { element } => Ok(WriterNode::List {
+                element: Box::new(self.plan_type(element, env, list_element_shape(shape)?)?),
+            }),
+            SchemaKind::Set { element } => Ok(WriterNode::Set {
+                element: Box::new(self.plan_type(element, env, set_element_shape(shape)?)?),
+            }),
+            SchemaKind::Map { key, value } => {
+                let (key_shape, value_shape) = map_shapes(shape)?;
+                Ok(WriterNode::Map {
+                    key: Box::new(self.plan_type(key, env, key_shape)?),
+                    value: Box::new(self.plan_type(value, env, value_shape)?),
+                })
+            }
+            SchemaKind::Array {
+                dimensions,
+                element,
+            } => Ok(WriterNode::Array {
+                dimensions: dimensions.clone(),
+                element: Box::new(self.plan_type(element, env, array_element_shape(shape)?)?),
+            }),
+            SchemaKind::Option { element } => Ok(WriterNode::Option {
+                element: Box::new(self.plan_type(element, env, option_element_shape(shape)?)?),
+            }),
+            SchemaKind::Dynamic => Ok(WriterNode::Dynamic),
+            SchemaKind::External { .. } => Ok(WriterNode::External),
+        }
+    }
+
+    // r[impl binette.aggregate.struct.compact]
+    fn plan_struct(
+        &self,
+        schema_fields: &[Field],
+        env: &Env,
+        shape: &'static Shape,
+    ) -> Result<WriterNode, EncodeError> {
+        let Type::User(UserType::Struct(struct_type)) = shape.ty else {
+            return Err(unsupported_shape(
+                shape,
+                "schema struct requires Facet struct shape",
+            ));
+        };
+
+        let mut fields = Vec::with_capacity(schema_fields.len());
+        for field in schema_fields {
+            let (facet_index, facet_field) = struct_type
+                .fields
+                .iter()
+                .enumerate()
+                .find(|(_, facet_field)| {
+                    !facet_field.should_skip_serializing_unconditional()
+                        && facet_field.effective_name() == field.name
+                })
+                .ok_or_else(|| EncodeError::MissingField {
+                    shape,
+                    field: field.name.clone(),
+                })?;
+            fields.push(WriterFieldPlan {
+                facet_index,
+                name: field.name.clone(),
+                node: self.plan_type(&field.type_ref, env, facet_field.shape())?,
+            });
+        }
+
+        Ok(WriterNode::Struct { fields })
+    }
+
+    // r[impl binette.aggregate.enum.compact]
+    fn plan_enum(
+        &self,
+        schema_variants: &[Variant],
+        env: &Env,
+        shape: &'static Shape,
+    ) -> Result<WriterNode, EncodeError> {
+        let Type::User(UserType::Enum(enum_type)) = shape.ty else {
+            return Err(unsupported_shape(
+                shape,
+                "schema enum requires Facet enum shape",
+            ));
+        };
+
+        let mut variants = Vec::with_capacity(schema_variants.len());
+        for schema_variant in schema_variants {
+            let (facet_index, facet_variant) = enum_type
+                .variants
+                .iter()
+                .enumerate()
+                .find(|(_, facet_variant)| facet_variant.effective_name() == schema_variant.name)
+                .ok_or_else(|| EncodeError::MissingVariant {
+                    shape,
+                    variant: schema_variant.name.clone(),
+                })?;
+            variants.push(WriterVariantPlan {
+                facet_index,
+                wire_index: schema_variant.index,
+                payload: self.plan_variant_payload(
+                    &schema_variant.payload,
+                    env,
+                    shape,
+                    facet_variant.data,
+                )?,
+            });
+        }
+
+        Ok(WriterNode::Enum { variants })
+    }
+
+    fn plan_variant_payload(
+        &self,
+        payload: &VariantPayload,
+        env: &Env,
+        owner_shape: &'static Shape,
+        data: facet_core::StructType,
+    ) -> Result<WriterVariantPayloadPlan, EncodeError> {
+        match payload {
+            VariantPayload::Unit => Ok(WriterVariantPayloadPlan::Unit),
+            VariantPayload::Newtype { type_ref } => {
+                let field = data.fields.first().ok_or_else(|| {
+                    unsupported_shape(owner_shape, "newtype variant has no Facet payload field")
+                })?;
+                Ok(WriterVariantPayloadPlan::Newtype(WriterTupleElementPlan {
+                    facet_index: 0,
+                    node: self.plan_type(type_ref, env, field.shape())?,
+                }))
+            }
+            VariantPayload::Tuple { elements } => Ok(WriterVariantPayloadPlan::Tuple(
+                self.plan_tuple_elements(elements, env, owner_shape, data)?,
+            )),
+            VariantPayload::Struct { fields } => Ok(WriterVariantPayloadPlan::Struct(
+                self.plan_struct_fields(fields, env, owner_shape, data)?,
+            )),
+        }
+    }
+
+    fn plan_tuple(
+        &self,
+        elements: &[TypeRef],
+        env: &Env,
+        shape: &'static Shape,
+    ) -> Result<WriterNode, EncodeError> {
+        let Type::User(UserType::Struct(struct_type)) = shape.ty else {
+            return Err(unsupported_shape(
+                shape,
+                "schema tuple requires Facet tuple shape",
+            ));
+        };
+
+        Ok(WriterNode::Tuple {
+            elements: self.plan_tuple_elements(elements, env, shape, struct_type)?,
+        })
+    }
+
+    fn plan_tuple_elements(
+        &self,
+        elements: &[TypeRef],
+        env: &Env,
+        owner_shape: &'static Shape,
+        struct_type: facet_core::StructType,
+    ) -> Result<Vec<WriterTupleElementPlan>, EncodeError> {
+        if struct_type.fields.len() != elements.len() {
+            return Err(unsupported_shape(
+                owner_shape,
+                "tuple arity does not match schema",
+            ));
+        }
+
+        elements
+            .iter()
+            .zip(struct_type.fields)
+            .enumerate()
+            .map(|(facet_index, (element, field))| {
+                Ok(WriterTupleElementPlan {
+                    facet_index,
+                    node: self.plan_type(element, env, field.shape())?,
+                })
+            })
+            .collect()
+    }
+
+    fn plan_struct_fields(
+        &self,
+        schema_fields: &[Field],
+        env: &Env,
+        owner_shape: &'static Shape,
+        struct_type: facet_core::StructType,
+    ) -> Result<Vec<WriterFieldPlan>, EncodeError> {
+        let mut fields = Vec::with_capacity(schema_fields.len());
+        for field in schema_fields {
+            let (facet_index, facet_field) = struct_type
+                .fields
+                .iter()
+                .enumerate()
+                .find(|(_, facet_field)| facet_field.effective_name() == field.name)
+                .ok_or_else(|| EncodeError::MissingField {
+                    shape: owner_shape,
+                    field: field.name.clone(),
+                })?;
+            fields.push(WriterFieldPlan {
+                facet_index,
+                name: field.name.clone(),
+                node: self.plan_type(&field.type_ref, env, facet_field.shape())?,
+            });
+        }
+        Ok(fields)
     }
 }
 
-// r[impl binette.aggregate.struct.compact]
-fn encode_struct(out: &mut Vec<u8>, peek: Peek<'_, 'static>) -> Result<(), EncodeError> {
-    for (_field, value) in peek.into_struct()?.fields_for_binary_serialize() {
-        encode_peek(out, value)?;
-    }
-    Ok(())
+struct WriterPlanExecutor<'a> {
+    out: &'a mut Vec<u8>,
 }
 
-// r[impl binette.aggregate.enum.compact]
-fn encode_enum(out: &mut Vec<u8>, peek: Peek<'_, 'static>) -> Result<(), EncodeError> {
-    let enum_peek = peek.into_enum()?;
-    let variant_index = enum_peek
-        .variant_index()
-        .map_err(|_| unsupported(peek, "enum variant index is not available"))?;
-    write_u32(out, variant_index)?;
-    for (_field, value) in enum_peek.fields_for_binary_serialize() {
-        encode_peek(out, value)?;
-    }
-    Ok(())
-}
-
-// r[impl binette.aggregate.list]
-fn encode_list(out: &mut Vec<u8>, peek: Peek<'_, 'static>) -> Result<(), EncodeError> {
-    let list = peek.into_list_like()?;
-    write_u32(out, list.len())?;
-    for item in list.iter() {
-        encode_peek(out, item)?;
-    }
-    Ok(())
-}
-
-// r[impl binette.aggregate.array]
-fn encode_array(out: &mut Vec<u8>, peek: Peek<'_, 'static>) -> Result<(), EncodeError> {
-    let array = peek.into_list_like()?;
-    for item in array.iter() {
-        encode_peek(out, item)?;
-    }
-    Ok(())
-}
-
-// r[impl binette.aggregate.option]
-fn encode_option(out: &mut Vec<u8>, peek: Peek<'_, 'static>) -> Result<(), EncodeError> {
-    let option = peek.into_option()?;
-    match option.value() {
-        Some(inner) => {
-            out.push(0x01);
-            encode_peek(out, inner)
-        }
-        None => {
-            out.push(0x00);
-            Ok(())
+impl WriterPlanExecutor<'_> {
+    fn encode_node(
+        &mut self,
+        peek: Peek<'_, 'static>,
+        node: &WriterNode,
+    ) -> Result<(), EncodeError> {
+        let peek = peek.innermost_peek();
+        match node {
+            WriterNode::Primitive(primitive) => self.encode_primitive(peek, *primitive),
+            WriterNode::Struct { fields } => self.encode_struct(peek, fields),
+            WriterNode::Enum { variants } => self.encode_enum(peek, variants),
+            WriterNode::Tuple { elements } => self.encode_tuple(peek, elements),
+            WriterNode::List { element } => self.encode_list(peek, element),
+            WriterNode::Set { element } => {
+                let _ = element;
+                Err(unsupported_peek(peek, "set encode is not implemented yet"))
+            }
+            WriterNode::Map { key, value } => {
+                let _ = (key, value);
+                Err(unsupported_peek(peek, "map encode is not implemented yet"))
+            }
+            WriterNode::Array {
+                dimensions,
+                element,
+            } => self.encode_array(peek, dimensions, element),
+            WriterNode::Option { element } => self.encode_option(peek, element),
+            WriterNode::Dynamic => Err(unsupported_peek(
+                peek,
+                "dynamic encode is not implemented yet",
+            )),
+            WriterNode::External => self.encode_primitive(peek, Primitive::Unit),
         }
     }
+
+    // r[impl binette.aggregate.struct.compact]
+    fn encode_struct(
+        &mut self,
+        peek: Peek<'_, 'static>,
+        fields: &[WriterFieldPlan],
+    ) -> Result<(), EncodeError> {
+        let struct_peek = peek.into_struct()?;
+        for field in fields {
+            let field_peek = struct_peek
+                .field(field.facet_index)
+                .map_err(|source| field_error(peek.shape(), &field.name, source))?;
+            self.encode_node(field_peek, &field.node)?;
+        }
+        Ok(())
+    }
+
+    // r[impl binette.aggregate.enum.compact]
+    fn encode_enum(
+        &mut self,
+        peek: Peek<'_, 'static>,
+        variants: &[WriterVariantPlan],
+    ) -> Result<(), EncodeError> {
+        let enum_peek = peek.into_enum()?;
+        let facet_index = enum_peek
+            .variant_index()
+            .map_err(|_| unsupported_peek(peek, "enum variant index is not available"))?;
+        let variant = variants
+            .iter()
+            .find(|variant| variant.facet_index == facet_index)
+            .ok_or_else(|| unsupported_peek(peek, "active enum variant is not in writer plan"))?;
+
+        write_u32(self.out, variant.wire_index as usize)?;
+        match &variant.payload {
+            WriterVariantPayloadPlan::Unit => Ok(()),
+            WriterVariantPayloadPlan::Newtype(element) => {
+                let field = enum_peek
+                    .field(element.facet_index)
+                    .map_err(|_| unsupported_peek(peek, "enum payload field is not available"))?
+                    .ok_or_else(|| unsupported_peek(peek, "enum payload field is missing"))?;
+                self.encode_node(field, &element.node)
+            }
+            WriterVariantPayloadPlan::Tuple(elements) => {
+                for element in elements {
+                    let field = enum_peek
+                        .field(element.facet_index)
+                        .map_err(|_| unsupported_peek(peek, "enum tuple field is not available"))?
+                        .ok_or_else(|| unsupported_peek(peek, "enum tuple field is missing"))?;
+                    self.encode_node(field, &element.node)?;
+                }
+                Ok(())
+            }
+            WriterVariantPayloadPlan::Struct(fields) => {
+                for field in fields {
+                    let field_peek = enum_peek
+                        .field(field.facet_index)
+                        .map_err(|_| unsupported_peek(peek, "enum struct field is not available"))?
+                        .ok_or_else(|| unsupported_peek(peek, "enum struct field is missing"))?;
+                    self.encode_node(field_peek, &field.node)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn encode_tuple(
+        &mut self,
+        peek: Peek<'_, 'static>,
+        elements: &[WriterTupleElementPlan],
+    ) -> Result<(), EncodeError> {
+        let tuple_peek = peek.into_tuple()?;
+        for element in elements {
+            let element_peek = tuple_peek
+                .field(element.facet_index)
+                .ok_or_else(|| unsupported_peek(peek, "tuple field is missing"))?;
+            self.encode_node(element_peek, &element.node)?;
+        }
+        Ok(())
+    }
+
+    // r[impl binette.aggregate.list]
+    fn encode_list(
+        &mut self,
+        peek: Peek<'_, 'static>,
+        element: &WriterNode,
+    ) -> Result<(), EncodeError> {
+        let list = peek.into_list_like()?;
+        write_u32(self.out, list.len())?;
+        for item in list.iter() {
+            self.encode_node(item, element)?;
+        }
+        Ok(())
+    }
+
+    // r[impl binette.aggregate.array]
+    fn encode_array(
+        &mut self,
+        peek: Peek<'_, 'static>,
+        dimensions: &[u64],
+        element: &WriterNode,
+    ) -> Result<(), EncodeError> {
+        let array = peek.into_list_like()?;
+        let expected = dimensions.iter().try_fold(1usize, |acc, dimension| {
+            let dimension = usize::try_from(*dimension)
+                .map_err(|_| unsupported_peek(peek, "array dimension exceeds usize"))?;
+            acc.checked_mul(dimension)
+                .ok_or_else(|| unsupported_peek(peek, "array element count overflows usize"))
+        })?;
+        if array.len() != expected {
+            return Err(unsupported_peek(
+                peek,
+                "array length does not match writer schema",
+            ));
+        }
+        for item in array.iter() {
+            self.encode_node(item, element)?;
+        }
+        Ok(())
+    }
+
+    // r[impl binette.aggregate.option]
+    fn encode_option(
+        &mut self,
+        peek: Peek<'_, 'static>,
+        element: &WriterNode,
+    ) -> Result<(), EncodeError> {
+        let option = peek.into_option()?;
+        match option.value() {
+            Some(inner) => {
+                self.out.push(0x01);
+                self.encode_node(inner, element)
+            }
+            None => {
+                self.out.push(0x00);
+                Ok(())
+            }
+        }
+    }
+
+    fn encode_primitive(
+        &mut self,
+        peek: Peek<'_, 'static>,
+        primitive: Primitive,
+    ) -> Result<(), EncodeError> {
+        // r[impl binette.scalar.unit]
+        // r[impl binette.scalar.never]
+        // r[impl binette.scalar.bool]
+        // r[impl binette.scalar.unsigned]
+        // r[impl binette.scalar.signed]
+        // r[impl binette.scalar.float]
+        // r[impl binette.scalar.char]
+        // r[impl binette.scalar.string]
+        // r[impl binette.scalar.bytes]
+        match primitive {
+            Primitive::Unit => Ok(()),
+            Primitive::Never => Err(unsupported_peek(peek, "never has no value")),
+            Primitive::Bool => {
+                self.out.push(u8::from(*peek.get::<bool>()?));
+                Ok(())
+            }
+            Primitive::U8 => {
+                self.out.push(*peek.get::<u8>()?);
+                Ok(())
+            }
+            Primitive::U16 => self.write_bytes(&peek.get::<u16>()?.to_le_bytes()),
+            Primitive::U32 => self.write_bytes(&peek.get::<u32>()?.to_le_bytes()),
+            Primitive::U64 => self.write_bytes(&peek.get::<u64>()?.to_le_bytes()),
+            Primitive::U128 => self.write_bytes(&peek.get::<u128>()?.to_le_bytes()),
+            Primitive::I8 => self.write_bytes(&peek.get::<i8>()?.to_le_bytes()),
+            Primitive::I16 => self.write_bytes(&peek.get::<i16>()?.to_le_bytes()),
+            Primitive::I32 => self.write_bytes(&peek.get::<i32>()?.to_le_bytes()),
+            Primitive::I64 => self.write_bytes(&peek.get::<i64>()?.to_le_bytes()),
+            Primitive::I128 => self.write_bytes(&peek.get::<i128>()?.to_le_bytes()),
+            Primitive::F32 => self.write_bytes(&peek.get::<f32>()?.to_le_bytes()),
+            Primitive::F64 => self.write_bytes(&peek.get::<f64>()?.to_le_bytes()),
+            Primitive::Char => self.write_bytes(&(*peek.get::<char>()? as u32).to_le_bytes()),
+            Primitive::String => encode_bytes(
+                self.out,
+                peek.as_str()
+                    .ok_or_else(|| {
+                        unsupported_peek(peek, "schema string requires string-like value")
+                    })?
+                    .as_bytes(),
+            ),
+            Primitive::Bytes | Primitive::Payload => {
+                let bytes = compact_bytes(peek)?
+                    .ok_or_else(|| unsupported_peek(peek, "schema bytes requires u8 sequence"))?;
+                encode_bytes(self.out, bytes)
+            }
+        }
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), EncodeError> {
+        self.out.extend_from_slice(bytes);
+        Ok(())
+    }
 }
 
-fn encode_scalar(out: &mut Vec<u8>, peek: Peek<'_, 'static>) -> Result<(), EncodeError> {
-    // r[impl binette.scalar.unit]
-    // r[impl binette.scalar.bool]
-    // r[impl binette.scalar.unsigned]
-    // r[impl binette.scalar.signed]
-    // r[impl binette.scalar.float]
-    // r[impl binette.scalar.char]
-    match peek.scalar_type() {
-        Some(facet_core::ScalarType::Unit) => Ok(()),
-        Some(facet_core::ScalarType::Bool) => {
-            out.push(u8::from(*peek.get::<bool>()?));
-            Ok(())
+#[derive(Default)]
+struct Env {
+    bindings: HashMap<String, TypeRef>,
+}
+
+impl Env {
+    fn bind(schema: &Schema, args: &[TypeRef]) -> Self {
+        Self {
+            bindings: schema
+                .type_params
+                .iter()
+                .cloned()
+                .zip(args.iter().cloned())
+                .collect(),
         }
-        Some(facet_core::ScalarType::Char) => {
-            out.extend_from_slice(&(*peek.get::<char>()? as u32).to_le_bytes());
-            Ok(())
+    }
+
+    fn resolve(&self, name: &str) -> Option<&TypeRef> {
+        self.bindings.get(name)
+    }
+}
+
+fn schema_shape(mut shape: &'static Shape) -> &'static Shape {
+    loop {
+        if shape.is_transparent()
+            && let Some(inner) = shape.inner
+        {
+            shape = inner;
+            continue;
         }
-        Some(facet_core::ScalarType::F32) => {
-            out.extend_from_slice(&peek.get::<f32>()?.to_le_bytes());
-            Ok(())
+
+        if let Def::Pointer(pointer) = shape.def
+            && let Some(pointee) = pointer.pointee()
+        {
+            shape = pointee;
+            continue;
         }
-        Some(facet_core::ScalarType::F64) => {
-            out.extend_from_slice(&peek.get::<f64>()?.to_le_bytes());
-            Ok(())
-        }
-        Some(facet_core::ScalarType::U8) => {
-            out.push(*peek.get::<u8>()?);
-            Ok(())
-        }
-        Some(facet_core::ScalarType::U16) => {
-            out.extend_from_slice(&peek.get::<u16>()?.to_le_bytes());
-            Ok(())
-        }
-        Some(facet_core::ScalarType::U32) => {
-            out.extend_from_slice(&peek.get::<u32>()?.to_le_bytes());
-            Ok(())
-        }
-        Some(facet_core::ScalarType::U64) => {
-            out.extend_from_slice(&peek.get::<u64>()?.to_le_bytes());
-            Ok(())
-        }
-        Some(facet_core::ScalarType::U128) => {
-            out.extend_from_slice(&peek.get::<u128>()?.to_le_bytes());
-            Ok(())
-        }
-        Some(facet_core::ScalarType::I8) => {
-            out.extend_from_slice(&peek.get::<i8>()?.to_le_bytes());
-            Ok(())
-        }
-        Some(facet_core::ScalarType::I16) => {
-            out.extend_from_slice(&peek.get::<i16>()?.to_le_bytes());
-            Ok(())
-        }
-        Some(facet_core::ScalarType::I32) => {
-            out.extend_from_slice(&peek.get::<i32>()?.to_le_bytes());
-            Ok(())
-        }
-        Some(facet_core::ScalarType::I64) => {
-            out.extend_from_slice(&peek.get::<i64>()?.to_le_bytes());
-            Ok(())
-        }
-        Some(facet_core::ScalarType::I128) => {
-            out.extend_from_slice(&peek.get::<i128>()?.to_le_bytes());
-            Ok(())
-        }
-        _ => Err(unsupported(peek, "unsupported scalar shape")),
+
+        return shape;
+    }
+}
+
+fn list_element_shape(shape: &'static Shape) -> Result<&'static Shape, EncodeError> {
+    match schema_shape(shape).def {
+        Def::List(list) => Ok(list.t()),
+        Def::Slice(slice) => Ok(slice.t()),
+        _ => Err(unsupported_shape(
+            shape,
+            "schema list requires Facet list shape",
+        )),
+    }
+}
+
+fn set_element_shape(shape: &'static Shape) -> Result<&'static Shape, EncodeError> {
+    match schema_shape(shape).def {
+        Def::Set(set) => Ok(set.t()),
+        _ => Err(unsupported_shape(
+            shape,
+            "schema set requires Facet set shape",
+        )),
+    }
+}
+
+fn map_shapes(shape: &'static Shape) -> Result<(&'static Shape, &'static Shape), EncodeError> {
+    match schema_shape(shape).def {
+        Def::Map(map) => Ok((map.k(), map.v())),
+        _ => Err(unsupported_shape(
+            shape,
+            "schema map requires Facet map shape",
+        )),
+    }
+}
+
+fn array_element_shape(shape: &'static Shape) -> Result<&'static Shape, EncodeError> {
+    match schema_shape(shape).def {
+        Def::Array(array) => Ok(array.t()),
+        _ => Err(unsupported_shape(
+            shape,
+            "schema array requires Facet array shape",
+        )),
+    }
+}
+
+fn option_element_shape(shape: &'static Shape) -> Result<&'static Shape, EncodeError> {
+    match schema_shape(shape).def {
+        Def::Option(option) => Ok(option.t()),
+        _ => Err(unsupported_shape(
+            shape,
+            "schema option requires Facet option shape",
+        )),
     }
 }
 
@@ -202,9 +788,22 @@ fn write_u32(out: &mut Vec<u8>, value: usize) -> Result<(), EncodeError> {
     Ok(())
 }
 
-fn unsupported(peek: Peek<'_, 'static>, reason: &'static str) -> EncodeError {
-    EncodeError::Unsupported {
-        shape: peek.shape(),
-        reason,
+fn field_error(shape: &'static Shape, field: &str, source: FieldError) -> EncodeError {
+    match source {
+        FieldError::NoSuchField | FieldError::IndexOutOfBounds { .. } => {
+            EncodeError::MissingField {
+                shape,
+                field: field.to_owned(),
+            }
+        }
+        _ => unsupported_shape(shape, "planned field is not available"),
     }
+}
+
+fn unsupported_shape(shape: &'static Shape, reason: &'static str) -> EncodeError {
+    EncodeError::Unsupported { shape, reason }
+}
+
+fn unsupported_peek(peek: Peek<'_, 'static>, reason: &'static str) -> EncodeError {
+    unsupported_shape(peek.shape(), reason)
 }
