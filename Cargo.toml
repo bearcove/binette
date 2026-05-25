@@ -21,5 +21,6 @@ categories = ["encoding", "data-structures"]
 blake3 = "1.8.5"
 facet = "0.46.4"
 facet-core = "0.46.4"
+facet-reflect = "0.46.4"
 facet-value = "0.46.0"
 thiserror = "2.0.18"

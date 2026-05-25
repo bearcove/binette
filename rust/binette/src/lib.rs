@@ -2,6 +2,7 @@
 //! identities, compatibility tooling, and support for long-lived data.
 
 mod compact;
+mod decode;
 mod error;
 mod facet;
 mod hash;
@@ -10,6 +11,7 @@ mod registry;
 mod schema;
 
 pub use compact::{CompactError, CompactReader};
+pub use decode::{DecodeError, decode_from_slice, decode_from_slice_with_plan};
 pub use error::SchemaError;
 pub use facet::{schema_bundle_for, schema_bundle_for_shape};
 pub use hash::{primitive_for_type_id, primitive_type_id, schema_type_id};

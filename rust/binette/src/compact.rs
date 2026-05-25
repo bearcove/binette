@@ -275,18 +275,86 @@ impl<'a> CompactReader<'a> {
         }
     }
 
-    fn read_u8(&mut self) -> Result<u8, CompactError> {
+    pub(crate) fn read_bool(&mut self) -> Result<bool, CompactError> {
+        let position = self.position;
+        match self.read_u8()? {
+            0x00 => Ok(false),
+            0x01 => Ok(true),
+            value => Err(CompactError::InvalidBool { position, value }),
+        }
+    }
+
+    pub(crate) fn read_u8(&mut self) -> Result<u8, CompactError> {
         self.require(1)?;
         let value = self.input[self.position];
         self.position += 1;
         Ok(value)
     }
 
+    pub(crate) fn read_u16(&mut self) -> Result<u16, CompactError> {
+        Ok(u16::from_le_bytes(self.read_array()?))
+    }
+
     // r[impl binette.endianness]
     // r[impl binette.length.u32]
-    fn read_u32(&mut self) -> Result<u32, CompactError> {
-        let bytes = self.read_array::<4>()?;
-        Ok(u32::from_le_bytes(bytes))
+    pub(crate) fn read_u32(&mut self) -> Result<u32, CompactError> {
+        Ok(u32::from_le_bytes(self.read_array()?))
+    }
+
+    pub(crate) fn read_u64(&mut self) -> Result<u64, CompactError> {
+        Ok(u64::from_le_bytes(self.read_array()?))
+    }
+
+    pub(crate) fn read_u128(&mut self) -> Result<u128, CompactError> {
+        Ok(u128::from_le_bytes(self.read_array()?))
+    }
+
+    pub(crate) fn read_i8(&mut self) -> Result<i8, CompactError> {
+        Ok(i8::from_le_bytes(self.read_array()?))
+    }
+
+    pub(crate) fn read_i16(&mut self) -> Result<i16, CompactError> {
+        Ok(i16::from_le_bytes(self.read_array()?))
+    }
+
+    pub(crate) fn read_i32(&mut self) -> Result<i32, CompactError> {
+        Ok(i32::from_le_bytes(self.read_array()?))
+    }
+
+    pub(crate) fn read_i64(&mut self) -> Result<i64, CompactError> {
+        Ok(i64::from_le_bytes(self.read_array()?))
+    }
+
+    pub(crate) fn read_i128(&mut self) -> Result<i128, CompactError> {
+        Ok(i128::from_le_bytes(self.read_array()?))
+    }
+
+    pub(crate) fn read_f32(&mut self) -> Result<f32, CompactError> {
+        Ok(f32::from_le_bytes(self.read_array()?))
+    }
+
+    pub(crate) fn read_f64(&mut self) -> Result<f64, CompactError> {
+        Ok(f64::from_le_bytes(self.read_array()?))
+    }
+
+    pub(crate) fn read_char(&mut self) -> Result<char, CompactError> {
+        let position = self.position;
+        let value = self.read_u32()?;
+        char::from_u32(value).ok_or(CompactError::InvalidChar { position, value })
+    }
+
+    pub(crate) fn read_string(&mut self) -> Result<String, CompactError> {
+        let len = self.read_u32()? as usize;
+        let position = self.position;
+        let bytes = self.read_bytes(len)?;
+        std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|source| CompactError::InvalidString { position, source })
+    }
+
+    pub(crate) fn read_byte_vec(&mut self) -> Result<Vec<u8>, CompactError> {
+        let len = self.read_u32()? as usize;
+        Ok(self.read_bytes(len)?.to_vec())
     }
 
     fn read_array<const N: usize>(&mut self) -> Result<[u8; N], CompactError> {
