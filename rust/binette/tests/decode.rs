@@ -1,4 +1,6 @@
-use binette::{DecodeError, SchemaBundle, SchemaRegistry, decode_from_slice, schema_bundle_for};
+use binette::{
+    DecodeError, SchemaBundle, SchemaRegistry, decode_from_slice, encode_to_vec, schema_bundle_for,
+};
 use facet::Facet;
 
 fn registry_for(bundle: &SchemaBundle) -> SchemaRegistry {
@@ -7,12 +9,8 @@ fn registry_for(bundle: &SchemaBundle) -> SchemaRegistry {
     registry
 }
 
-fn push_string(out: &mut Vec<u8>, value: &str) {
-    out.extend_from_slice(&(value.len() as u32).to_le_bytes());
-    out.extend_from_slice(value.as_bytes());
-}
-
 // r[verify binette.compat.plan]
+// r[verify binette.mode.compact]
 // r[verify binette.aggregate.struct.compact]
 #[test]
 fn decodes_same_struct_into_facet_partial() {
@@ -26,10 +24,12 @@ fn decodes_same_struct_into_facet_partial() {
     let writer_bundle = schema_bundle_for::<Account>().unwrap();
     let writer_registry = registry_for(&writer_bundle);
 
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&42u64.to_le_bytes());
-    push_string(&mut bytes, "binette");
-    bytes.push(0x01);
+    let bytes = encode_to_vec(&Account {
+        id: 42,
+        name: "binette".to_owned(),
+        active: true,
+    })
+    .unwrap();
 
     let decoded =
         decode_from_slice::<Account>(&bytes, &writer_bundle.root, &writer_registry).unwrap();
@@ -72,10 +72,12 @@ fn decodes_reader_fields_by_name_and_skips_writer_only_fields() {
     let writer_bundle = schema_bundle_for::<writer::Account>().unwrap();
     let writer_registry = registry_for(&writer_bundle);
 
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&7u64.to_le_bytes());
-    push_string(&mut bytes, "Amos");
-    push_string(&mut bytes, "not for this reader");
+    let bytes = encode_to_vec(&writer::Account {
+        id: 7,
+        name: "Amos".to_owned(),
+        nickname: "not for this reader".to_owned(),
+    })
+    .unwrap();
 
     let decoded =
         decode_from_slice::<reader::Account>(&bytes, &writer_bundle.root, &writer_registry)
@@ -88,6 +90,55 @@ fn decodes_reader_fields_by_name_and_skips_writer_only_fields() {
             id: 7,
         }
     );
+}
+
+// r[verify binette.aggregate.list]
+// r[verify binette.aggregate.option]
+// r[verify binette.aggregate.array]
+#[test]
+fn encode_then_decode_nested_compact_shapes() {
+    #[derive(Debug, Facet, PartialEq)]
+    struct Nested {
+        numbers: Vec<u32>,
+        label: Option<String>,
+        fixed: [u16; 2],
+    }
+
+    let writer_bundle = schema_bundle_for::<Nested>().unwrap();
+    let writer_registry = registry_for(&writer_bundle);
+    let expected = Nested {
+        numbers: vec![10, 20],
+        label: Some("yes".to_owned()),
+        fixed: [3, 4],
+    };
+
+    let bytes = encode_to_vec(&expected).unwrap();
+    let decoded =
+        decode_from_slice::<Nested>(&bytes, &writer_bundle.root, &writer_registry).unwrap();
+
+    assert_eq!(decoded, expected);
+}
+
+// r[verify binette.aggregate.enum.compact]
+#[test]
+fn encode_then_decode_enum_payloads() {
+    #[derive(Debug, Facet, PartialEq)]
+    #[repr(u8)]
+    enum Event {
+        Started,
+        Moved(u32, u32),
+        Failed { code: u16 },
+    }
+
+    let writer_bundle = schema_bundle_for::<Event>().unwrap();
+    let writer_registry = registry_for(&writer_bundle);
+    let expected = Event::Moved(100, 200);
+
+    let bytes = encode_to_vec(&expected).unwrap();
+    let decoded =
+        decode_from_slice::<Event>(&bytes, &writer_bundle.root, &writer_registry).unwrap();
+
+    assert_eq!(decoded, expected);
 }
 
 #[test]
