@@ -51,11 +51,15 @@ one schema be read using another schema without losing the value's meaning?
 
 > r[binette.compat.type-compat]
 >
-> Matched field types are compatible when they have the same primitive type,
-> the same container kind with compatible child types, compatible struct plans,
-> compatible enum plans, or the same tuple arity with compatible element types.
-> Numeric widening is not implicit compatibility unless a future rule adds an
-> explicit widening conversion.
+> Matched field types are compatible only when a more specific compatibility
+> rule says they are compatible. Numeric widening is not implicit compatibility
+> unless a future rule adds an explicit widening conversion.
+
+> r[binette.compat.type-compat.basic]
+>
+> Non-enum matched field types are compatible when they have the same primitive
+> type, the same container kind with compatible child types, compatible struct
+> plans, or the same tuple arity with compatible element types.
 
 # Enum And Tuple Evolution
 
