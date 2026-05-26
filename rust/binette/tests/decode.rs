@@ -585,6 +585,37 @@ fn stencil_encodes_mixed_struct_through_writer_plan() {
     assert_eq!(stencil_bytes, interpreted_bytes);
 }
 
+// r[verify binette.mode.compact]
+// r[verify binette.aggregate.struct.compact]
+// r[verify binette.scalar.bool]
+// r[verify binette.scalar.char]
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[test]
+fn stencil_encodes_fixed_struct_through_direct_writer_plan() {
+    #[derive(Facet)]
+    struct Message {
+        id: u64,
+        active: bool,
+        code: u16,
+        marker: char,
+    }
+
+    let value = Message {
+        id: 0x0102_0304_0506_0708,
+        active: true,
+        code: 0x1122,
+        marker: 'b',
+    };
+
+    let writer_plan = writer_plan_for::<Message>().unwrap();
+    let stencil = stencil_encoder_from_plan::<Message>(&writer_plan).unwrap();
+
+    let stencil_bytes = encode_to_vec_with_stencil(&value, &stencil).unwrap();
+    let interpreted_bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+
+    assert_eq!(stencil_bytes, interpreted_bytes);
+}
+
 // r[verify binette.aggregate.enum.compact]
 // r[verify binette.compat.enum.payload]
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]

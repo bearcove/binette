@@ -613,6 +613,13 @@ macro_rules! same_schema_plan_bench {
 mod encode {
     use super::*;
 
+    same_schema_encode_benches!(fixed_struct, fixed_writer::Message, fixed_writer::sample());
+    same_schema_encode_benches!(
+        nested_struct,
+        nested_writer::Message,
+        nested_writer::sample()
+    );
+
     mod r#enum {
         use super::*;
 
