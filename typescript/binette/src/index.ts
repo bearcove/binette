@@ -16,6 +16,12 @@ export {
 } from "./compact.js";
 
 export {
+  PlanError,
+  readerPlanForBundle,
+  readerPlanForBundles,
+} from "./plan.js";
+
+export {
   decodeSchema,
   decodeSchemaBundle,
   encodeSchema,
@@ -41,6 +47,15 @@ export { SchemaRegistry } from "./registry.js";
 export type { Value } from "./value.js";
 
 export type { ExternalAttachmentSlot } from "./compact.js";
+
+export type {
+  EnumPayloadPlan,
+  EnumVariantPlan,
+  PlanErrorKind,
+  PlanNode,
+  ReaderPlan,
+  StructFieldPlan,
+} from "./plan.js";
 
 export type {
   AttachmentDeclaration,
