@@ -104,6 +104,16 @@ export function decodeDynamicValue(bytes: Uint8Array): Value {
   return decodeSelfDescribed(bytes);
 }
 
+export function decodeSelfDescribedPrefix(
+  bytes: Uint8Array,
+): { value: Value; bytesRead: number } {
+  const reader = new ByteReader(bytes);
+  return {
+    value: readSelfDescribed(reader),
+    bytesRead: reader.position,
+  };
+}
+
 // r[impl binette.tags]
 // r[impl binette.tags.scalar-payload]
 // r[impl binette.tags.aggregate-payload]

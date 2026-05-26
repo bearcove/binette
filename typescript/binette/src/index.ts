@@ -1,10 +1,19 @@
 export {
   BinetteError,
   decodeDynamicValue,
+  decodeSelfDescribedPrefix,
   decodeSelfDescribed,
   encodeDynamicValue,
   encodeSelfDescribed,
 } from "./value.js";
+
+export {
+  CompactReader,
+  decodeCompact,
+  encodeCompact,
+  externalAttachmentSlots,
+  skipCompact,
+} from "./compact.js";
 
 export {
   decodeSchema,
@@ -30,6 +39,8 @@ export {
 export { SchemaRegistry } from "./registry.js";
 
 export type { Value } from "./value.js";
+
+export type { ExternalAttachmentSlot } from "./compact.js";
 
 export type {
   AttachmentDeclaration,
