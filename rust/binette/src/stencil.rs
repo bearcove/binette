@@ -469,6 +469,10 @@ enum EncodeStencilOp {
 
 #[derive(Debug, Clone)]
 enum StencilEncodeHelper {
+    Value {
+        node: WriterNode,
+        failure_index: usize,
+    },
     StructField {
         field: WriterFieldPlan,
         failure_index: usize,
@@ -1083,9 +1087,10 @@ impl StencilEncodeCompiler {
     fn compile_root<T: Facet<'static>>(&mut self, root: &WriterNode) -> Result<(), StencilError> {
         match root {
             WriterNode::Struct { fields } => self.compile_struct_root::<T>(fields),
+            WriterNode::Enum { .. } => self.push_value_helper(root, "$"),
             _ => Err(StencilError::Unsupported {
                 path: "$".to_owned(),
-                reason: "encode stencil backend currently supports root structs",
+                reason: "encode stencil backend currently supports root structs and enums",
             }),
         }
     }
@@ -1107,6 +1112,17 @@ impl StencilEncodeCompiler {
         let helper_index = self.helpers.len();
         self.helpers.push(StencilEncodeHelper::StructField {
             field: field.clone(),
+            failure_index,
+        });
+        self.ops.push(EncodeStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
+    fn push_value_helper(&mut self, node: &WriterNode, path: &str) -> Result<(), StencilError> {
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilEncodeHelper::Value {
+            node: node.clone(),
             failure_index,
         });
         self.ops.push(EncodeStencilOp::Helper { helper_index });
@@ -1337,7 +1353,8 @@ unsafe extern "C" fn stencil_encode_helper(
     };
 
     let status = match helper {
-        StencilEncodeHelper::StructField { failure_index, .. } => {
+        StencilEncodeHelper::Value { failure_index, .. }
+        | StencilEncodeHelper::StructField { failure_index, .. } => {
             status_for_failure(*failure_index).unwrap_or(1)
         }
     };
@@ -1345,6 +1362,11 @@ unsafe extern "C" fn stencil_encode_helper(
         unsafe { Peek::unchecked_new(PtrConst::new(value), runtime.root_shape) };
 
     match helper {
+        StencilEncodeHelper::Value { node, .. } => {
+            if encode_node_with_writer_node(out, root, node).is_err() {
+                return status;
+            }
+        }
         StencilEncodeHelper::StructField { field, .. } => {
             let Ok(struct_peek) = root.into_struct() else {
                 return status;

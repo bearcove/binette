@@ -585,6 +585,33 @@ fn stencil_encodes_mixed_struct_through_writer_plan() {
     assert_eq!(stencil_bytes, interpreted_bytes);
 }
 
+// r[verify binette.aggregate.enum.compact]
+// r[verify binette.compat.enum.payload]
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[test]
+fn stencil_encodes_enum_through_writer_plan() {
+    #[derive(Facet)]
+    #[allow(dead_code)]
+    #[repr(u8)]
+    enum Event {
+        Started,
+        Moved(u32, u16),
+        Failed { code: u16, flag: bool },
+    }
+
+    let value = Event::Failed {
+        code: 0x1122,
+        flag: true,
+    };
+    let writer_plan = writer_plan_for::<Event>().unwrap();
+    let stencil = stencil_encoder_from_plan::<Event>(&writer_plan).unwrap();
+
+    let stencil_bytes = encode_to_vec_with_stencil(&value, &stencil).unwrap();
+    let interpreted_bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+
+    assert_eq!(stencil_bytes, interpreted_bytes);
+}
+
 // r[verify binette.aggregate.list]
 // r[verify binette.aggregate.option]
 // r[verify binette.aggregate.array]

@@ -400,8 +400,55 @@ fn encode_stencil_fixture() -> EncodeStencilFixture {
     }
 }
 
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+struct EncodeEnumStencilFixture {
+    sample: enum_writer::Event,
+    stencil: StencilEncoder<enum_writer::Event>,
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn encode_enum_stencil_fixture() -> EncodeEnumStencilFixture {
+    let writer_plan = writer_plan_for::<enum_writer::Event>().unwrap();
+    let stencil = stencil_encoder_from_plan::<enum_writer::Event>(&writer_plan).unwrap();
+
+    EncodeEnumStencilFixture {
+        sample: enum_writer::sample(),
+        stencil,
+    }
+}
+
 mod encode {
     use super::*;
+
+    mod r#enum {
+        use super::*;
+
+        #[divan::bench]
+        pub fn interp(bencher: Bencher) {
+            let fixture = enum_fixture();
+            let sample = enum_writer::sample();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_plan(black_box(&sample), black_box(&fixture.writer_plan))
+                        .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn stencil(bencher: Bencher) {
+            let fixture = encode_enum_stencil_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
+    }
 
     mod mixed_struct {
         use super::*;
