@@ -3,13 +3,16 @@ use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr::{NonNull, copy_nonoverlapping};
 
-use facet_core::{Facet, Shape, StructKind, Type};
+use facet_core::{EnumRepr, EnumType, Facet, Shape, StructKind, Type, UserType};
 use thiserror::Error;
 
 use crate::compact::CompactError;
 use crate::decode::DecodeError;
 use crate::hash::primitive_for_type_id;
-use crate::plan::{PlanError, PlanNode, ReaderPlan, StructFieldPlan, reader_plan_for};
+use crate::plan::{
+    EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, ReaderPlan, StructFieldPlan,
+    reader_plan_for,
+};
 use crate::registry::SchemaRegistry;
 use crate::schema::{Primitive, SchemaKind, TypeId, TypeRef};
 
@@ -18,7 +21,7 @@ type StencilFn = unsafe extern "C" fn(input: *const u8, len: usize, out: *mut u8
 pub struct StencilDecoder<T> {
     code: ExecutableMemory,
     func: StencilFn,
-    expected_len: usize,
+    length_check: LengthCheck,
     failures: Vec<StencilFailure>,
     _marker: PhantomData<fn() -> T>,
 }
@@ -47,6 +50,16 @@ pub enum StencilError {
     #[error("stencil returned unknown status {status}")]
     UnknownStatus { status: u32 },
 
+    #[error("compact enum variant index {variant_index} is out of range at byte {position}")]
+    UnknownVariantIndex { position: usize, variant_index: u32 },
+
+    #[error("writer enum variant {variant} ({variant_index}) cannot be read at byte {position}")]
+    UnreadableWriterVariant {
+        position: usize,
+        variant_index: u32,
+        variant: String,
+    },
+
     #[error("failed to allocate executable stencil memory")]
     ExecutableMemory,
 
@@ -56,7 +69,12 @@ pub enum StencilError {
 
 impl<T> StencilDecoder<T> {
     pub fn expected_len(&self) -> usize {
-        self.expected_len
+        self.fixed_expected_len()
+            .expect("stencil decoder has variant-dependent input lengths")
+    }
+
+    pub fn fixed_expected_len(&self) -> Option<usize> {
+        self.length_check.fixed_expected_len()
     }
 
     pub fn code_len(&self) -> usize {
@@ -66,12 +84,7 @@ impl<T> StencilDecoder<T> {
 
 impl<T: Facet<'static>> StencilDecoder<T> {
     pub fn decode(&self, input: &[u8]) -> Result<T, StencilError> {
-        if input.len() != self.expected_len {
-            return Err(StencilError::InputLength {
-                expected: self.expected_len,
-                actual: input.len(),
-            });
-        }
+        self.length_check.validate(input)?;
 
         let mut out = MaybeUninit::<T>::uninit();
         // SAFETY: the compiled stencil was built from T::SHAPE field offsets and
@@ -97,6 +110,23 @@ impl<T: Facet<'static>> StencilDecoder<T> {
                 path: path.clone(),
                 position: *position,
                 value: input[*position],
+            },
+            StencilFailure::UnknownVariantIndex { position } => {
+                let variant_index =
+                    u32::from_le_bytes(input[*position..*position + 4].try_into().unwrap());
+                StencilError::UnknownVariantIndex {
+                    position: *position,
+                    variant_index,
+                }
+            }
+            StencilFailure::UnreadableWriterVariant {
+                position,
+                variant_index,
+                variant,
+            } => StencilError::UnreadableWriterVariant {
+                position: *position,
+                variant_index: *variant_index,
+                variant: variant.clone(),
             },
         }
     }
@@ -124,15 +154,14 @@ pub fn stencil_decoder_from_plan<T: Facet<'static>>(
         failures: Vec::new(),
         input_offset: 0,
     };
-    compiler.compile_root::<T>(&plan.root)?;
+    let length_check = compiler.compile_root::<T>(&plan.root)?;
 
     let code = generate_code(&compiler.ops, compiler.failures.len())?;
-    let expected_len = compiler.input_offset;
     let func = code.as_fn();
     Ok(StencilDecoder {
         code,
         func,
-        expected_len,
+        length_check,
         failures: compiler.failures,
         _marker: PhantomData,
     })
@@ -146,6 +175,23 @@ pub fn decode_from_slice_with_stencil<T: Facet<'static>>(
         StencilError::InvalidBool {
             position, value, ..
         } => CompactError::InvalidBool { position, value }.into(),
+        StencilError::UnknownVariantIndex {
+            position,
+            variant_index,
+        } => CompactError::UnknownVariantIndex {
+            position,
+            variant_index,
+        }
+        .into(),
+        StencilError::UnreadableWriterVariant {
+            position,
+            variant_index,
+            variant,
+        } => DecodeError::UnreadableWriterVariant {
+            position,
+            variant_index,
+            variant,
+        },
         err => DecodeError::Unsupported {
             position: 0,
             reason: match err {
@@ -155,6 +201,8 @@ pub fn decode_from_slice_with_stencil<T: Facet<'static>>(
                 StencilError::Plan(_) => "stencil plan failed",
                 StencilError::InvalidBool { .. } => unreachable!(),
                 StencilError::UnknownStatus { .. } => "stencil returned an unknown status",
+                StencilError::UnknownVariantIndex { .. } => unreachable!(),
+                StencilError::UnreadableWriterVariant { .. } => unreachable!(),
                 StencilError::ExecutableMemory => "stencil executable memory allocation failed",
                 StencilError::Mprotect => "stencil executable memory protection failed",
             },
@@ -179,10 +227,21 @@ enum CopyWidth {
 
 #[derive(Debug, Clone)]
 enum StencilFailure {
-    InvalidBool { path: String, position: usize },
+    InvalidBool {
+        path: String,
+        position: usize,
+    },
+    UnknownVariantIndex {
+        position: usize,
+    },
+    UnreadableWriterVariant {
+        position: usize,
+        variant_index: u32,
+        variant: String,
+    },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum StencilOp {
     Copy(CopyOp),
     Bool {
@@ -190,6 +249,78 @@ enum StencilOp {
         output_offset: Option<usize>,
         failure_index: usize,
     },
+    RootEnum {
+        input_offset: usize,
+        cases: Vec<EnumCase>,
+        bodies: Vec<Vec<StencilOp>>,
+        unknown_failure_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EnumCase {
+    writer_index: u32,
+    reader_discriminant: Option<u8>,
+    body_index: Option<usize>,
+    failure_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TaggedLength {
+    variant_index: u32,
+    expected: usize,
+}
+
+enum LengthCheck {
+    Exact(usize),
+    RootU32Tag {
+        position: usize,
+        cases: Vec<TaggedLength>,
+    },
+}
+
+impl LengthCheck {
+    fn fixed_expected_len(&self) -> Option<usize> {
+        match self {
+            LengthCheck::Exact(len) => Some(*len),
+            LengthCheck::RootU32Tag { .. } => None,
+        }
+    }
+
+    fn validate(&self, input: &[u8]) -> Result<(), StencilError> {
+        match self {
+            LengthCheck::Exact(expected) => {
+                if input.len() != *expected {
+                    return Err(StencilError::InputLength {
+                        expected: *expected,
+                        actual: input.len(),
+                    });
+                }
+            }
+            LengthCheck::RootU32Tag { position, cases } => {
+                let needed = position + 4;
+                if input.len() < needed {
+                    return Err(StencilError::InputLength {
+                        expected: needed,
+                        actual: input.len(),
+                    });
+                }
+                let variant_index =
+                    u32::from_le_bytes(input[*position..needed].try_into().unwrap());
+                if let Some(case) = cases
+                    .iter()
+                    .find(|case| case.variant_index == variant_index)
+                    && input.len() != case.expected
+                {
+                    return Err(StencilError::InputLength {
+                        expected: case.expected,
+                        actual: input.len(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 struct StencilCompiler<'registry> {
@@ -200,36 +331,93 @@ struct StencilCompiler<'registry> {
 }
 
 impl StencilCompiler<'_> {
-    fn compile_root<T: Facet<'static>>(&mut self, root: &PlanNode) -> Result<(), StencilError> {
-        match root {
-            PlanNode::Direct { writer, .. } => self.compile_direct_root::<T>(writer, "$"),
-            PlanNode::Struct { fields } => self.compile_struct_plan(T::SHAPE, fields, "$"),
+    fn compile_root<T: Facet<'static>>(
+        &mut self,
+        root: &PlanNode,
+    ) -> Result<LengthCheck, StencilError> {
+        if let PlanNode::Enum { variants } = root {
+            return self.compile_enum_root(T::SHAPE, variants, "$");
+        }
+
+        self.compile_node(T::SHAPE, root, 0, "$")?;
+        Ok(LengthCheck::Exact(self.input_offset))
+    }
+
+    fn compile_node(
+        &mut self,
+        reader_shape: &'static Shape,
+        node: &PlanNode,
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        match node {
+            PlanNode::Direct { writer, .. } => {
+                self.compile_direct(reader_shape, writer, output_offset, path)
+            }
+            PlanNode::Struct { fields } => {
+                self.compile_struct_plan(reader_shape, fields, output_offset, path)
+            }
+            PlanNode::Tuple { elements } => {
+                self.compile_tuple_plan(reader_shape, elements, output_offset, path)
+            }
+            PlanNode::Enum { variants } if output_offset == 0 => self
+                .compile_enum_root(reader_shape, variants, path)
+                .map(|_| ()),
             _ => Err(StencilError::Unsupported {
-                path: "$".to_owned(),
-                reason: "first stencil backend only supports scalar struct roots",
+                path: path.to_owned(),
+                reason: "first stencil backend only supports scalar structs, tuples, and root enums",
             }),
         }
     }
 
-    fn compile_direct_root<T: Facet<'static>>(
+    fn compile_direct(
         &mut self,
+        reader_shape: &'static Shape,
         writer: &TypeRef,
+        output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
         if let Some(primitive) = primitive_for_plain_type_ref(writer) {
-            self.compile_primitive_read(primitive, 0, path)?;
+            self.compile_primitive_read(primitive, output_offset, path)?;
             return Ok(());
         }
 
-        let schema = self.schema_for(writer, path)?;
-        let SchemaKind::Struct { fields, .. } = &schema.kind else {
-            return Err(StencilError::Unsupported {
+        let kind = self.schema_for(writer, path)?.kind.clone();
+        self.compile_direct_kind(reader_shape, &kind, output_offset, path)
+    }
+
+    fn compile_direct_kind(
+        &mut self,
+        reader_shape: &'static Shape,
+        kind: &SchemaKind,
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        match kind {
+            SchemaKind::Primitive(primitive) => {
+                self.compile_primitive_read(*primitive, output_offset, path)
+            }
+            SchemaKind::Struct { fields, .. } => {
+                self.compile_direct_struct(reader_shape, fields, output_offset, path)
+            }
+            SchemaKind::Tuple { elements } => {
+                self.compile_direct_tuple(reader_shape, elements, output_offset, path)
+            }
+            _ => Err(StencilError::Unsupported {
                 path: path.to_owned(),
-                reason: "first stencil backend only supports scalar struct roots",
-            });
-        };
-        let fields = fields.clone();
-        let reader_fields = shape_struct_fields(T::SHAPE, path)?;
+                reason: "first stencil backend only supports scalar structs and tuples",
+            }),
+        }
+    }
+
+    fn compile_direct_struct(
+        &mut self,
+        reader_shape: &'static Shape,
+        fields: &[crate::schema::Field],
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let reader_fields = shape_struct_fields(reader_shape, path)?;
         if reader_fields.len() != fields.len() {
             return Err(StencilError::Unsupported {
                 path: path.to_owned(),
@@ -238,11 +426,41 @@ impl StencilCompiler<'_> {
         }
 
         for (index, field) in fields.iter().enumerate() {
-            let output_offset = reader_fields[index].offset;
-            self.compile_read_field(
+            let reader_field = &reader_fields[index];
+            let field_offset = checked_offset(output_offset, reader_field.offset, path)?;
+            self.compile_direct(
+                reader_field.shape.get(),
                 &field.type_ref,
-                output_offset,
+                field_offset,
                 &format!("{path}.{}", field.name),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn compile_direct_tuple(
+        &mut self,
+        reader_shape: &'static Shape,
+        elements: &[TypeRef],
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let reader_fields = shape_struct_fields(reader_shape, path)?;
+        if reader_fields.len() != elements.len() {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "direct stencil tuple element count differs from reader shape",
+            });
+        }
+
+        for (index, element) in elements.iter().enumerate() {
+            let reader_field = &reader_fields[index];
+            let field_offset = checked_offset(output_offset, reader_field.offset, path)?;
+            self.compile_direct(
+                reader_field.shape.get(),
+                element,
+                field_offset,
+                &format!("{path}.{index}"),
             )?;
         }
         Ok(())
@@ -254,9 +472,20 @@ impl StencilCompiler<'_> {
         &mut self,
         reader_shape: &'static Shape,
         fields: &[StructFieldPlan],
+        output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
         let reader_fields = shape_struct_fields(reader_shape, path)?;
+        self.compile_struct_fields_plan(reader_fields, fields, output_offset, path)
+    }
+
+    fn compile_struct_fields_plan(
+        &mut self,
+        reader_fields: &'static [facet_core::Field],
+        fields: &[StructFieldPlan],
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
         for field in fields {
             match field {
                 StructFieldPlan::Read {
@@ -265,14 +494,19 @@ impl StencilCompiler<'_> {
                     plan,
                     ..
                 } => {
-                    let output_offset = reader_fields
-                        .get(*reader_index)
-                        .ok_or_else(|| StencilError::Unsupported {
+                    let reader_field = reader_fields.get(*reader_index).ok_or_else(|| {
+                        StencilError::Unsupported {
                             path: format!("{path}.{name}"),
                             reason: "reader field index is out of range",
-                        })?
-                        .offset;
-                    self.compile_read_plan(plan, output_offset, &format!("{path}.{name}"))?;
+                        }
+                    })?;
+                    let field_offset = checked_offset(output_offset, reader_field.offset, path)?;
+                    self.compile_read_plan(
+                        plan,
+                        reader_field.shape.get(),
+                        field_offset,
+                        &format!("{path}.{name}"),
+                    )?;
                 }
                 StructFieldPlan::Skip {
                     writer_type, name, ..
@@ -282,42 +516,239 @@ impl StencilCompiler<'_> {
         Ok(())
     }
 
+    fn compile_tuple_plan(
+        &mut self,
+        reader_shape: &'static Shape,
+        elements: &[PlanNode],
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let reader_fields = shape_struct_fields(reader_shape, path)?;
+        if reader_fields.len() != elements.len() {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "stencil tuple element count differs from reader shape",
+            });
+        }
+        for (index, element) in elements.iter().enumerate() {
+            let reader_field = &reader_fields[index];
+            let field_offset = checked_offset(output_offset, reader_field.offset, path)?;
+            self.compile_read_plan(
+                element,
+                reader_field.shape.get(),
+                field_offset,
+                &format!("{path}.{index}"),
+            )?;
+        }
+        Ok(())
+    }
+
+    // r[impl binette.compat.enum]
+    // r[impl binette.compat.enum.payload]
+    fn compile_enum_root(
+        &mut self,
+        reader_shape: &'static Shape,
+        variants: &[EnumVariantPlan],
+        path: &str,
+    ) -> Result<LengthCheck, StencilError> {
+        if self.input_offset != 0 || !self.ops.is_empty() {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "first stencil backend only supports enums at the root",
+            });
+        }
+
+        let enum_type = shape_enum_type(reader_shape, path)?;
+        if enum_type.enum_repr != EnumRepr::U8 {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "first stencil enum backend requires repr(u8) reader enums",
+            });
+        }
+
+        let input_offset = self.input_offset;
+        self.input_offset = checked_offset(self.input_offset, 4, path)?;
+        let unknown_failure_index = self.failures.len();
+        self.failures.push(StencilFailure::UnknownVariantIndex {
+            position: input_offset,
+        });
+
+        let mut cases = Vec::with_capacity(variants.len());
+        let mut bodies = Vec::new();
+        let mut lengths = Vec::new();
+
+        for variant in variants {
+            match variant {
+                EnumVariantPlan::Read {
+                    writer_index,
+                    reader_index,
+                    name,
+                    payload,
+                } => {
+                    let reader_variant =
+                        enum_type.variants.get(*reader_index).ok_or_else(|| {
+                            StencilError::Unsupported {
+                                path: format!("{path}.{name}"),
+                                reason: "reader enum variant index is out of range",
+                            }
+                        })?;
+                    let reader_discriminant =
+                        enum_discriminant_u8(reader_variant, &format!("{path}.{name}"))?;
+                    let (body, expected) =
+                        self.compile_branch_body(input_offset + 4, |compiler| {
+                            compiler.compile_enum_payload_plan(
+                                reader_variant.data.fields,
+                                payload,
+                                &format!("{path}.{name}"),
+                            )
+                        })?;
+                    let body_index = bodies.len();
+                    bodies.push(body);
+                    lengths.push(TaggedLength {
+                        variant_index: *writer_index,
+                        expected,
+                    });
+                    cases.push(EnumCase {
+                        writer_index: *writer_index,
+                        reader_discriminant: Some(reader_discriminant),
+                        body_index: Some(body_index),
+                        failure_index: None,
+                    });
+                }
+                EnumVariantPlan::Reject { writer_index, name } => {
+                    let failure_index = self.failures.len();
+                    self.failures.push(StencilFailure::UnreadableWriterVariant {
+                        position: input_offset,
+                        variant_index: *writer_index,
+                        variant: name.clone(),
+                    });
+                    cases.push(EnumCase {
+                        writer_index: *writer_index,
+                        reader_discriminant: None,
+                        body_index: None,
+                        failure_index: Some(failure_index),
+                    });
+                }
+            }
+        }
+
+        self.ops.push(StencilOp::RootEnum {
+            input_offset,
+            cases,
+            bodies,
+            unknown_failure_index,
+        });
+
+        Ok(LengthCheck::RootU32Tag {
+            position: input_offset,
+            cases: lengths,
+        })
+    }
+
+    fn compile_branch_body(
+        &mut self,
+        input_offset: usize,
+        compile: impl FnOnce(&mut Self) -> Result<(), StencilError>,
+    ) -> Result<(Vec<StencilOp>, usize), StencilError> {
+        let parent_ops = std::mem::take(&mut self.ops);
+        let parent_input_offset = self.input_offset;
+        self.input_offset = input_offset;
+
+        let result = compile(self);
+        let body_ops = std::mem::take(&mut self.ops);
+        let body_input_offset = self.input_offset;
+        self.ops = parent_ops;
+        self.input_offset = parent_input_offset;
+
+        result?;
+        Ok((body_ops, body_input_offset))
+    }
+
+    fn compile_enum_payload_plan(
+        &mut self,
+        reader_fields: &'static [facet_core::Field],
+        payload: &EnumPayloadPlan,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        match payload {
+            EnumPayloadPlan::Unit => Ok(()),
+            EnumPayloadPlan::Newtype(element) => {
+                let reader_field =
+                    reader_fields
+                        .first()
+                        .ok_or_else(|| StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "newtype enum payload is missing reader field",
+                        })?;
+                self.compile_read_plan(element, reader_field.shape.get(), reader_field.offset, path)
+            }
+            EnumPayloadPlan::Tuple(elements) => {
+                if reader_fields.len() != elements.len() {
+                    return Err(StencilError::Unsupported {
+                        path: path.to_owned(),
+                        reason: "tuple enum payload arity differs from reader shape",
+                    });
+                }
+                for (index, element) in elements.iter().enumerate() {
+                    let reader_field = &reader_fields[index];
+                    self.compile_read_plan(
+                        element,
+                        reader_field.shape.get(),
+                        reader_field.offset,
+                        &format!("{path}.{index}"),
+                    )?;
+                }
+                Ok(())
+            }
+            EnumPayloadPlan::Struct(fields) => {
+                self.compile_struct_fields_plan(reader_fields, fields, 0, path)
+            }
+        }
+    }
+
     fn compile_read_plan(
         &mut self,
         node: &PlanNode,
+        reader_shape: &'static Shape,
         output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
-        let PlanNode::Direct { writer, .. } = node else {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "first stencil backend only supports direct scalar fields",
-            });
-        };
-        self.compile_read_field(writer, output_offset, path)
-    }
-
-    fn compile_read_field(
-        &mut self,
-        type_ref: &TypeRef,
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let primitive =
-            primitive_for_plain_type_ref(type_ref).ok_or_else(|| StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "first stencil backend only supports primitive scalar fields",
-            })?;
-        self.compile_primitive_read(primitive, output_offset, path)
+        self.compile_node(reader_shape, node, output_offset, path)
     }
 
     fn compile_skip(&mut self, type_ref: &TypeRef, path: &str) -> Result<(), StencilError> {
-        let primitive =
-            primitive_for_plain_type_ref(type_ref).ok_or_else(|| StencilError::Unsupported {
+        self.compile_skip_type(type_ref, path)
+    }
+
+    fn compile_skip_type(&mut self, type_ref: &TypeRef, path: &str) -> Result<(), StencilError> {
+        if let Some(primitive) = primitive_for_plain_type_ref(type_ref) {
+            return self.compile_primitive_skip(primitive, path);
+        }
+
+        let kind = self.schema_for(type_ref, path)?.kind.clone();
+        self.compile_skip_kind(&kind, path)
+    }
+
+    fn compile_skip_kind(&mut self, kind: &SchemaKind, path: &str) -> Result<(), StencilError> {
+        match kind {
+            SchemaKind::Primitive(primitive) => self.compile_primitive_skip(*primitive, path),
+            SchemaKind::Struct { fields, .. } => {
+                for field in fields {
+                    self.compile_skip_type(&field.type_ref, &format!("{path}.{}", field.name))?;
+                }
+                Ok(())
+            }
+            SchemaKind::Tuple { elements } => {
+                for (index, element) in elements.iter().enumerate() {
+                    self.compile_skip_type(element, &format!("{path}.{index}"))?;
+                }
+                Ok(())
+            }
+            _ => Err(StencilError::Unsupported {
                 path: path.to_owned(),
-                reason: "first stencil backend only supports primitive scalar skips",
-            })?;
-        self.compile_primitive_skip(primitive, path)
+                reason: "first stencil backend only supports scalar structs and tuples",
+            }),
+        }
     }
 
     fn compile_primitive_read(
@@ -481,7 +912,7 @@ fn shape_struct_fields(
             reason: "reader shape is not a struct",
         });
     };
-    let facet_core::UserType::Struct(struct_type) = user else {
+    let UserType::Struct(struct_type) = user else {
         return Err(StencilError::Unsupported {
             path: path.to_owned(),
             reason: "reader shape is not a struct",
@@ -494,6 +925,29 @@ fn shape_struct_fields(
             reason: "unit struct stencil decode is not implemented yet",
         }),
     }
+}
+
+fn shape_enum_type(shape: &'static Shape, path: &str) -> Result<EnumType, StencilError> {
+    let Type::User(UserType::Enum(enum_type)) = shape.ty else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "reader shape is not an enum",
+        });
+    };
+    Ok(enum_type)
+}
+
+fn enum_discriminant_u8(variant: &facet_core::Variant, path: &str) -> Result<u8, StencilError> {
+    let discriminant = variant
+        .discriminant
+        .ok_or_else(|| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "reader enum variant is missing a discriminant",
+        })?;
+    u8::try_from(discriminant).map_err(|_| StencilError::Unsupported {
+        path: path.to_owned(),
+        reason: "reader enum discriminant does not fit repr(u8)",
+    })
 }
 
 fn checked_offset(offset: usize, width: usize, path: &str) -> Result<usize, StencilError> {
@@ -516,7 +970,7 @@ fn generate_code(
         let mut code = Vec::with_capacity(ops.len() * 16 + (failure_count + 1) * 8);
         let mut branches = Vec::new();
         for op in ops {
-            emit_op(&mut code, *op, &mut branches)?;
+            emit_op(&mut code, op, &mut branches)?;
         }
         push_u32(&mut code, mov_w0_immediate(STENCIL_OK)?);
         push_u32(&mut code, AARCH64_RET);
@@ -534,7 +988,10 @@ fn generate_code(
                     reason: "stencil branch references missing failure stub",
                 });
             };
-            let word = patch_cond_branch_imm19(AARCH64_B_HI, branch.offset, target)?;
+            let word = match branch.kind {
+                BranchKind::CondHi => patch_cond_branch_imm19(AARCH64_B_HI, branch.offset, target)?,
+                BranchKind::Uncond => patch_uncond_branch_imm26(AARCH64_B, branch.offset, target)?,
+            };
             code[branch.offset..branch.offset + 4].copy_from_slice(&word.to_le_bytes());
         }
         ExecutableMemory::new(&code)
@@ -557,27 +1014,58 @@ const AARCH64_RET: u32 = 0xD65F_03C0;
 const AARCH64_CMP_W9_1: u32 = 0x7100_053F;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_B_HI: u32 = 0x5400_0008;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_B_EQ: u32 = 0x5400_0000;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_B: u32 = 0x1400_0000;
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 #[derive(Debug, Clone, Copy)]
 struct BranchFixup {
     offset: usize,
     failure_index: usize,
+    kind: BranchKind,
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[derive(Debug, Clone, Copy)]
+enum BranchKind {
+    CondHi,
+    Uncond,
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn emit_op(
     code: &mut Vec<u8>,
-    op: StencilOp,
+    op: &StencilOp,
     branches: &mut Vec<BranchFixup>,
 ) -> Result<(), StencilError> {
     match op {
-        StencilOp::Copy(op) => emit_copy_op(code, op),
+        StencilOp::Copy(op) => emit_copy_op(code, *op),
         StencilOp::Bool {
             input_offset,
             output_offset,
             failure_index,
-        } => emit_bool_op(code, input_offset, output_offset, failure_index, branches),
+        } => emit_bool_op(
+            code,
+            *input_offset,
+            *output_offset,
+            *failure_index,
+            branches,
+        ),
+        StencilOp::RootEnum {
+            input_offset,
+            cases,
+            bodies,
+            unknown_failure_index,
+        } => emit_root_enum_op(
+            code,
+            *input_offset,
+            cases,
+            bodies,
+            *unknown_failure_index,
+            branches,
+        ),
     }
 }
 
@@ -615,6 +1103,7 @@ fn emit_bool_op(
     branches.push(BranchFixup {
         offset: branch_offset,
         failure_index,
+        kind: BranchKind::CondHi,
     });
     if let Some(output_offset) = output_offset {
         push_u32(
@@ -628,7 +1117,107 @@ fn emit_bool_op(
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_LDURB_W9_X0: u32 = 0x3840_0009;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_LDUR_W9_X0: u32 = 0xB840_0009;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_STURB_W9_X2: u32 = 0x3800_0049;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_STURB_W10_X2: u32 = 0x3800_004A;
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_root_enum_op(
+    code: &mut Vec<u8>,
+    input_offset: usize,
+    cases: &[EnumCase],
+    bodies: &[Vec<StencilOp>],
+    unknown_failure_index: usize,
+    branches: &mut Vec<BranchFixup>,
+) -> Result<(), StencilError> {
+    push_u32(
+        code,
+        patch_ldur_stur_imm9(AARCH64_LDUR_W9_X0, input_offset, "$input")?,
+    );
+
+    let mut case_branches = Vec::with_capacity(cases.len());
+    for (case_index, case) in cases.iter().enumerate() {
+        push_u32(code, cmp_w9_immediate(case.writer_index)?);
+        let offset = code.len();
+        push_u32(code, 0);
+        case_branches.push((offset, case_index));
+    }
+
+    let unknown_branch = code.len();
+    push_u32(code, 0);
+    branches.push(BranchFixup {
+        offset: unknown_branch,
+        failure_index: unknown_failure_index,
+        kind: BranchKind::Uncond,
+    });
+
+    let mut case_offsets = Vec::with_capacity(cases.len());
+    let mut done_branches = Vec::new();
+    for case in cases {
+        case_offsets.push(code.len());
+        if let Some(failure_index) = case.failure_index {
+            let offset = code.len();
+            push_u32(code, 0);
+            branches.push(BranchFixup {
+                offset,
+                failure_index,
+                kind: BranchKind::Uncond,
+            });
+            continue;
+        }
+
+        let Some(reader_discriminant) = case.reader_discriminant else {
+            return Err(StencilError::Unsupported {
+                path: "$code".to_owned(),
+                reason: "readable enum case is missing reader discriminant",
+            });
+        };
+        push_u32(code, mov_w10_immediate(u32::from(reader_discriminant))?);
+        push_u32(
+            code,
+            patch_ldur_stur_imm9(AARCH64_STURB_W10_X2, 0, "$output")?,
+        );
+
+        let Some(body_index) = case.body_index else {
+            return Err(StencilError::Unsupported {
+                path: "$code".to_owned(),
+                reason: "readable enum case is missing body ops",
+            });
+        };
+        let Some(body) = bodies.get(body_index) else {
+            return Err(StencilError::Unsupported {
+                path: "$code".to_owned(),
+                reason: "enum body index is out of range",
+            });
+        };
+        for op in body {
+            emit_op(code, op, branches)?;
+        }
+        let offset = code.len();
+        push_u32(code, 0);
+        done_branches.push(offset);
+    }
+
+    let done = code.len();
+    for (offset, case_index) in case_branches {
+        let Some(target) = case_offsets.get(case_index).copied() else {
+            return Err(StencilError::Unsupported {
+                path: "$code".to_owned(),
+                reason: "enum case branch target is missing",
+            });
+        };
+        let word = patch_cond_branch_imm19(AARCH64_B_EQ, offset, target)?;
+        code[offset..offset + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    for offset in done_branches {
+        let word = patch_uncond_branch_imm26(AARCH64_B, offset, done)?;
+        code[offset..offset + 4].copy_from_slice(&word.to_le_bytes());
+    }
+
+    Ok(())
+}
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn patch_ldur_stur_imm9(base: u32, offset: usize, path: &str) -> Result<u32, StencilError> {
@@ -683,6 +1272,42 @@ fn patch_cond_branch_imm19(
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn patch_uncond_branch_imm26(
+    base: u32,
+    branch_offset: usize,
+    target: usize,
+) -> Result<u32, StencilError> {
+    let branch_offset = isize::try_from(branch_offset).map_err(|_| StencilError::Unsupported {
+        path: "$code".to_owned(),
+        reason: "stencil branch offset exceeds isize",
+    })?;
+    let target = isize::try_from(target).map_err(|_| StencilError::Unsupported {
+        path: "$code".to_owned(),
+        reason: "stencil branch target exceeds isize",
+    })?;
+    let delta = target
+        .checked_sub(branch_offset)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil branch offset overflow",
+        })?;
+    if delta % 4 != 0 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil branch target is not instruction-aligned",
+        });
+    }
+    let imm = delta / 4;
+    if !(-(1 << 25)..=(1 << 25) - 1).contains(&imm) {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil branch target exceeds AArch64 imm26 range",
+        });
+    }
+    Ok(base | ((imm as u32) & 0x03ff_ffff))
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn status_for_failure(index: usize) -> Result<u32, StencilError> {
     u32::try_from(index)
         .ok()
@@ -702,6 +1327,28 @@ fn mov_w0_immediate(value: u32) -> Result<u32, StencilError> {
         });
     }
     Ok(0x5280_0000 | (value << 5))
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn mov_w10_immediate(value: u32) -> Result<u32, StencilError> {
+    if value > u16::MAX as u32 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil immediate exceeds mov immediate range",
+        });
+    }
+    Ok(0x5280_000A | (value << 5))
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn cmp_w9_immediate(value: u32) -> Result<u32, StencilError> {
+    if value > 0xfff {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil enum variant index exceeds cmp immediate range",
+        });
+    }
+    Ok(0x7100_013F | (value << 10))
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]

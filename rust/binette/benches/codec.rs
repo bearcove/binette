@@ -115,6 +115,99 @@ mod fixed_reader {
     }
 }
 
+mod nested_writer {
+    use facet::Facet;
+
+    #[derive(Facet)]
+    pub struct Header {
+        pub trace: u64,
+        pub flags: bool,
+    }
+
+    #[derive(Facet)]
+    pub struct Extra {
+        pub code: u16,
+        pub enabled: bool,
+    }
+
+    #[derive(Facet)]
+    pub struct Message {
+        pub id: u32,
+        pub header: Header,
+        pub pair: (u16, bool),
+        pub writer_only: Extra,
+        pub tail: u8,
+    }
+
+    pub fn sample() -> Message {
+        Message {
+            id: 0x1122_3344,
+            header: Header {
+                trace: 0x0102_0304_0506_0708,
+                flags: true,
+            },
+            pair: (0x5566, false),
+            writer_only: Extra {
+                code: 0x7788,
+                enabled: true,
+            },
+            tail: 9,
+        }
+    }
+}
+
+mod nested_reader {
+    use facet::Facet;
+
+    #[derive(Facet)]
+    pub struct Header {
+        pub flags: bool,
+        pub trace: u64,
+    }
+
+    #[derive(Facet)]
+    pub struct Message {
+        pub tail: u8,
+        pub pair: (u16, bool),
+        pub header: Header,
+        pub id: u32,
+    }
+}
+
+mod enum_writer {
+    use facet::Facet;
+
+    #[derive(Facet)]
+    #[allow(dead_code)]
+    #[repr(u8)]
+    pub enum Event {
+        Started,
+        Moved(u32, u16),
+        Failed { code: u16, flag: bool },
+        WriterOnly,
+    }
+
+    pub fn sample() -> Event {
+        Event::Failed {
+            code: 0x1122,
+            flag: true,
+        }
+    }
+}
+
+mod enum_reader {
+    use facet::Facet;
+
+    #[derive(Facet)]
+    #[allow(dead_code)]
+    #[repr(u8)]
+    pub enum Event {
+        Failed { flag: bool, code: u16 },
+        Started,
+        Moved(u32, u16),
+    }
+}
+
 struct Fixture {
     writer_plan: binette::WriterPlan,
     writer_registry: SchemaRegistry,
@@ -159,6 +252,50 @@ fn fixed_fixture() -> FixedFixture {
     }
 }
 
+struct NestedFixture {
+    writer_plan: binette::WriterPlan,
+    writer_registry: SchemaRegistry,
+    bytes: Vec<u8>,
+    reader_plan: ReaderPlan,
+}
+
+fn nested_fixture() -> NestedFixture {
+    let writer_plan = writer_plan_for::<nested_writer::Message>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let bytes = encode_to_vec_with_plan(&nested_writer::sample(), &writer_plan).unwrap();
+    let reader_plan =
+        reader_plan_for::<nested_reader::Message>(writer_plan.root(), &writer_registry).unwrap();
+
+    NestedFixture {
+        writer_plan,
+        writer_registry,
+        bytes,
+        reader_plan,
+    }
+}
+
+struct EnumFixture {
+    writer_plan: binette::WriterPlan,
+    writer_registry: SchemaRegistry,
+    bytes: Vec<u8>,
+    reader_plan: ReaderPlan,
+}
+
+fn enum_fixture() -> EnumFixture {
+    let writer_plan = writer_plan_for::<enum_writer::Event>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let bytes = encode_to_vec_with_plan(&enum_writer::sample(), &writer_plan).unwrap();
+    let reader_plan =
+        reader_plan_for::<enum_reader::Event>(writer_plan.root(), &writer_registry).unwrap();
+
+    EnumFixture {
+        writer_plan,
+        writer_registry,
+        bytes,
+        reader_plan,
+    }
+}
+
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 struct FixedStencilFixture {
     bytes: Vec<u8>,
@@ -180,74 +317,199 @@ fn fixed_stencil_fixture() -> FixedStencilFixture {
     }
 }
 
-#[divan::bench]
-fn encode_compact_writer_plan(bencher: Bencher) {
-    let fixture = fixture();
-    let sample = writer::sample();
-
-    bencher.bench(|| {
-        encode_to_vec_with_plan(black_box(&sample), black_box(&fixture.writer_plan)).unwrap()
-    });
-}
-
-#[divan::bench]
-fn plan_reader_field_reorder_skip(bencher: Bencher) {
-    let fixture = fixture();
-
-    bencher.bench(|| {
-        reader_plan_for::<reader::Message>(
-            black_box(fixture.writer_plan.root()),
-            black_box(&fixture.writer_registry),
-        )
-        .unwrap()
-    });
-}
-
-#[divan::bench]
-fn plan_fixed_reader_field_reorder_skip(bencher: Bencher) {
-    let fixture = fixed_fixture();
-
-    bencher.bench(|| {
-        reader_plan_for::<fixed_reader::Message>(
-            black_box(fixture.writer_plan.root()),
-            black_box(&fixture.writer_registry),
-        )
-        .unwrap()
-    });
-}
-
-#[divan::bench]
-fn decode_interpreted_fixed_field_reorder_skip(bencher: Bencher) {
-    let fixture = fixed_fixture();
-
-    bencher.bench(|| {
-        decode_from_slice_with_plan::<fixed_reader::Message>(
-            black_box(&fixture.bytes),
-            black_box(&fixture.reader_plan),
-            black_box(&fixture.writer_registry),
-        )
-        .unwrap()
-    });
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+struct NestedStencilFixture {
+    bytes: Vec<u8>,
+    stencil: StencilDecoder<nested_reader::Message>,
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-#[divan::bench]
-fn decode_stencil_fixed_field_reorder_skip(bencher: Bencher) {
-    let fixture = fixed_stencil_fixture();
+fn nested_stencil_fixture() -> NestedStencilFixture {
+    let fixture = nested_fixture();
+    let stencil = stencil_decoder_for::<nested_reader::Message>(
+        fixture.writer_plan.root(),
+        &fixture.writer_registry,
+    )
+    .unwrap();
 
-    bencher.bench(|| fixture.stencil.decode(black_box(&fixture.bytes)).unwrap());
+    NestedStencilFixture {
+        bytes: fixture.bytes,
+        stencil,
+    }
 }
 
-#[divan::bench]
-fn decode_interpreted_field_reorder_skip(bencher: Bencher) {
-    let fixture = fixture();
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+struct EnumStencilFixture {
+    bytes: Vec<u8>,
+    stencil: StencilDecoder<enum_reader::Event>,
+}
 
-    bencher.bench(|| {
-        decode_from_slice_with_plan::<reader::Message>(
-            black_box(&fixture.bytes),
-            black_box(&fixture.reader_plan),
-            black_box(&fixture.writer_registry),
-        )
-        .unwrap()
-    });
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn enum_stencil_fixture() -> EnumStencilFixture {
+    let fixture = enum_fixture();
+    let stencil = stencil_decoder_for::<enum_reader::Event>(
+        fixture.writer_plan.root(),
+        &fixture.writer_registry,
+    )
+    .unwrap();
+
+    EnumStencilFixture {
+        bytes: fixture.bytes,
+        stencil,
+    }
+}
+
+mod encode {
+    use super::*;
+
+    #[divan::bench]
+    pub fn compact(bencher: Bencher) {
+        let fixture = fixture();
+        let sample = writer::sample();
+
+        bencher.bench(|| {
+            black_box(
+                encode_to_vec_with_plan(black_box(&sample), black_box(&fixture.writer_plan))
+                    .unwrap(),
+            )
+        });
+    }
+}
+
+mod plan {
+    use super::*;
+
+    #[divan::bench]
+    pub fn mixed_struct(bencher: Bencher) {
+        let fixture = fixture();
+
+        bencher.bench(|| {
+            black_box(
+                reader_plan_for::<reader::Message>(
+                    black_box(fixture.writer_plan.root()),
+                    black_box(&fixture.writer_registry),
+                )
+                .unwrap(),
+            )
+        });
+    }
+
+    #[divan::bench]
+    pub fn fixed_struct(bencher: Bencher) {
+        let fixture = fixed_fixture();
+
+        bencher.bench(|| {
+            black_box(
+                reader_plan_for::<fixed_reader::Message>(
+                    black_box(fixture.writer_plan.root()),
+                    black_box(&fixture.writer_registry),
+                )
+                .unwrap(),
+            )
+        });
+    }
+}
+
+mod fixed_struct {
+    use super::*;
+
+    #[divan::bench]
+    pub fn interp(bencher: Bencher) {
+        let fixture = fixed_fixture();
+
+        bencher.bench(|| {
+            black_box(
+                decode_from_slice_with_plan::<fixed_reader::Message>(
+                    black_box(&fixture.bytes),
+                    black_box(&fixture.reader_plan),
+                    black_box(&fixture.writer_registry),
+                )
+                .unwrap(),
+            )
+        });
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[divan::bench]
+    pub fn stencil(bencher: Bencher) {
+        let fixture = fixed_stencil_fixture();
+
+        bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
+    }
+}
+
+mod nested_struct {
+    use super::*;
+
+    #[divan::bench]
+    pub fn interp(bencher: Bencher) {
+        let fixture = nested_fixture();
+
+        bencher.bench(|| {
+            black_box(
+                decode_from_slice_with_plan::<nested_reader::Message>(
+                    black_box(&fixture.bytes),
+                    black_box(&fixture.reader_plan),
+                    black_box(&fixture.writer_registry),
+                )
+                .unwrap(),
+            )
+        });
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[divan::bench]
+    pub fn stencil(bencher: Bencher) {
+        let fixture = nested_stencil_fixture();
+
+        bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
+    }
+}
+
+mod r#enum {
+    use super::*;
+
+    #[divan::bench]
+    pub fn interp(bencher: Bencher) {
+        let fixture = enum_fixture();
+
+        bencher.bench(|| {
+            black_box(
+                decode_from_slice_with_plan::<enum_reader::Event>(
+                    black_box(&fixture.bytes),
+                    black_box(&fixture.reader_plan),
+                    black_box(&fixture.writer_registry),
+                )
+                .unwrap(),
+            )
+        });
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[divan::bench]
+    pub fn stencil(bencher: Bencher) {
+        let fixture = enum_stencil_fixture();
+
+        bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
+    }
+}
+
+mod mixed_struct {
+    use super::*;
+
+    #[divan::bench]
+    pub fn interp(bencher: Bencher) {
+        let fixture = fixture();
+
+        bencher.bench(|| {
+            black_box(
+                decode_from_slice_with_plan::<reader::Message>(
+                    black_box(&fixture.bytes),
+                    black_box(&fixture.reader_plan),
+                    black_box(&fixture.writer_registry),
+                )
+                .unwrap(),
+            )
+        });
+    }
 }

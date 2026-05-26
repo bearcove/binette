@@ -209,6 +209,210 @@ fn stencil_decodes_fixed_scalar_struct_with_validation_reorder_and_skip() {
     ));
 }
 
+// r[verify binette.aggregate.struct.compact]
+// r[verify binette.aggregate.tuple]
+// r[verify binette.compat.field-matching]
+// r[verify binette.compat.skip-unknown]
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[test]
+fn stencil_decodes_nested_structs_and_tuples() {
+    mod writer {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        pub struct Header {
+            pub trace: u64,
+            pub flags: bool,
+        }
+
+        #[derive(Facet)]
+        pub struct Extra {
+            pub code: u16,
+            pub enabled: bool,
+        }
+
+        #[derive(Facet)]
+        pub struct Message {
+            pub id: u32,
+            pub header: Header,
+            pub pair: (u16, bool),
+            pub writer_only: Extra,
+            pub tail: u8,
+        }
+    }
+
+    mod reader {
+        use facet::Facet;
+
+        #[derive(Debug, Facet, PartialEq)]
+        pub struct Header {
+            pub flags: bool,
+            pub trace: u64,
+        }
+
+        #[derive(Debug, Facet, PartialEq)]
+        pub struct Message {
+            pub tail: u8,
+            pub pair: (u16, bool),
+            pub header: Header,
+            pub id: u32,
+        }
+    }
+
+    let writer_plan = writer_plan_for::<writer::Message>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let bytes = encode_to_vec_with_plan(
+        &writer::Message {
+            id: 0x1122_3344,
+            header: writer::Header {
+                trace: 0x0102_0304_0506_0708,
+                flags: true,
+            },
+            pair: (0x5566, false),
+            writer_only: writer::Extra {
+                code: 0x7788,
+                enabled: true,
+            },
+            tail: 9,
+        },
+        &writer_plan,
+    )
+    .unwrap();
+
+    let stencil =
+        stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry).unwrap();
+    let decoded = stencil.decode(&bytes).unwrap();
+    let interpreted =
+        decode_from_slice::<reader::Message>(&bytes, writer_plan.root(), &writer_registry).unwrap();
+
+    assert_eq!(decoded, interpreted);
+    assert_eq!(
+        decoded,
+        reader::Message {
+            tail: 9,
+            pair: (0x5566, false),
+            header: reader::Header {
+                flags: true,
+                trace: 0x0102_0304_0506_0708,
+            },
+            id: 0x1122_3344,
+        }
+    );
+
+    let mut invalid_nested_bool = bytes.clone();
+    invalid_nested_bool[12] = 2;
+    assert!(matches!(
+        stencil.decode(&invalid_nested_bool),
+        Err(StencilError::InvalidBool {
+            position: 12,
+            value: 2,
+            ..
+        })
+    ));
+
+    let mut invalid_skipped_nested_bool = bytes;
+    invalid_skipped_nested_bool[18] = 2;
+    assert!(matches!(
+        stencil.decode(&invalid_skipped_nested_bool),
+        Err(StencilError::InvalidBool {
+            position: 18,
+            value: 2,
+            ..
+        })
+    ));
+}
+
+// r[verify binette.aggregate.enum.compact]
+// r[verify binette.compat.enum]
+// r[verify binette.compat.enum.payload]
+// r[verify binette.compat.enum.unknown-variant]
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[test]
+fn stencil_decodes_enum_variants_by_name_and_payload_plan() {
+    mod writer {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        #[allow(dead_code)]
+        #[repr(u8)]
+        pub enum Event {
+            Started,
+            Moved(u32, u16),
+            Failed { code: u16, flag: bool },
+            WriterOnly,
+        }
+    }
+
+    mod reader {
+        use facet::Facet;
+
+        #[derive(Debug, Facet, PartialEq)]
+        #[allow(dead_code)]
+        #[repr(u8)]
+        pub enum Event {
+            Failed { flag: bool, code: u16 },
+            Started,
+            Moved(u32, u16),
+        }
+    }
+
+    let writer_plan = writer_plan_for::<writer::Event>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let failed_bytes = encode_to_vec_with_plan(
+        &writer::Event::Failed {
+            code: 0x1122,
+            flag: true,
+        },
+        &writer_plan,
+    )
+    .unwrap();
+
+    let stencil =
+        stencil_decoder_for::<reader::Event>(writer_plan.root(), &writer_registry).unwrap();
+    assert_eq!(stencil.fixed_expected_len(), None);
+
+    let decoded = stencil.decode(&failed_bytes).unwrap();
+    let interpreted =
+        decode_from_slice::<reader::Event>(&failed_bytes, writer_plan.root(), &writer_registry)
+            .unwrap();
+
+    assert_eq!(decoded, interpreted);
+    assert_eq!(
+        decoded,
+        reader::Event::Failed {
+            flag: true,
+            code: 0x1122,
+        }
+    );
+
+    let moved_bytes = encode_to_vec_with_plan(&writer::Event::Moved(10, 20), &writer_plan).unwrap();
+    assert_eq!(
+        stencil.decode(&moved_bytes).unwrap(),
+        reader::Event::Moved(10, 20)
+    );
+
+    let mut unknown_variant = failed_bytes.clone();
+    unknown_variant[0..4].copy_from_slice(&99u32.to_le_bytes());
+    assert!(matches!(
+        stencil.decode(&unknown_variant),
+        Err(StencilError::UnknownVariantIndex {
+            position: 0,
+            variant_index: 99,
+        })
+    ));
+
+    let writer_only_bytes =
+        encode_to_vec_with_plan(&writer::Event::WriterOnly, &writer_plan).unwrap();
+    assert!(matches!(
+        stencil.decode(&writer_only_bytes),
+        Err(StencilError::UnreadableWriterVariant {
+            position: 0,
+            variant_index: 3,
+            ..
+        })
+    ));
+}
+
 // r[verify binette.aggregate.list]
 // r[verify binette.aggregate.option]
 // r[verify binette.aggregate.array]
