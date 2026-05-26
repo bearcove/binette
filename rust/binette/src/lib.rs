@@ -53,8 +53,9 @@ pub use schema_format::{
     schema_bundle_to_value, schema_from_value, schema_to_value,
 };
 pub use stencil::{
-    StencilDecoder, StencilError, decode_from_slice_with_stencil, stencil_decoder_for,
-    stencil_decoder_from_plan,
+    StencilDecoder, StencilEncoder, StencilError, decode_from_slice_with_stencil,
+    encode_to_vec_with_stencil, stencil_decoder_for, stencil_decoder_from_plan,
+    stencil_encoder_for, stencil_encoder_from_plan,
 };
 pub use value::{
     ArrayValue, EnumValue, ExtensionValue, FieldValue, SelfDescribingError, Value,

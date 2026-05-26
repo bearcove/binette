@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use facet_core::Facet;
+use facet_core::{Facet, PtrUninit, Shape};
 use facet_reflect::{AllocError, Partial, ReflectError, ShapeMismatchError};
 use thiserror::Error;
 
@@ -86,6 +86,24 @@ pub fn decode_from_slice_with_plan<T: Facet<'static>>(
         });
     }
     Ok(partial.build()?.materialize::<T>()?)
+}
+
+pub(crate) unsafe fn decode_plan_node_into_raw(
+    input: &[u8],
+    node: &PlanNode,
+    writer_registry: &SchemaRegistry,
+    reader_shape: &'static Shape,
+    out: *mut u8,
+) -> Result<usize, DecodeError> {
+    let mut executor = DecodeExecutor {
+        reader: CompactReader::new(input),
+        writer_registry,
+    };
+    let ptr = PtrUninit::new(out);
+    let partial = unsafe { Partial::<'static, false>::from_raw_with_shape(ptr, reader_shape)? };
+    let partial = executor.decode_node(partial, node)?;
+    partial.finish_in_place()?;
+    Ok(executor.reader.position())
 }
 
 struct DecodeExecutor<'input, 'registry> {

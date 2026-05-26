@@ -74,6 +74,10 @@ impl WriterPlan {
     pub fn root(&self) -> &TypeRef {
         &self.bundle.root
     }
+
+    pub(crate) fn root_node(&self) -> &WriterNode {
+        &self.root
+    }
 }
 
 // r[impl binette.schema.model]
@@ -121,8 +125,16 @@ fn encode_with_plan(
     WriterPlanExecutor { out }.encode_node(peek, &plan.root)
 }
 
+pub(crate) fn encode_node_with_writer_node(
+    out: &mut Vec<u8>,
+    peek: Peek<'_, 'static>,
+    node: &WriterNode,
+) -> Result<(), EncodeError> {
+    WriterPlanExecutor { out }.encode_node(peek, node)
+}
+
 #[derive(Debug, Clone)]
-enum WriterNode {
+pub(crate) enum WriterNode {
     Primitive(Primitive),
     Struct {
         fields: Vec<WriterFieldPlan>,
@@ -155,27 +167,27 @@ enum WriterNode {
 }
 
 #[derive(Debug, Clone)]
-struct WriterFieldPlan {
-    facet_index: usize,
-    name: String,
-    node: WriterNode,
+pub(crate) struct WriterFieldPlan {
+    pub(crate) facet_index: usize,
+    pub(crate) name: String,
+    pub(crate) node: WriterNode,
 }
 
 #[derive(Debug, Clone)]
-struct WriterTupleElementPlan {
-    facet_index: usize,
-    node: WriterNode,
+pub(crate) struct WriterTupleElementPlan {
+    pub(crate) facet_index: usize,
+    pub(crate) node: WriterNode,
 }
 
 #[derive(Debug, Clone)]
-struct WriterVariantPlan {
-    facet_index: usize,
-    wire_index: u32,
-    payload: WriterVariantPayloadPlan,
+pub(crate) struct WriterVariantPlan {
+    pub(crate) facet_index: usize,
+    pub(crate) wire_index: u32,
+    pub(crate) payload: WriterVariantPayloadPlan,
 }
 
 #[derive(Debug, Clone)]
-enum WriterVariantPayloadPlan {
+pub(crate) enum WriterVariantPayloadPlan {
     Unit,
     Newtype(WriterTupleElementPlan),
     Tuple(Vec<WriterTupleElementPlan>),

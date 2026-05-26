@@ -3,8 +3,8 @@ use std::hash::{Hash, Hasher};
 
 use binette::{
     CompactError, DecodeError, EncodeError, Primitive, SchemaBundle, SchemaRegistry, StencilError,
-    TypeRef, decode_from_slice, encode_to_vec, encode_to_vec_with_plan, primitive_type_id,
-    stencil_decoder_for, writer_plan_for,
+    TypeRef, decode_from_slice, encode_to_vec, encode_to_vec_with_plan, encode_to_vec_with_stencil,
+    primitive_type_id, stencil_decoder_for, stencil_encoder_from_plan, writer_plan_for,
 };
 use facet::Facet;
 use facet_value::{VArray, VObject, Value as FacetValue};
@@ -434,6 +434,155 @@ fn stencil_decodes_same_schema_enum_through_translation_plan() {
     let stencil = stencil_decoder_for::<Event>(writer_plan.root(), &writer_registry).unwrap();
 
     assert_eq!(stencil.decode(&bytes).unwrap(), Event::Moved(10, 20));
+}
+
+// r[verify binette.aggregate.struct.compact]
+// r[verify binette.aggregate.list]
+// r[verify binette.aggregate.option]
+// r[verify binette.compat.field-matching]
+// r[verify binette.compat.skip-unknown]
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[test]
+fn stencil_decodes_mixed_struct_through_schema_plan() {
+    mod writer {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        pub struct Nested {
+            pub count: u32,
+            pub label: String,
+            pub enabled: bool,
+        }
+
+        #[derive(Facet)]
+        pub struct Message {
+            pub id: u64,
+            pub title: String,
+            pub active: bool,
+            pub counts: Vec<u32>,
+            pub maybe: Option<String>,
+            pub nested: Nested,
+            pub pair: (u16, String),
+            pub writer_only: String,
+        }
+    }
+
+    mod reader {
+        use facet::Facet;
+
+        #[derive(Debug, Facet, PartialEq)]
+        pub struct Nested {
+            pub label: String,
+            pub enabled: bool,
+            pub count: u32,
+        }
+
+        #[derive(Debug, Facet, PartialEq)]
+        pub struct Message {
+            pub pair: (u16, String),
+            pub nested: Nested,
+            pub maybe: Option<String>,
+            pub counts: Vec<u32>,
+            pub active: bool,
+            pub title: String,
+            pub id: u64,
+        }
+    }
+
+    let writer_plan = writer_plan_for::<writer::Message>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let bytes = encode_to_vec_with_plan(
+        &writer::Message {
+            id: 0x0102_0304_0506_0708,
+            title: "binette baseline".to_owned(),
+            active: true,
+            counts: vec![1, 2, 3, 5, 8, 13, 21, 34],
+            maybe: Some("present".to_owned()),
+            nested: writer::Nested {
+                count: 42,
+                label: "nested".to_owned(),
+                enabled: true,
+            },
+            pair: (7, "seven".to_owned()),
+            writer_only: "skipped by reader".to_owned(),
+        },
+        &writer_plan,
+    )
+    .unwrap();
+
+    let stencil =
+        stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry).unwrap();
+    assert_eq!(stencil.fixed_expected_len(), None);
+
+    let decoded = stencil.decode(&bytes).unwrap();
+    let interpreted =
+        decode_from_slice::<reader::Message>(&bytes, writer_plan.root(), &writer_registry).unwrap();
+
+    assert_eq!(decoded, interpreted);
+    assert_eq!(
+        decoded,
+        reader::Message {
+            pair: (7, "seven".to_owned()),
+            nested: reader::Nested {
+                label: "nested".to_owned(),
+                enabled: true,
+                count: 42,
+            },
+            maybe: Some("present".to_owned()),
+            counts: vec![1, 2, 3, 5, 8, 13, 21, 34],
+            active: true,
+            title: "binette baseline".to_owned(),
+            id: 0x0102_0304_0506_0708,
+        }
+    );
+}
+
+// r[verify binette.mode.compact]
+// r[verify binette.aggregate.struct.compact]
+// r[verify binette.aggregate.list]
+// r[verify binette.aggregate.option]
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[test]
+fn stencil_encodes_mixed_struct_through_writer_plan() {
+    #[derive(Facet)]
+    struct Nested {
+        count: u32,
+        label: String,
+        enabled: bool,
+    }
+
+    #[derive(Facet)]
+    struct Message {
+        id: u64,
+        title: String,
+        active: bool,
+        counts: Vec<u32>,
+        maybe: Option<String>,
+        nested: Nested,
+        pair: (u16, String),
+    }
+
+    let value = Message {
+        id: 0x0102_0304_0506_0708,
+        title: "binette baseline".to_owned(),
+        active: true,
+        counts: vec![1, 2, 3, 5, 8, 13, 21, 34],
+        maybe: Some("present".to_owned()),
+        nested: Nested {
+            count: 42,
+            label: "nested".to_owned(),
+            enabled: true,
+        },
+        pair: (7, "seven".to_owned()),
+    };
+
+    let writer_plan = writer_plan_for::<Message>().unwrap();
+    let stencil = stencil_encoder_from_plan::<Message>(&writer_plan).unwrap();
+
+    let stencil_bytes = encode_to_vec_with_stencil(&value, &stencil).unwrap();
+    let interpreted_bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+
+    assert_eq!(stencil_bytes, interpreted_bytes);
 }
 
 // r[verify binette.aggregate.list]

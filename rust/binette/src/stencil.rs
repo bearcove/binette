@@ -2,12 +2,18 @@ use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr::{NonNull, copy_nonoverlapping};
+use std::slice;
 
-use facet_core::{EnumRepr, EnumType, Facet, Shape, StructKind, Type, UserType};
+use facet_core::{EnumRepr, EnumType, Facet, PtrConst, Shape, StructKind, Type, UserType};
+use facet_reflect::Peek;
 use thiserror::Error;
 
-use crate::compact::CompactError;
-use crate::decode::DecodeError;
+use crate::compact::{CompactError, CompactReader};
+use crate::decode::{DecodeError, decode_plan_node_into_raw};
+use crate::encode::{
+    EncodeError, WriterFieldPlan, WriterNode, WriterPlan, encode_node_with_writer_node,
+    writer_plan_for,
+};
 use crate::hash::primitive_for_type_id;
 use crate::plan::{
     EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, ReaderPlan, StructFieldPlan,
@@ -16,20 +22,51 @@ use crate::plan::{
 use crate::registry::SchemaRegistry;
 use crate::schema::{Primitive, SchemaKind, TypeId, TypeRef};
 
-type StencilFn = unsafe extern "C" fn(input: *const u8, len: usize, out: *mut u8) -> u32;
+type FixedStencilFn = unsafe extern "C" fn(input: *const u8, len: usize, out: *mut u8) -> u32;
+type HybridStencilFn = unsafe extern "C" fn(
+    runtime: *const StencilRuntime,
+    input: *const u8,
+    len: usize,
+    out: *mut u8,
+) -> usize;
+type EncodeStencilFn = unsafe extern "C" fn(
+    runtime: *const StencilEncodeRuntime,
+    value: *const u8,
+    out: *mut Vec<u8>,
+) -> u32;
 
 pub struct StencilDecoder<T> {
     code: ExecutableMemory,
-    func: StencilFn,
-    length_check: LengthCheck,
+    entry: StencilEntry,
     failures: Vec<StencilFailure>,
     _marker: PhantomData<fn() -> T>,
+}
+
+pub struct StencilEncoder<T> {
+    code: ExecutableMemory,
+    func: EncodeStencilFn,
+    runtime: Box<StencilEncodeRuntime>,
+    _marker: PhantomData<fn() -> T>,
+}
+
+enum StencilEntry {
+    Fixed {
+        func: FixedStencilFn,
+        length_check: LengthCheck,
+    },
+    Hybrid {
+        func: HybridStencilFn,
+        runtime: Box<StencilRuntime>,
+    },
 }
 
 #[derive(Debug, Error)]
 pub enum StencilError {
     #[error(transparent)]
     Plan(#[from] PlanError),
+
+    #[error(transparent)]
+    Encode(#[from] EncodeError),
 
     #[error("unknown writer type id {type_id:?} at {path}")]
     UnknownWriterType { path: String, type_id: TypeId },
@@ -60,6 +97,9 @@ pub enum StencilError {
         variant: String,
     },
 
+    #[error("stencil helper failed at {path}")]
+    HelperFailed { path: String },
+
     #[error("failed to allocate executable stencil memory")]
     ExecutableMemory,
 
@@ -70,11 +110,14 @@ pub enum StencilError {
 impl<T> StencilDecoder<T> {
     pub fn expected_len(&self) -> usize {
         self.fixed_expected_len()
-            .expect("stencil decoder has variant-dependent input lengths")
+            .expect("stencil decoder has variant-dependent or variable input lengths")
     }
 
     pub fn fixed_expected_len(&self) -> Option<usize> {
-        self.length_check.fixed_expected_len()
+        match &self.entry {
+            StencilEntry::Fixed { length_check, .. } => length_check.fixed_expected_len(),
+            StencilEntry::Hybrid { .. } => None,
+        }
     }
 
     pub fn code_len(&self) -> usize {
@@ -84,17 +127,47 @@ impl<T> StencilDecoder<T> {
 
 impl<T: Facet<'static>> StencilDecoder<T> {
     pub fn decode(&self, input: &[u8]) -> Result<T, StencilError> {
-        self.length_check.validate(input)?;
+        match &self.entry {
+            StencilEntry::Fixed { func, length_check } => {
+                length_check.validate(input)?;
 
-        let mut out = MaybeUninit::<T>::uninit();
-        // SAFETY: the compiled stencil was built from T::SHAPE field offsets and
-        // writes every supported field exactly once before returning.
-        let status = unsafe { (self.func)(input.as_ptr(), input.len(), out.as_mut_ptr().cast()) };
-        if status == STENCIL_OK {
-            // SAFETY: status zero means every supported output byte was written.
-            unsafe { Ok(out.assume_init()) }
-        } else {
-            Err(self.failure_for_status(status, input))
+                let mut out = MaybeUninit::<T>::uninit();
+                // SAFETY: the compiled stencil was built from T::SHAPE field offsets and
+                // writes every supported field exactly once before returning.
+                let status = unsafe { func(input.as_ptr(), input.len(), out.as_mut_ptr().cast()) };
+                if status == STENCIL_OK {
+                    // SAFETY: status zero means every supported output byte was written.
+                    unsafe { Ok(out.assume_init()) }
+                } else {
+                    Err(self.failure_for_status(status, input))
+                }
+            }
+            StencilEntry::Hybrid { func, runtime } => {
+                let mut out = MaybeUninit::<T>::uninit();
+                // SAFETY: the generated function only calls stencil_decode_helper
+                // with the runtime it was compiled with and writes through the
+                // schema-derived offsets carried by that runtime.
+                let result = unsafe {
+                    func(
+                        runtime.as_ref(),
+                        input.as_ptr(),
+                        input.len(),
+                        out.as_mut_ptr().cast(),
+                    )
+                };
+                if let Some(status) = hybrid_error_status(result) {
+                    return Err(self.failure_for_status(status, input));
+                }
+                if result != input.len() {
+                    return Err(StencilError::InputLength {
+                        expected: result,
+                        actual: input.len(),
+                    });
+                }
+                // SAFETY: a successful hybrid result means every planned root
+                // field was initialized and the entire input was consumed.
+                unsafe { Ok(out.assume_init()) }
+            }
         }
     }
 
@@ -128,6 +201,29 @@ impl<T: Facet<'static>> StencilDecoder<T> {
                 variant_index: *variant_index,
                 variant: variant.clone(),
             },
+            StencilFailure::Helper { path } => StencilError::HelperFailed { path: path.clone() },
+        }
+    }
+}
+
+impl<T> StencilEncoder<T> {
+    pub fn code_len(&self) -> usize {
+        self.code.len()
+    }
+}
+
+impl<T: Facet<'static>> StencilEncoder<T> {
+    pub fn encode_to_vec(&self, value: &T) -> Result<Vec<u8>, EncodeError> {
+        let mut out = Vec::new();
+        let status =
+            unsafe { (self.func)(self.runtime.as_ref(), (value as *const T).cast(), &mut out) };
+        if status == STENCIL_OK {
+            Ok(out)
+        } else {
+            Err(EncodeError::Unsupported {
+                shape: T::SHAPE,
+                reason: "stencil encode helper failed",
+            })
         }
     }
 }
@@ -148,6 +244,60 @@ pub fn stencil_decoder_from_plan<T: Facet<'static>>(
     plan: &ReaderPlan,
     writer_registry: &SchemaRegistry,
 ) -> Result<StencilDecoder<T>, StencilError> {
+    match fixed_stencil_decoder_from_plan(plan, writer_registry) {
+        Ok(decoder) => Ok(decoder),
+        Err(fixed_error) => {
+            if matches!(&fixed_error, StencilError::Unsupported { .. })
+                && let Ok(decoder) = hybrid_stencil_decoder_from_plan(plan, writer_registry)
+            {
+                return Ok(decoder);
+            }
+            Err(fixed_error)
+        }
+    }
+}
+
+// r[impl binette.mode.compact]
+pub fn stencil_encoder_for<T: Facet<'static>>() -> Result<StencilEncoder<T>, StencilError> {
+    let plan = writer_plan_for::<T>()?;
+    stencil_encoder_from_plan(&plan)
+}
+
+// r[impl binette.mode.compact]
+pub fn stencil_encoder_from_plan<T: Facet<'static>>(
+    plan: &WriterPlan,
+) -> Result<StencilEncoder<T>, StencilError> {
+    let mut compiler = StencilEncodeCompiler {
+        ops: Vec::new(),
+        helpers: Vec::new(),
+        failures: Vec::new(),
+    };
+    compiler.compile_root::<T>(plan.root_node())?;
+
+    let code = generate_encode_code(&compiler.ops)?;
+    let func = code.as_encode_fn();
+    Ok(StencilEncoder {
+        code,
+        func,
+        runtime: Box::new(StencilEncodeRuntime {
+            root_shape: T::SHAPE,
+            helpers: compiler.helpers,
+        }),
+        _marker: PhantomData,
+    })
+}
+
+pub fn encode_to_vec_with_stencil<T: Facet<'static>>(
+    value: &T,
+    encoder: &StencilEncoder<T>,
+) -> Result<Vec<u8>, EncodeError> {
+    encoder.encode_to_vec(value)
+}
+
+fn fixed_stencil_decoder_from_plan<T: Facet<'static>>(
+    plan: &ReaderPlan,
+    writer_registry: &SchemaRegistry,
+) -> Result<StencilDecoder<T>, StencilError> {
     let mut compiler = StencilCompiler {
         writer_registry,
         ops: Vec::new(),
@@ -157,11 +307,37 @@ pub fn stencil_decoder_from_plan<T: Facet<'static>>(
     let length_check = compiler.compile_root::<T>(&plan.root)?;
 
     let code = generate_code(&compiler.ops, compiler.failures.len())?;
-    let func = code.as_fn();
+    let func = code.as_fixed_fn();
     Ok(StencilDecoder {
         code,
-        func,
-        length_check,
+        entry: StencilEntry::Fixed { func, length_check },
+        failures: compiler.failures,
+        _marker: PhantomData,
+    })
+}
+
+fn hybrid_stencil_decoder_from_plan<T: Facet<'static>>(
+    plan: &ReaderPlan,
+    writer_registry: &SchemaRegistry,
+) -> Result<StencilDecoder<T>, StencilError> {
+    let mut compiler = HybridStencilCompiler {
+        ops: Vec::new(),
+        helpers: Vec::new(),
+        failures: Vec::new(),
+    };
+    compiler.compile_root::<T>(&plan.root)?;
+
+    let code = generate_hybrid_code(&compiler.ops)?;
+    let func = code.as_hybrid_fn();
+    Ok(StencilDecoder {
+        code,
+        entry: StencilEntry::Hybrid {
+            func,
+            runtime: Box::new(StencilRuntime {
+                writer_registry: writer_registry.clone(),
+                helpers: compiler.helpers,
+            }),
+        },
         failures: compiler.failures,
         _marker: PhantomData,
     })
@@ -199,10 +375,12 @@ pub fn decode_from_slice_with_stencil<T: Facet<'static>>(
                 StencilError::Unsupported { reason, .. } => reason,
                 StencilError::UnknownWriterType { .. } => "stencil writer type is unknown",
                 StencilError::Plan(_) => "stencil plan failed",
+                StencilError::Encode(_) => "stencil encode plan failed",
                 StencilError::InvalidBool { .. } => unreachable!(),
                 StencilError::UnknownStatus { .. } => "stencil returned an unknown status",
                 StencilError::UnknownVariantIndex { .. } => unreachable!(),
                 StencilError::UnreadableWriterVariant { .. } => unreachable!(),
+                StencilError::HelperFailed { .. } => "stencil helper decode failed",
                 StencilError::ExecutableMemory => "stencil executable memory allocation failed",
                 StencilError::Mprotect => "stencil executable memory protection failed",
             },
@@ -239,6 +417,9 @@ enum StencilFailure {
         variant_index: u32,
         variant: String,
     },
+    Helper {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +436,48 @@ enum StencilOp {
         bodies: Vec<Vec<StencilOp>>,
         unknown_failure_index: usize,
     },
+}
+
+#[derive(Debug, Clone)]
+enum HybridStencilOp {
+    Helper { helper_index: usize },
+}
+
+#[derive(Debug, Clone)]
+enum StencilHelper {
+    Decode {
+        plan: PlanNode,
+        reader_shape: &'static Shape,
+        output_offset: usize,
+        failure_index: usize,
+    },
+    Skip {
+        writer_type: TypeRef,
+        failure_index: usize,
+    },
+}
+
+struct StencilRuntime {
+    writer_registry: SchemaRegistry,
+    helpers: Vec<StencilHelper>,
+}
+
+#[derive(Debug, Clone)]
+enum EncodeStencilOp {
+    Helper { helper_index: usize },
+}
+
+#[derive(Debug, Clone)]
+enum StencilEncodeHelper {
+    StructField {
+        field: WriterFieldPlan,
+        failure_index: usize,
+    },
+}
+
+struct StencilEncodeRuntime {
+    root_shape: &'static Shape,
+    helpers: Vec<StencilEncodeHelper>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -753,6 +976,153 @@ impl StencilCompiler<'_> {
     }
 }
 
+struct HybridStencilCompiler {
+    ops: Vec<HybridStencilOp>,
+    helpers: Vec<StencilHelper>,
+    failures: Vec<StencilFailure>,
+}
+
+impl HybridStencilCompiler {
+    fn compile_root<T: Facet<'static>>(&mut self, root: &PlanNode) -> Result<(), StencilError> {
+        match root {
+            PlanNode::Struct { fields } => self.compile_struct_root(T::SHAPE, fields, 0, "$"),
+            _ => Err(StencilError::Unsupported {
+                path: "$".to_owned(),
+                reason: "hybrid stencil backend currently supports root structs",
+            }),
+        }
+    }
+
+    // r[impl binette.compat.field-matching]
+    // r[impl binette.compat.skip-unknown]
+    fn compile_struct_root(
+        &mut self,
+        reader_shape: &'static Shape,
+        fields: &[StructFieldPlan],
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let reader_fields = shape_struct_fields(reader_shape, path)?;
+        for field in fields {
+            match field {
+                StructFieldPlan::Read {
+                    reader_index,
+                    name,
+                    plan,
+                    ..
+                } => {
+                    let reader_field = reader_fields.get(*reader_index).ok_or_else(|| {
+                        StencilError::Unsupported {
+                            path: format!("{path}.{name}"),
+                            reason: "reader field index is out of range",
+                        }
+                    })?;
+                    let field_offset = checked_offset(output_offset, reader_field.offset, path)?;
+                    self.push_decode_helper(
+                        plan,
+                        reader_field.shape.get(),
+                        field_offset,
+                        &format!("{path}.{name}"),
+                    )?;
+                }
+                StructFieldPlan::Skip {
+                    writer_type, name, ..
+                } => self.push_skip_helper(writer_type, &format!("{path}.{name}"))?,
+            }
+        }
+        Ok(())
+    }
+
+    fn push_decode_helper(
+        &mut self,
+        plan: &PlanNode,
+        reader_shape: &'static Shape,
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilHelper::Decode {
+            plan: plan.clone(),
+            reader_shape,
+            output_offset,
+            failure_index,
+        });
+        self.ops.push(HybridStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
+    fn push_skip_helper(&mut self, writer_type: &TypeRef, path: &str) -> Result<(), StencilError> {
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilHelper::Skip {
+            writer_type: writer_type.clone(),
+            failure_index,
+        });
+        self.ops.push(HybridStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
+    fn push_helper_failure(&mut self, path: &str) -> Result<usize, StencilError> {
+        let failure_index = self.failures.len();
+        let _ = status_for_failure(failure_index)?;
+        self.failures.push(StencilFailure::Helper {
+            path: path.to_owned(),
+        });
+        Ok(failure_index)
+    }
+}
+
+struct StencilEncodeCompiler {
+    ops: Vec<EncodeStencilOp>,
+    helpers: Vec<StencilEncodeHelper>,
+    failures: Vec<StencilFailure>,
+}
+
+impl StencilEncodeCompiler {
+    fn compile_root<T: Facet<'static>>(&mut self, root: &WriterNode) -> Result<(), StencilError> {
+        match root {
+            WriterNode::Struct { fields } => self.compile_struct_root::<T>(fields),
+            _ => Err(StencilError::Unsupported {
+                path: "$".to_owned(),
+                reason: "encode stencil backend currently supports root structs",
+            }),
+        }
+    }
+
+    // r[impl binette.aggregate.struct.compact]
+    fn compile_struct_root<T: Facet<'static>>(
+        &mut self,
+        fields: &[WriterFieldPlan],
+    ) -> Result<(), StencilError> {
+        let _ = shape_struct_fields(T::SHAPE, "$")?;
+        for field in fields {
+            self.push_field_helper(field)?;
+        }
+        Ok(())
+    }
+
+    fn push_field_helper(&mut self, field: &WriterFieldPlan) -> Result<(), StencilError> {
+        let failure_index = self.push_helper_failure(&format!("$.{}", field.name))?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilEncodeHelper::StructField {
+            field: field.clone(),
+            failure_index,
+        });
+        self.ops.push(EncodeStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
+    fn push_helper_failure(&mut self, path: &str) -> Result<usize, StencilError> {
+        let failure_index = self.failures.len();
+        let _ = status_for_failure(failure_index)?;
+        self.failures.push(StencilFailure::Helper {
+            path: path.to_owned(),
+        });
+        Ok(failure_index)
+    }
+}
+
 impl CopyWidth {
     fn bytes(self) -> usize {
         match self {
@@ -868,6 +1238,128 @@ fn checked_offset(offset: usize, width: usize, path: &str) -> Result<usize, Sten
 }
 
 const STENCIL_OK: u32 = 0;
+const HYBRID_ERROR_FLAG: usize = 1usize << (usize::BITS - 1);
+
+fn hybrid_error_status(value: usize) -> Option<u32> {
+    if value & HYBRID_ERROR_FLAG == 0 {
+        return None;
+    }
+    Some((value & !HYBRID_ERROR_FLAG) as u32)
+}
+
+fn hybrid_error_for_failure(index: usize) -> usize {
+    match status_for_failure(index) {
+        Ok(status) => HYBRID_ERROR_FLAG | status as usize,
+        Err(_) => HYBRID_ERROR_FLAG,
+    }
+}
+
+unsafe extern "C" fn stencil_decode_helper(
+    runtime: *const StencilRuntime,
+    input: *const u8,
+    len: usize,
+    out: *mut u8,
+    cursor: usize,
+    helper_index: usize,
+) -> usize {
+    let Some(runtime) = (unsafe { runtime.as_ref() }) else {
+        return HYBRID_ERROR_FLAG;
+    };
+    let Some(helper) = runtime.helpers.get(helper_index) else {
+        return HYBRID_ERROR_FLAG;
+    };
+    if cursor > len {
+        return hybrid_error_for_helper(helper);
+    }
+
+    let input = unsafe { slice::from_raw_parts(input, len) };
+    let tail = &input[cursor..];
+    let consumed = match helper {
+        StencilHelper::Decode {
+            plan,
+            reader_shape,
+            output_offset,
+            ..
+        } => {
+            let output = unsafe { out.add(*output_offset) };
+            match unsafe {
+                decode_plan_node_into_raw(
+                    tail,
+                    plan,
+                    &runtime.writer_registry,
+                    reader_shape,
+                    output,
+                )
+            } {
+                Ok(consumed) => consumed,
+                Err(_) => return hybrid_error_for_helper(helper),
+            }
+        }
+        StencilHelper::Skip { writer_type, .. } => {
+            let mut reader = CompactReader::new(tail);
+            if reader
+                .skip_value(writer_type, &runtime.writer_registry)
+                .is_err()
+            {
+                return hybrid_error_for_helper(helper);
+            }
+            reader.position()
+        }
+    };
+
+    cursor
+        .checked_add(consumed)
+        .unwrap_or_else(|| hybrid_error_for_helper(helper))
+}
+
+fn hybrid_error_for_helper(helper: &StencilHelper) -> usize {
+    match helper {
+        StencilHelper::Decode { failure_index, .. } | StencilHelper::Skip { failure_index, .. } => {
+            hybrid_error_for_failure(*failure_index)
+        }
+    }
+}
+
+unsafe extern "C" fn stencil_encode_helper(
+    runtime: *const StencilEncodeRuntime,
+    value: *const u8,
+    out: *mut Vec<u8>,
+    helper_index: usize,
+) -> u32 {
+    let Some(runtime) = (unsafe { runtime.as_ref() }) else {
+        return 1;
+    };
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return 1;
+    };
+    let Some(helper) = runtime.helpers.get(helper_index) else {
+        return 1;
+    };
+
+    let status = match helper {
+        StencilEncodeHelper::StructField { failure_index, .. } => {
+            status_for_failure(*failure_index).unwrap_or(1)
+        }
+    };
+    let root: Peek<'_, 'static> =
+        unsafe { Peek::unchecked_new(PtrConst::new(value), runtime.root_shape) };
+
+    match helper {
+        StencilEncodeHelper::StructField { field, .. } => {
+            let Ok(struct_peek) = root.into_struct() else {
+                return status;
+            };
+            let Ok(field_peek) = struct_peek.field(field.facet_index) else {
+                return status;
+            };
+            if encode_node_with_writer_node(out, field_peek, &field.node).is_err() {
+                return status;
+            }
+        }
+    }
+
+    STENCIL_OK
+}
 
 fn generate_code(
     ops: &[StencilOp],
@@ -916,6 +1408,73 @@ fn generate_code(
     }
 }
 
+fn generate_hybrid_code(ops: &[HybridStencilOp]) -> Result<ExecutableMemory, StencilError> {
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    {
+        let mut code = Vec::with_capacity(ops.len() * 48 + 128);
+        emit_hybrid_prologue(&mut code);
+
+        let mut error_branches = Vec::new();
+        for op in ops {
+            emit_hybrid_op(&mut code, op, &mut error_branches)?;
+        }
+
+        push_u32(&mut code, AARCH64_MOV_X0_X23);
+        let epilogue_offset = code.len();
+        emit_hybrid_epilogue(&mut code);
+
+        for branch_offset in error_branches {
+            let word =
+                patch_test_bit_branch_imm14(AARCH64_TBNZ_X0_63, branch_offset, epilogue_offset)?;
+            code[branch_offset..branch_offset + 4].copy_from_slice(&word.to_le_bytes());
+        }
+
+        ExecutableMemory::new(&code)
+    }
+
+    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    {
+        let _ = ops;
+        Err(StencilError::Unsupported {
+            path: "$".to_owned(),
+            reason: "stencil backend currently requires little-endian AArch64",
+        })
+    }
+}
+
+fn generate_encode_code(ops: &[EncodeStencilOp]) -> Result<ExecutableMemory, StencilError> {
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    {
+        let mut code = Vec::with_capacity(ops.len() * 40 + 96);
+        emit_encode_prologue(&mut code);
+
+        let mut error_branches = Vec::new();
+        for op in ops {
+            emit_encode_op(&mut code, op, &mut error_branches)?;
+        }
+
+        push_u32(&mut code, mov_w0_immediate(STENCIL_OK)?);
+        let epilogue_offset = code.len();
+        emit_encode_epilogue(&mut code);
+
+        for branch_offset in error_branches {
+            let word = patch_cond_branch_imm19(AARCH64_B_NE, branch_offset, epilogue_offset)?;
+            code[branch_offset..branch_offset + 4].copy_from_slice(&word.to_le_bytes());
+        }
+
+        ExecutableMemory::new(&code)
+    }
+
+    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    {
+        let _ = ops;
+        Err(StencilError::Unsupported {
+            path: "$".to_owned(),
+            reason: "stencil backend currently requires little-endian AArch64",
+        })
+    }
+}
+
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_RET: u32 = 0xD65F_03C0;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
@@ -925,7 +1484,57 @@ const AARCH64_B_HI: u32 = 0x5400_0008;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_B_EQ: u32 = 0x5400_0000;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_B_NE: u32 = 0x5400_0001;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_B: u32 = 0x1400_0000;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_CMP_W0_0: u32 = 0x7100_001F;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_STP_X29_X30_PRE: u32 = 0xA9BF_7BFD;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_MOV_X29_SP: u32 = 0x9100_03FD;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_STP_X19_X20_PRE: u32 = 0xA9BF_53F3;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_STP_X21_X22_PRE: u32 = 0xA9BF_5BF5;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_STP_X23_X24_PRE: u32 = 0xA9BF_63F7;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_MOV_X19_X0: u32 = 0xAA00_03F3;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_MOV_X20_X1: u32 = 0xAA01_03F4;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_MOV_X21_X2: u32 = 0xAA02_03F5;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_MOV_X22_X3: u32 = 0xAA03_03F6;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_MOV_X23_0: u32 = 0xD280_0017;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_MOV_X0_X19: u32 = 0xAA13_03E0;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_MOV_X1_X20: u32 = 0xAA14_03E1;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_MOV_X2_X21: u32 = 0xAA15_03E2;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_MOV_X3_X22: u32 = 0xAA16_03E3;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_MOV_X4_X23: u32 = 0xAA17_03E4;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_MOV_X23_X0: u32 = 0xAA00_03F7;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_MOV_X0_X23: u32 = 0xAA17_03E0;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_BLR_X16: u32 = 0xD63F_0200;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_TBNZ_X0_63: u32 = 0xB7F8_0000;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_LDP_X23_X24_POST: u32 = 0xA8C1_63F7;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_LDP_X21_X22_POST: u32 = 0xA8C1_5BF5;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_LDP_X19_X20_POST: u32 = 0xA8C1_53F3;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_LDP_X29_X30_POST: u32 = 0xA8C1_7BFD;
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 #[derive(Debug, Clone, Copy)]
@@ -1128,6 +1737,106 @@ fn emit_root_enum_op(
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_hybrid_prologue(code: &mut Vec<u8>) {
+    push_u32(code, AARCH64_STP_X29_X30_PRE);
+    push_u32(code, AARCH64_MOV_X29_SP);
+    push_u32(code, AARCH64_STP_X19_X20_PRE);
+    push_u32(code, AARCH64_STP_X21_X22_PRE);
+    push_u32(code, AARCH64_STP_X23_X24_PRE);
+    push_u32(code, AARCH64_MOV_X19_X0);
+    push_u32(code, AARCH64_MOV_X20_X1);
+    push_u32(code, AARCH64_MOV_X21_X2);
+    push_u32(code, AARCH64_MOV_X22_X3);
+    push_u32(code, AARCH64_MOV_X23_0);
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_hybrid_epilogue(code: &mut Vec<u8>) {
+    push_u32(code, AARCH64_LDP_X23_X24_POST);
+    push_u32(code, AARCH64_LDP_X21_X22_POST);
+    push_u32(code, AARCH64_LDP_X19_X20_POST);
+    push_u32(code, AARCH64_LDP_X29_X30_POST);
+    push_u32(code, AARCH64_RET);
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_hybrid_op(
+    code: &mut Vec<u8>,
+    op: &HybridStencilOp,
+    error_branches: &mut Vec<usize>,
+) -> Result<(), StencilError> {
+    match op {
+        HybridStencilOp::Helper { helper_index } => {
+            push_u32(code, AARCH64_MOV_X0_X19);
+            push_u32(code, AARCH64_MOV_X1_X20);
+            push_u32(code, AARCH64_MOV_X2_X21);
+            push_u32(code, AARCH64_MOV_X3_X22);
+            push_u32(code, AARCH64_MOV_X4_X23);
+            let helper_index =
+                u64::try_from(*helper_index).map_err(|_| StencilError::Unsupported {
+                    path: "$code".to_owned(),
+                    reason: "stencil helper index exceeds u64",
+                })?;
+            emit_mov_x_immediate(code, 5, helper_index)?;
+            emit_mov_x_immediate(code, 16, stencil_decode_helper as *const () as usize as u64)?;
+            push_u32(code, AARCH64_BLR_X16);
+            let branch_offset = code.len();
+            push_u32(code, 0);
+            error_branches.push(branch_offset);
+            push_u32(code, AARCH64_MOV_X23_X0);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_encode_prologue(code: &mut Vec<u8>) {
+    push_u32(code, AARCH64_STP_X29_X30_PRE);
+    push_u32(code, AARCH64_MOV_X29_SP);
+    push_u32(code, AARCH64_STP_X19_X20_PRE);
+    push_u32(code, AARCH64_STP_X21_X22_PRE);
+    push_u32(code, AARCH64_MOV_X19_X0);
+    push_u32(code, AARCH64_MOV_X20_X1);
+    push_u32(code, AARCH64_MOV_X21_X2);
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_encode_epilogue(code: &mut Vec<u8>) {
+    push_u32(code, AARCH64_LDP_X21_X22_POST);
+    push_u32(code, AARCH64_LDP_X19_X20_POST);
+    push_u32(code, AARCH64_LDP_X29_X30_POST);
+    push_u32(code, AARCH64_RET);
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_encode_op(
+    code: &mut Vec<u8>,
+    op: &EncodeStencilOp,
+    error_branches: &mut Vec<usize>,
+) -> Result<(), StencilError> {
+    match op {
+        EncodeStencilOp::Helper { helper_index } => {
+            push_u32(code, AARCH64_MOV_X0_X19);
+            push_u32(code, AARCH64_MOV_X1_X20);
+            push_u32(code, AARCH64_MOV_X2_X21);
+            let helper_index =
+                u64::try_from(*helper_index).map_err(|_| StencilError::Unsupported {
+                    path: "$code".to_owned(),
+                    reason: "stencil helper index exceeds u64",
+                })?;
+            emit_mov_x_immediate(code, 3, helper_index)?;
+            emit_mov_x_immediate(code, 16, stencil_encode_helper as *const () as usize as u64)?;
+            push_u32(code, AARCH64_BLR_X16);
+            push_u32(code, AARCH64_CMP_W0_0);
+            let branch_offset = code.len();
+            push_u32(code, 0);
+            error_branches.push(branch_offset);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn patch_ldur_stur_imm9(base: u32, offset: usize, path: &str) -> Result<u32, StencilError> {
     let imm = i32::try_from(offset).map_err(|_| StencilError::Unsupported {
         path: path.to_owned(),
@@ -1216,6 +1925,41 @@ fn patch_uncond_branch_imm26(
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn patch_test_bit_branch_imm14(
+    base: u32,
+    branch_offset: usize,
+    target: usize,
+) -> Result<u32, StencilError> {
+    let branch_offset = isize::try_from(branch_offset).map_err(|_| StencilError::Unsupported {
+        path: "$code".to_owned(),
+        reason: "stencil branch offset exceeds isize",
+    })?;
+    let target = isize::try_from(target).map_err(|_| StencilError::Unsupported {
+        path: "$code".to_owned(),
+        reason: "stencil branch target exceeds isize",
+    })?;
+    let delta = target
+        .checked_sub(branch_offset)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil branch offset overflow",
+        })?;
+    if delta % 4 != 0 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil branch target is not instruction-aligned",
+        });
+    }
+    let imm = delta / 4;
+    if !(-(1 << 13)..=(1 << 13) - 1).contains(&imm) {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil branch target exceeds AArch64 imm14 range",
+        });
+    }
+    Ok(base | (((imm as u32) & 0x3fff) << 5))
+}
+
 fn status_for_failure(index: usize) -> Result<u32, StencilError> {
     u32::try_from(index)
         .ok()
@@ -1224,6 +1968,27 @@ fn status_for_failure(index: usize) -> Result<u32, StencilError> {
             path: "$code".to_owned(),
             reason: "too many stencil failure stubs",
         })
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_mov_x_immediate(code: &mut Vec<u8>, rd: u8, value: u64) -> Result<(), StencilError> {
+    if rd > 31 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil register index exceeds AArch64 range",
+        });
+    }
+    let rd = u32::from(rd);
+    for shift_index in 0..4 {
+        let imm = ((value >> (shift_index * 16)) & 0xffff) as u32;
+        let word = if shift_index == 0 {
+            0xD280_0000 | (imm << 5) | rd
+        } else {
+            0xF280_0000 | ((shift_index as u32) << 21) | (imm << 5) | rd
+        };
+        push_u32(code, word);
+    }
+    Ok(())
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
@@ -1319,7 +2084,19 @@ impl ExecutableMemory {
         self.len
     }
 
-    fn as_fn(&self) -> StencilFn {
+    fn as_fixed_fn(&self) -> FixedStencilFn {
+        // SAFETY: the mapping contains generated code ending in ret and has RX
+        // permissions for the lifetime of self.
+        unsafe { std::mem::transmute(self.ptr.as_ptr()) }
+    }
+
+    fn as_hybrid_fn(&self) -> HybridStencilFn {
+        // SAFETY: the mapping contains generated code ending in ret and has RX
+        // permissions for the lifetime of self.
+        unsafe { std::mem::transmute(self.ptr.as_ptr()) }
+    }
+
+    fn as_encode_fn(&self) -> EncodeStencilFn {
         // SAFETY: the mapping contains generated code ending in ret and has RX
         // permissions for the lifetime of self.
         unsafe { std::mem::transmute(self.ptr.as_ptr()) }
