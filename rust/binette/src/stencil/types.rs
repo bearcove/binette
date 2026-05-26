@@ -59,7 +59,22 @@ pub(super) enum StencilOp {
 
 #[derive(Debug, Clone)]
 pub(super) enum HybridStencilOp {
-    Helper { helper_index: usize },
+    Helper {
+        helper_index: usize,
+    },
+    Copy {
+        ops: Vec<CopyOp>,
+        input_len: usize,
+        failure_index: usize,
+    },
+    List {
+        shape: &'static Shape,
+        output_offset: usize,
+        element_ops: Vec<CopyOp>,
+        element_input_len: usize,
+        element_stride: usize,
+        failure_index: usize,
+    },
 }
 
 #[derive(Debug, Clone)]

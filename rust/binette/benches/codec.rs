@@ -119,6 +119,38 @@ mod fixed_reader {
     }
 }
 
+mod list_struct_writer {
+    use facet::Facet;
+
+    #[derive(Facet)]
+    pub struct Message {
+        pub prefix: u16,
+        pub counts: Vec<(u16, u32)>,
+        pub tail: u32,
+        pub writer_only: u16,
+    }
+
+    pub fn sample() -> Message {
+        Message {
+            prefix: 0x1122,
+            counts: vec![(1, 10), (2, 20), (3, 30), (5, 50), (8, 80)],
+            tail: 0xaabb_ccdd,
+            writer_only: 0xeeff,
+        }
+    }
+}
+
+mod list_struct_reader {
+    use facet::Facet;
+
+    #[derive(Facet)]
+    pub struct Message {
+        pub tail: u32,
+        pub counts: Vec<(u16, u32)>,
+        pub prefix: u16,
+    }
+}
+
 mod nested_writer {
     use facet::Facet;
 
@@ -317,6 +349,29 @@ fn fixed_fixture() -> FixedFixture {
     }
 }
 
+struct ListStructFixture {
+    writer_plan: binette::WriterPlan,
+    writer_registry: SchemaRegistry,
+    bytes: Vec<u8>,
+    reader_plan: ReaderPlan,
+}
+
+fn list_struct_fixture() -> ListStructFixture {
+    let writer_plan = writer_plan_for::<list_struct_writer::Message>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let bytes = encode_to_vec_with_plan(&list_struct_writer::sample(), &writer_plan).unwrap();
+    let reader_plan =
+        reader_plan_for::<list_struct_reader::Message>(writer_plan.root(), &writer_registry)
+            .unwrap();
+
+    ListStructFixture {
+        writer_plan,
+        writer_registry,
+        bytes,
+        reader_plan,
+    }
+}
+
 struct NestedFixture {
     writer_plan: binette::WriterPlan,
     writer_registry: SchemaRegistry,
@@ -409,6 +464,36 @@ fn fixed_hybrid_decode_fixture() -> DecodeStencilFixture<fixed_reader::Message> 
 fn fixed_jit_decode_fixture() -> DecodeStencilFixture<fixed_reader::Message> {
     let fixture = fixed_fixture();
     let stencil = strict_stencil_decoder_for::<fixed_reader::Message>(
+        fixture.writer_plan.root(),
+        &fixture.writer_registry,
+    )
+    .unwrap();
+
+    DecodeStencilFixture {
+        bytes: fixture.bytes,
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn list_struct_hybrid_decode_fixture() -> DecodeStencilFixture<list_struct_reader::Message> {
+    let fixture = list_struct_fixture();
+    let stencil = hybrid_stencil_decoder_for::<list_struct_reader::Message>(
+        fixture.writer_plan.root(),
+        &fixture.writer_registry,
+    )
+    .unwrap();
+
+    DecodeStencilFixture {
+        bytes: fixture.bytes,
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn list_struct_jit_decode_fixture() -> DecodeStencilFixture<list_struct_reader::Message> {
+    let fixture = list_struct_fixture();
+    let stencil = strict_stencil_decoder_for::<list_struct_reader::Message>(
         fixture.writer_plan.root(),
         &fixture.writer_registry,
     )
@@ -571,6 +656,30 @@ fn fixed_encode_jit_fixture() -> EncodeStencilFixture<fixed_writer::Message> {
 
     EncodeStencilFixture {
         sample: fixed_writer::sample(),
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn list_struct_encode_hybrid_fixture() -> EncodeStencilFixture<list_struct_writer::Message> {
+    let writer_plan = writer_plan_for::<list_struct_writer::Message>().unwrap();
+    let stencil =
+        hybrid_stencil_encoder_from_plan::<list_struct_writer::Message>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: list_struct_writer::sample(),
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn list_struct_encode_jit_fixture() -> EncodeStencilFixture<list_struct_writer::Message> {
+    let writer_plan = writer_plan_for::<list_struct_writer::Message>().unwrap();
+    let stencil =
+        strict_stencil_encoder_from_plan::<list_struct_writer::Message>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: list_struct_writer::sample(),
         stencil,
     }
 }
@@ -839,6 +948,48 @@ mod encode {
         #[divan::bench]
         pub fn jit(bencher: Bencher) {
             let fixture = fixed_encode_jit_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
+    }
+
+    mod list_struct {
+        use super::*;
+
+        #[divan::bench]
+        pub fn interp(bencher: Bencher) {
+            let writer_plan = writer_plan_for::<list_struct_writer::Message>().unwrap();
+            let sample = list_struct_writer::sample();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_plan(black_box(&sample), black_box(&writer_plan)).unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn hybrid(bencher: Bencher) {
+            let fixture = list_struct_encode_hybrid_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn jit(bencher: Bencher) {
+            let fixture = list_struct_encode_jit_fixture();
 
             bencher.bench(|| {
                 black_box(
@@ -1299,6 +1450,21 @@ mod plan {
         });
     }
 
+    #[divan::bench]
+    pub fn list_struct(bencher: Bencher) {
+        let fixture = list_struct_fixture();
+
+        bencher.bench(|| {
+            black_box(
+                reader_plan_for::<list_struct_reader::Message>(
+                    black_box(fixture.writer_plan.root()),
+                    black_box(&fixture.writer_registry),
+                )
+                .unwrap(),
+            )
+        });
+    }
+
     same_schema_plan_bench!(tuple, aggregate::Tuple, aggregate::tuple_sample());
     same_schema_plan_bench!(list, aggregate::List, aggregate::list_sample());
     same_schema_plan_bench!(
@@ -1349,6 +1515,42 @@ mod fixed_struct {
     #[divan::bench]
     pub fn jit(bencher: Bencher) {
         let fixture = fixed_jit_decode_fixture();
+
+        bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
+    }
+}
+
+mod list_struct {
+    use super::*;
+
+    #[divan::bench]
+    pub fn interp(bencher: Bencher) {
+        let fixture = list_struct_fixture();
+
+        bencher.bench(|| {
+            black_box(
+                decode_from_slice_with_plan::<list_struct_reader::Message>(
+                    black_box(&fixture.bytes),
+                    black_box(&fixture.reader_plan),
+                    black_box(&fixture.writer_registry),
+                )
+                .unwrap(),
+            )
+        });
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[divan::bench]
+    pub fn hybrid(bencher: Bencher) {
+        let fixture = list_struct_hybrid_decode_fixture();
+
+        bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[divan::bench]
+    pub fn jit(bencher: Bencher) {
+        let fixture = list_struct_jit_decode_fixture();
 
         bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
     }

@@ -551,26 +551,25 @@ impl StencilCompiler<'_> {
     }
 }
 
-pub(super) struct HybridStencilCompiler {
+pub(super) struct CursorStencilCompiler<'registry> {
+    pub(super) writer_registry: &'registry SchemaRegistry,
     pub(super) ops: Vec<HybridStencilOp>,
     pub(super) helpers: Vec<StencilHelper>,
     pub(super) failures: Vec<StencilFailure>,
+    pub(super) allow_helpers: bool,
 }
 
-impl HybridStencilCompiler {
+impl CursorStencilCompiler<'_> {
     pub(super) fn compile_root<T: Facet<'static>>(
         &mut self,
         root: &PlanNode,
     ) -> Result<(), StencilError> {
-        match root {
-            PlanNode::Struct { fields } => self.compile_struct_root(T::SHAPE, fields, 0, "$"),
-            _ => self.push_decode_helper(root, T::SHAPE, 0, "$"),
-        }
+        self.compile_node(T::SHAPE, root, 0, "$")
     }
 
     // r[impl binette.compat.field-matching]
     // r[impl binette.compat.skip-unknown]
-    fn compile_struct_root(
+    fn compile_struct(
         &mut self,
         reader_shape: &'static Shape,
         fields: &[StructFieldPlan],
@@ -593,18 +592,199 @@ impl HybridStencilCompiler {
                         }
                     })?;
                     let field_offset = checked_offset(output_offset, reader_field.offset, path)?;
-                    self.push_decode_helper(
-                        plan,
+                    self.compile_node(
                         reader_field.shape.get(),
+                        plan,
                         field_offset,
                         &format!("{path}.{name}"),
                     )?;
                 }
                 StructFieldPlan::Skip {
                     writer_type, name, ..
-                } => self.push_skip_helper(writer_type, &format!("{path}.{name}"))?,
+                } => self.push_fixed_skip(writer_type, &format!("{path}.{name}"))?,
             }
         }
+        Ok(())
+    }
+
+    fn compile_node(
+        &mut self,
+        reader_shape: &'static Shape,
+        node: &PlanNode,
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let result = match node {
+            PlanNode::List { element } => {
+                self.push_list(reader_shape, element, output_offset, path)
+            }
+            PlanNode::Struct { fields } => {
+                self.compile_struct(reader_shape, fields, output_offset, path)
+            }
+            PlanNode::Tuple { elements } => {
+                self.compile_tuple(reader_shape, elements, output_offset, path)
+            }
+            PlanNode::Array {
+                dimensions,
+                element,
+            } => self.compile_array(reader_shape, dimensions, element, output_offset, path),
+            _ => self.push_fixed_copy(node, reader_shape, output_offset, path),
+        };
+        match result {
+            Ok(()) => Ok(()),
+            Err(StencilError::Unsupported { .. }) if self.allow_helpers => {
+                self.push_decode_helper(node, reader_shape, output_offset, path)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn compile_tuple(
+        &mut self,
+        reader_shape: &'static Shape,
+        elements: &[PlanNode],
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let reader_fields = shape_struct_fields(reader_shape, path)?;
+        if reader_fields.len() != elements.len() {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "cursor tuple element count differs from reader shape",
+            });
+        }
+        for (index, element) in elements.iter().enumerate() {
+            let reader_field = &reader_fields[index];
+            let element_offset = checked_offset(output_offset, reader_field.offset, path)?;
+            self.compile_node(
+                reader_field.shape.get(),
+                element,
+                element_offset,
+                &format!("{path}.{index}"),
+            )?;
+        }
+        Ok(())
+    }
+
+    // r[impl binette.aggregate.array]
+    fn compile_array(
+        &mut self,
+        reader_shape: &'static Shape,
+        dimensions: &[u64],
+        element: &PlanNode,
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let (element_shape, count, stride) =
+            fixed_array_parts(reader_shape, dimensions, path, "reader array")?;
+        for index in 0..count {
+            let element_offset =
+                checked_offset(output_offset, checked_mul(index, stride, path)?, path)?;
+            self.compile_node(
+                element_shape,
+                element,
+                element_offset,
+                &format!("{path}[{index}]"),
+            )?;
+        }
+        Ok(())
+    }
+
+    // r[impl binette.aggregate.list]
+    fn push_list(
+        &mut self,
+        reader_shape: &'static Shape,
+        element: &PlanNode,
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let Def::List(list) = reader_shape.def else {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "reader list stencil requires Facet list shape",
+            });
+        };
+        if list.init_in_place_with_capacity().is_none()
+            || list.as_mut_ptr_typed().is_none()
+            || list.set_len().is_none()
+        {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "reader list shape does not expose direct-fill operations",
+            });
+        }
+
+        let element_shape = list.t();
+        let element_stride = element_shape
+            .layout
+            .sized_layout()
+            .map_err(|_| StencilError::Unsupported {
+                path: format!("{path}[]"),
+                reason: "reader list element shape is unsized",
+            })?
+            .size();
+        let (element_ops, element_input_len) = fixed_copy_ops(
+            self.writer_registry,
+            element,
+            element_shape,
+            0,
+            &format!("{path}[]"),
+        )?;
+        let failure_index = self.push_helper_failure(path)?;
+        self.ops.push(HybridStencilOp::List {
+            shape: reader_shape,
+            output_offset,
+            element_ops,
+            element_input_len,
+            element_stride,
+            failure_index,
+        });
+        Ok(())
+    }
+
+    fn push_fixed_copy(
+        &mut self,
+        node: &PlanNode,
+        reader_shape: &'static Shape,
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let (ops, input_len) = fixed_copy_ops(
+            self.writer_registry,
+            node,
+            reader_shape,
+            output_offset,
+            path,
+        )?;
+        if input_len == 0 && ops.is_empty() {
+            return Ok(());
+        }
+        let failure_index = self.push_helper_failure(path)?;
+        self.ops.push(HybridStencilOp::Copy {
+            ops,
+            input_len,
+            failure_index,
+        });
+        Ok(())
+    }
+
+    fn push_fixed_skip(&mut self, writer_type: &TypeRef, path: &str) -> Result<(), StencilError> {
+        let input_len = match fixed_skip_len(self.writer_registry, writer_type, path) {
+            Ok(input_len) => input_len,
+            Err(StencilError::Unsupported { .. }) if self.allow_helpers => {
+                return self.push_skip_helper(writer_type, path);
+            }
+            Err(err) => return Err(err),
+        };
+        if input_len == 0 {
+            return Ok(());
+        }
+        let failure_index = self.push_helper_failure(path)?;
+        self.ops.push(HybridStencilOp::Copy {
+            ops: Vec::new(),
+            input_len,
+            failure_index,
+        });
         Ok(())
     }
 
@@ -1511,6 +1691,56 @@ fn copy_ops_from_stencil_ops(ops: &[StencilOp]) -> Option<Vec<CopyOp>> {
             }
         })
         .collect()
+}
+
+fn fixed_copy_ops(
+    writer_registry: &SchemaRegistry,
+    node: &PlanNode,
+    reader_shape: &'static Shape,
+    output_offset: usize,
+    path: &str,
+) -> Result<(Vec<CopyOp>, usize), StencilError> {
+    let mut compiler = StencilCompiler {
+        writer_registry,
+        ops: Vec::new(),
+        failures: Vec::new(),
+        input_offset: 0,
+    };
+    compiler.compile_node(reader_shape, node, output_offset, path)?;
+    if !compiler.failures.is_empty() {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "cursor decode currently supports only infallible fixed-copy stencils",
+        });
+    }
+    let Some(ops) = copy_ops_from_stencil_ops(&compiler.ops) else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "cursor decode currently supports only fixed-copy stencils",
+        });
+    };
+    Ok((ops, compiler.input_offset))
+}
+
+fn fixed_skip_len(
+    writer_registry: &SchemaRegistry,
+    writer_type: &TypeRef,
+    path: &str,
+) -> Result<usize, StencilError> {
+    let mut compiler = StencilCompiler {
+        writer_registry,
+        ops: Vec::new(),
+        failures: Vec::new(),
+        input_offset: 0,
+    };
+    compiler.compile_skip_type(writer_type, path)?;
+    if !compiler.failures.is_empty() || copy_ops_from_stencil_ops(&compiler.ops).is_none() {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "cursor decode currently supports only infallible fixed-copy skips",
+        });
+    }
+    Ok(compiler.input_offset)
 }
 
 fn checked_mul(lhs: usize, rhs: usize, path: &str) -> Result<usize, StencilError> {

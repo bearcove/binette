@@ -339,3 +339,67 @@ fn strict_encode_accepts_mixed_struct_with_list_option_and_strings() {
         encode_to_vec_with_plan(&value, &plan).unwrap()
     );
 }
+
+#[test]
+fn hybrid_decode_compiles_supported_siblings_around_subtree_helpers() {
+    mod writer {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        pub struct Message {
+            pub head: u32,
+            pub title: String,
+            pub middle: u16,
+            pub pair: (u8, String, u32),
+            pub tail: u64,
+        }
+    }
+
+    mod reader {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        pub struct Message {
+            pub head: u32,
+            pub title: String,
+            pub middle: u16,
+            pub pair: (u8, String, u32),
+            pub tail: u64,
+        }
+    }
+
+    let writer_plan = writer_plan_for::<writer::Message>().unwrap();
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan =
+        reader_plan_for::<reader::Message>(writer_plan.root(), &writer_registry).unwrap();
+
+    let mut compiler = CursorStencilCompiler {
+        writer_registry: &writer_registry,
+        ops: Vec::new(),
+        helpers: Vec::new(),
+        failures: Vec::new(),
+        allow_helpers: true,
+    };
+    compiler
+        .compile_root::<reader::Message>(&reader_plan.root)
+        .unwrap();
+
+    let op_kinds: Vec<&'static str> = compiler
+        .ops
+        .iter()
+        .map(|op| match op {
+            HybridStencilOp::Copy { .. } => "copy",
+            HybridStencilOp::Helper { .. } => "helper",
+            HybridStencilOp::List { .. } => "list",
+        })
+        .collect();
+
+    assert_eq!(
+        op_kinds,
+        vec!["copy", "helper", "copy", "copy", "helper", "copy", "copy"]
+    );
+    assert_eq!(compiler.helpers.len(), 2);
+}

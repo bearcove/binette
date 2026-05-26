@@ -34,14 +34,14 @@ use self::aarch64::{
     generate_code, generate_direct_encode_code, generate_encode_code, generate_hybrid_code,
     status_for_failure,
 };
-use self::compile::{HybridStencilCompiler, StencilCompiler, StencilEncodeCompiler};
+use self::compile::{CursorStencilCompiler, StencilCompiler, StencilEncodeCompiler};
 use self::memory::ExecutableMemory;
 use self::runtime::{
-    STENCIL_ENCODE_BYTES_BYTES, STENCIL_ENCODE_BYTES_STRING, STENCIL_OK, STENCIL_OPTION_NONE,
-    STENCIL_OPTION_SOME, hybrid_error_status, stencil_copy_bytes, stencil_decode_helper,
-    stencil_decode_list_begin, stencil_decode_list_finish, stencil_encode_byte_parts,
-    stencil_encode_helper, stencil_encode_reserve, stencil_enum_variant_index,
-    stencil_list_element, stencil_list_len, stencil_option_parts,
+    HYBRID_ERROR_FLAG, STENCIL_ENCODE_BYTES_BYTES, STENCIL_ENCODE_BYTES_STRING, STENCIL_OK,
+    STENCIL_OPTION_NONE, STENCIL_OPTION_SOME, hybrid_error_status, stencil_copy_bytes,
+    stencil_decode_helper, stencil_decode_list_begin, stencil_decode_list_finish,
+    stencil_encode_byte_parts, stencil_encode_helper, stencil_encode_reserve,
+    stencil_enum_variant_index, stencil_list_element, stencil_list_len, stencil_option_parts,
 };
 use self::types::{
     CopyOp, CopyWidth, EncodeBytesKind, EncodeEnumCase, EncodeStencilOp, EnumCase,
@@ -316,7 +316,15 @@ pub fn strict_stencil_decoder_from_plan<T: Facet<'static>>(
     plan: &ReaderPlan,
     writer_registry: &SchemaRegistry,
 ) -> Result<StencilDecoder<T>, StencilError> {
-    fixed_stencil_decoder_from_plan(plan, writer_registry)
+    match fixed_stencil_decoder_from_plan(plan, writer_registry) {
+        Ok(decoder) => Ok(decoder),
+        Err(fixed_error) => {
+            if matches!(&fixed_error, StencilError::Unsupported { .. }) {
+                return cursor_stencil_decoder_from_plan(plan, writer_registry, false);
+            }
+            Err(fixed_error)
+        }
+    }
 }
 
 // r[impl binette.compat.plan]
@@ -325,13 +333,13 @@ pub fn hybrid_stencil_decoder_from_plan<T: Facet<'static>>(
     plan: &ReaderPlan,
     writer_registry: &SchemaRegistry,
 ) -> Result<StencilDecoder<T>, StencilError> {
-    match fixed_stencil_decoder_from_plan(plan, writer_registry) {
+    match strict_stencil_decoder_from_plan(plan, writer_registry) {
         Ok(decoder) => Ok(decoder),
-        Err(fixed_error) => {
-            if matches!(&fixed_error, StencilError::Unsupported { .. }) {
-                return build_hybrid_stencil_decoder_from_plan(plan, writer_registry);
+        Err(strict_error) => {
+            if matches!(&strict_error, StencilError::Unsupported { .. }) {
+                return cursor_stencil_decoder_from_plan(plan, writer_registry, true);
             }
-            Err(fixed_error)
+            Err(strict_error)
         }
     }
 }
@@ -490,14 +498,17 @@ fn fixed_stencil_decoder_from_plan<T: Facet<'static>>(
     })
 }
 
-fn build_hybrid_stencil_decoder_from_plan<T: Facet<'static>>(
+fn cursor_stencil_decoder_from_plan<T: Facet<'static>>(
     plan: &ReaderPlan,
     writer_registry: &SchemaRegistry,
+    allow_helpers: bool,
 ) -> Result<StencilDecoder<T>, StencilError> {
-    let mut compiler = HybridStencilCompiler {
+    let mut compiler = CursorStencilCompiler {
+        writer_registry,
         ops: Vec::new(),
         helpers: Vec::new(),
         failures: Vec::new(),
+        allow_helpers,
     };
     compiler.compile_root::<T>(&plan.root)?;
 

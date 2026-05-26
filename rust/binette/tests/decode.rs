@@ -729,6 +729,69 @@ fn strict_stencil_decodes_fixed_element_list_roots() {
     ));
 }
 
+// r[verify binette.mode.compact]
+// r[verify binette.aggregate.struct.compact]
+// r[verify binette.aggregate.list]
+// r[verify binette.compat.field-matching]
+// r[verify binette.compat.skip-unknown]
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[test]
+fn strict_stencil_decodes_structs_with_fixed_element_list_fields() {
+    mod writer {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        pub struct Message {
+            pub prefix: u16,
+            pub counts: Vec<(u16, u32)>,
+            pub tail: u32,
+            pub writer_only: u16,
+        }
+    }
+
+    mod reader {
+        use facet::Facet;
+
+        #[derive(Debug, Facet, PartialEq)]
+        pub struct Message {
+            pub tail: u32,
+            pub counts: Vec<(u16, u32)>,
+            pub prefix: u16,
+        }
+    }
+
+    let writer_plan = writer_plan_for::<writer::Message>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let bytes = encode_to_vec_with_plan(
+        &writer::Message {
+            prefix: 0x1122,
+            counts: vec![(1, 10), (2, 20), (3, 30), (5, 50)],
+            tail: 0xaabb_ccdd,
+            writer_only: 0xeeff,
+        },
+        &writer_plan,
+    )
+    .unwrap();
+
+    let decoder =
+        strict_stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry)
+            .unwrap();
+    assert_eq!(decoder.fixed_expected_len(), None);
+
+    let decoded = decoder.decode(&bytes).unwrap();
+    let interpreted =
+        decode_from_slice::<reader::Message>(&bytes, writer_plan.root(), &writer_registry).unwrap();
+    assert_eq!(decoded, interpreted);
+    assert_eq!(
+        decoded,
+        reader::Message {
+            tail: 0xaabb_ccdd,
+            counts: vec![(1, 10), (2, 20), (3, 30), (5, 50)],
+            prefix: 0x1122,
+        }
+    );
+}
+
 // r[verify binette.aggregate.list]
 // r[verify binette.aggregate.option]
 // r[verify binette.aggregate.array]
