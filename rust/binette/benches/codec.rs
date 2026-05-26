@@ -217,6 +217,7 @@ mod aggregate {
 
     pub type Tuple = (u16, String, Vec<u32>, Option<bool>);
     pub type List = Vec<(u16, String)>;
+    pub type FixedList = Vec<(u16, u32)>;
     pub type Set = HashSet<u16>;
     pub type Map = HashMap<u16, u8>;
     pub type OptionValue = Option<(u16, String)>;
@@ -234,6 +235,10 @@ mod aggregate {
             (2, "two".to_owned()),
             (3, "three".to_owned()),
         ]
+    }
+
+    pub fn fixed_list_sample() -> FixedList {
+        vec![(1, 10), (2, 20), (3, 30), (5, 50), (8, 80)]
     }
 
     pub fn set_sample() -> Set {
@@ -491,6 +496,21 @@ fn array_jit_decode_fixture() -> DecodeStencilFixture<aggregate::Array> {
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn fixed_list_jit_decode_fixture() -> DecodeStencilFixture<aggregate::FixedList> {
+    let fixture = same_fixture::<aggregate::FixedList>(aggregate::fixed_list_sample());
+    let stencil = strict_stencil_decoder_for::<aggregate::FixedList>(
+        fixture.writer_plan.root(),
+        &fixture.writer_registry,
+    )
+    .unwrap();
+
+    DecodeStencilFixture {
+        bytes: fixture.bytes,
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn mixed_hybrid_decode_fixture() -> DecodeStencilFixture<reader::Message> {
     let fixture = fixture();
     let stencil = hybrid_stencil_decoder_for::<reader::Message>(
@@ -650,6 +670,17 @@ fn list_encode_jit_fixture() -> EncodeStencilFixture<aggregate::List> {
 
     EncodeStencilFixture {
         sample: aggregate::list_sample(),
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn fixed_list_encode_jit_fixture() -> EncodeStencilFixture<aggregate::FixedList> {
+    let writer_plan = writer_plan_for::<aggregate::FixedList>().unwrap();
+    let stencil = strict_stencil_encoder_from_plan::<aggregate::FixedList>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: aggregate::fixed_list_sample(),
         stencil,
     }
 }
@@ -1040,6 +1071,54 @@ mod encode {
             });
         }
     }
+    mod fixed_list {
+        use super::*;
+
+        #[divan::bench]
+        pub fn interp(bencher: Bencher) {
+            let fixture = same_fixture::<aggregate::FixedList>(aggregate::fixed_list_sample());
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_plan(
+                        black_box(&fixture.sample),
+                        black_box(&fixture.writer_plan),
+                    )
+                    .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn hybrid(bencher: Bencher) {
+            let fixture =
+                same_hybrid_fixture::<aggregate::FixedList>(aggregate::fixed_list_sample());
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(
+                        black_box(&fixture.fixture.sample),
+                        &fixture.encoder,
+                    )
+                    .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn jit(bencher: Bencher) {
+            let fixture = fixed_list_encode_jit_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
+    }
     same_schema_encode_benches!(set, aggregate::Set, aggregate::set_sample());
     same_schema_encode_benches!(map, aggregate::Map, aggregate::map_sample());
     mod nested_list {
@@ -1222,6 +1301,11 @@ mod plan {
 
     same_schema_plan_bench!(tuple, aggregate::Tuple, aggregate::tuple_sample());
     same_schema_plan_bench!(list, aggregate::List, aggregate::list_sample());
+    same_schema_plan_bench!(
+        fixed_list,
+        aggregate::FixedList,
+        aggregate::fixed_list_sample()
+    );
     same_schema_plan_bench!(set, aggregate::Set, aggregate::set_sample());
     same_schema_plan_bench!(map, aggregate::Map, aggregate::map_sample());
     same_schema_plan_bench!(option, aggregate::OptionValue, aggregate::option_sample());
@@ -1372,6 +1456,48 @@ mod mixed_struct {
 
 same_schema_decode_benches!(tuple, aggregate::Tuple, aggregate::tuple_sample());
 same_schema_decode_benches!(list, aggregate::List, aggregate::list_sample());
+mod fixed_list {
+    use super::*;
+
+    #[divan::bench]
+    pub fn interp(bencher: Bencher) {
+        let fixture = same_fixture::<aggregate::FixedList>(aggregate::fixed_list_sample());
+
+        bencher.bench(|| {
+            black_box(
+                decode_from_slice_with_plan::<aggregate::FixedList>(
+                    black_box(&fixture.bytes),
+                    black_box(&fixture.reader_plan),
+                    black_box(&fixture.writer_registry),
+                )
+                .unwrap(),
+            )
+        });
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[divan::bench]
+    pub fn hybrid(bencher: Bencher) {
+        let fixture = same_hybrid_fixture::<aggregate::FixedList>(aggregate::fixed_list_sample());
+
+        bencher.bench(|| {
+            black_box(
+                fixture
+                    .decoder
+                    .decode(black_box(&fixture.fixture.bytes))
+                    .unwrap(),
+            )
+        });
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[divan::bench]
+    pub fn jit(bencher: Bencher) {
+        let fixture = fixed_list_jit_decode_fixture();
+
+        bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
+    }
+}
 same_schema_decode_benches!(set, aggregate::Set, aggregate::set_sample());
 same_schema_decode_benches!(map, aggregate::Map, aggregate::map_sample());
 same_schema_decode_benches!(option, aggregate::OptionValue, aggregate::option_sample());

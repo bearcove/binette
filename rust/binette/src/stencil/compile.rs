@@ -15,9 +15,92 @@ impl StencilCompiler<'_> {
         if let PlanNode::Enum { variants } = root {
             return self.compile_enum_root(T::SHAPE, variants, "$");
         }
+        if let PlanNode::List { element } = root {
+            return self.compile_list_root(T::SHAPE, element, "$");
+        }
 
         self.compile_node(T::SHAPE, root, 0, "$")?;
         Ok(LengthCheck::Exact(self.input_offset))
+    }
+
+    // r[impl binette.aggregate.list]
+    fn compile_list_root(
+        &mut self,
+        reader_shape: &'static Shape,
+        element: &PlanNode,
+        path: &str,
+    ) -> Result<LengthCheck, StencilError> {
+        if self.input_offset != 0 || !self.ops.is_empty() {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "list root stencil must be the first decode op",
+            });
+        }
+
+        let Def::List(list) = reader_shape.def else {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "reader list stencil requires Facet list shape",
+            });
+        };
+        if list.init_in_place_with_capacity().is_none()
+            || list.as_mut_ptr_typed().is_none()
+            || list.set_len().is_none()
+        {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "reader list shape does not expose direct-fill operations",
+            });
+        }
+
+        let element_shape = list.t();
+        let element_stride = element_shape
+            .layout
+            .sized_layout()
+            .map_err(|_| StencilError::Unsupported {
+                path: format!("{path}[]"),
+                reason: "reader list element shape is unsized",
+            })?
+            .size();
+
+        let mut element_compiler = StencilCompiler {
+            writer_registry: self.writer_registry,
+            ops: Vec::new(),
+            failures: Vec::new(),
+            input_offset: 0,
+        };
+        element_compiler.compile_node(element_shape, element, 0, &format!("{path}[]"))?;
+        if !element_compiler.failures.is_empty() {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "strict list decode currently supports only infallible element stencils",
+            });
+        }
+        let Some(element_ops) = copy_ops_from_stencil_ops(&element_compiler.ops) else {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "strict list decode currently supports only fixed-copy element stencils",
+            });
+        };
+        let element_input_len = element_compiler.input_offset;
+
+        let failure_index = self.failures.len();
+        let _ = status_for_failure(failure_index)?;
+        self.failures.push(StencilFailure::Helper {
+            path: path.to_owned(),
+        });
+        self.ops.push(StencilOp::RootList {
+            shape: reader_shape,
+            element_ops,
+            element_input_len,
+            element_stride,
+            failure_index,
+        });
+
+        Ok(LengthCheck::RootList {
+            count_position: 0,
+            element_input_len,
+        })
     }
 
     fn compile_node(
@@ -1417,6 +1500,17 @@ fn checked_offset(offset: usize, width: usize, path: &str) -> Result<usize, Sten
             path: path.to_owned(),
             reason: "stencil offset overflow",
         })
+}
+
+fn copy_ops_from_stencil_ops(ops: &[StencilOp]) -> Option<Vec<CopyOp>> {
+    ops.iter()
+        .map(|op| match op {
+            StencilOp::Copy(op) => Some(*op),
+            StencilOp::Bool { .. } | StencilOp::RootEnum { .. } | StencilOp::RootList { .. } => {
+                None
+            }
+        })
+        .collect()
 }
 
 fn checked_mul(lhs: usize, rhs: usize, path: &str) -> Result<usize, StencilError> {

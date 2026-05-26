@@ -1,4 +1,5 @@
 use super::*;
+use facet_core::{PtrMut, PtrUninit};
 
 pub(super) const STENCIL_OK: u32 = 0;
 pub(super) const HYBRID_ERROR_FLAG: usize = 1usize << (usize::BITS - 1);
@@ -306,4 +307,47 @@ pub(super) unsafe extern "C" fn stencil_encode_reserve(out: *mut Vec<u8>, len: u
         out.set_len(end);
     }
     ptr
+}
+
+pub(super) unsafe extern "C" fn stencil_decode_list_begin(
+    value: *mut u8,
+    shape: *const Shape,
+    count: usize,
+) -> *mut u8 {
+    let Some(shape) = (unsafe { shape.as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    let Def::List(list) = shape.def else {
+        return std::ptr::null_mut();
+    };
+    let Some(init) = list.init_in_place_with_capacity() else {
+        return std::ptr::null_mut();
+    };
+    let Some(as_mut_ptr) = list.as_mut_ptr_typed() else {
+        return std::ptr::null_mut();
+    };
+
+    let list_ptr = unsafe { init(PtrUninit::new(value), count) };
+    unsafe { as_mut_ptr(list_ptr) }
+}
+
+pub(super) unsafe extern "C" fn stencil_decode_list_finish(
+    value: *mut u8,
+    shape: *const Shape,
+    count: usize,
+) -> u32 {
+    let Some(shape) = (unsafe { shape.as_ref() }) else {
+        return 1;
+    };
+    let Def::List(list) = shape.def else {
+        return 1;
+    };
+    let Some(set_len) = list.set_len() else {
+        return 1;
+    };
+
+    unsafe {
+        set_len(PtrMut::new(value), count);
+    }
+    STENCIL_OK
 }

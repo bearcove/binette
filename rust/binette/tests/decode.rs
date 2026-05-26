@@ -707,6 +707,28 @@ fn strict_stencil_handles_fixed_array_roots() {
     assert_eq!(encode_to_vec_with_stencil(&value, &encoder).unwrap(), bytes);
 }
 
+// r[verify binette.mode.compact]
+// r[verify binette.aggregate.list]
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[test]
+fn strict_stencil_decodes_fixed_element_list_roots() {
+    let value = vec![(1u16, 10u32), (2, 20), (3, 30), (5, 50)];
+    let writer_plan = writer_plan_for::<Vec<(u16, u32)>>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+
+    let decoder =
+        strict_stencil_decoder_for::<Vec<(u16, u32)>>(writer_plan.root(), &writer_registry)
+            .unwrap();
+    assert_eq!(decoder.fixed_expected_len(), None);
+    assert_eq!(decoder.decode(&bytes).unwrap(), value);
+
+    assert!(matches!(
+        decoder.decode(&bytes[..bytes.len() - 1]),
+        Err(StencilError::InputLength { .. })
+    ));
+}
+
 // r[verify binette.aggregate.list]
 // r[verify binette.aggregate.option]
 // r[verify binette.aggregate.array]

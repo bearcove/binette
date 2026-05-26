@@ -6,6 +6,25 @@ pub(super) fn generate_code(
 ) -> Result<ExecutableMemory, StencilError> {
     #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
     {
+        if let [
+            StencilOp::RootList {
+                shape,
+                element_ops,
+                element_input_len,
+                element_stride,
+                failure_index,
+            },
+        ] = ops
+        {
+            return generate_root_list_decode_code(
+                shape,
+                element_ops,
+                *element_input_len,
+                *element_stride,
+                *failure_index,
+            );
+        }
+
         let mut code = Vec::with_capacity(ops.len() * 16 + (failure_count + 1) * 8);
         let mut branches = Vec::new();
         for op in ops {
@@ -229,6 +248,8 @@ const AARCH64_MOV_X19_X0: u32 = 0xAA00_03F3;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_MOV_X20_X1: u32 = 0xAA01_03F4;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_MOV_X20_X2: u32 = 0xAA02_03F4;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_MOV_X21_X2: u32 = 0xAA02_03F5;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_MOV_X22_X3: u32 = 0xAA03_03F6;
@@ -327,11 +348,123 @@ fn emit_op(
             *unknown_failure_index,
             branches,
         ),
+        StencilOp::RootList { .. } => Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "root list decode stencil must be generated as a single root op",
+        }),
     }
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn generate_root_list_decode_code(
+    shape: &'static Shape,
+    element_ops: &[CopyOp],
+    element_input_len: usize,
+    element_stride: usize,
+    failure_index: usize,
+) -> Result<ExecutableMemory, StencilError> {
+    let mut code = Vec::with_capacity(element_ops.len() * 12 + 256);
+    let failure_status = status_for_failure(failure_index)?;
+    emit_root_list_decode_prologue(&mut code);
+
+    push_u32(&mut code, ldur_w_register(21, 19, 0, "$list")?);
+    push_u32(&mut code, mov_x_register(0, 20)?);
+    emit_mov_x_immediate(&mut code, 1, shape as *const Shape as usize as u64)?;
+    push_u32(&mut code, mov_x_register(2, 21)?);
+    emit_mov_x_immediate(
+        &mut code,
+        16,
+        stencil_decode_list_begin as *const () as usize as u64,
+    )?;
+    push_u32(&mut code, AARCH64_BLR_X16);
+
+    let begin_succeeded_branch = code.len();
+    push_u32(&mut code, 0);
+    push_u32(&mut code, mov_w0_immediate(failure_status)?);
+    let begin_failed_branch = code.len();
+    push_u32(&mut code, 0);
+
+    let loop_setup = code.len();
+    push_u32(&mut code, mov_x_register(22, 0)?);
+    push_u32(&mut code, add_x_immediate(23, 19, 4, "$list")?);
+    push_u32(&mut code, mov_x_register(24, 22)?);
+    emit_mov_x_immediate(&mut code, 25, 0)?;
+
+    let loop_check = code.len();
+    push_u32(&mut code, cmp_x_register(25, 21)?);
+    let done_branch = code.len();
+    push_u32(&mut code, 0);
+
+    for op in element_ops {
+        emit_copy_op_with_bases(&mut code, *op, 23, 24)?;
+    }
+    if element_input_len != 0 {
+        push_u32(
+            &mut code,
+            add_x_immediate(23, 23, element_input_len, "$list")?,
+        );
+    }
+    if element_stride != 0 {
+        push_u32(&mut code, add_x_immediate(24, 24, element_stride, "$list")?);
+    }
+    push_u32(&mut code, add_x_immediate(25, 25, 1, "$list")?);
+    let continue_branch = code.len();
+    push_u32(&mut code, 0);
+
+    let finish_offset = code.len();
+    push_u32(&mut code, mov_x_register(0, 20)?);
+    emit_mov_x_immediate(&mut code, 1, shape as *const Shape as usize as u64)?;
+    push_u32(&mut code, mov_x_register(2, 21)?);
+    emit_mov_x_immediate(
+        &mut code,
+        16,
+        stencil_decode_list_finish as *const () as usize as u64,
+    )?;
+    push_u32(&mut code, AARCH64_BLR_X16);
+    push_u32(&mut code, AARCH64_CMP_W0_0);
+    let finish_succeeded_branch = code.len();
+    push_u32(&mut code, 0);
+    push_u32(&mut code, mov_w0_immediate(failure_status)?);
+    let finish_failed_branch = code.len();
+    push_u32(&mut code, 0);
+
+    let epilogue = code.len();
+    emit_root_list_decode_epilogue(&mut code);
+
+    let begin_succeeded_word =
+        patch_compare_zero_branch_imm19(AARCH64_CBNZ_X0, begin_succeeded_branch, loop_setup)?;
+    code[begin_succeeded_branch..begin_succeeded_branch + 4]
+        .copy_from_slice(&begin_succeeded_word.to_le_bytes());
+    let begin_failed_word = patch_uncond_branch_imm26(AARCH64_B, begin_failed_branch, epilogue)?;
+    code[begin_failed_branch..begin_failed_branch + 4]
+        .copy_from_slice(&begin_failed_word.to_le_bytes());
+    let done_word = patch_cond_branch_imm19(AARCH64_B_EQ, done_branch, finish_offset)?;
+    code[done_branch..done_branch + 4].copy_from_slice(&done_word.to_le_bytes());
+    let continue_word = patch_uncond_branch_imm26(AARCH64_B, continue_branch, loop_check)?;
+    code[continue_branch..continue_branch + 4].copy_from_slice(&continue_word.to_le_bytes());
+    let finish_succeeded_word =
+        patch_cond_branch_imm19(AARCH64_B_EQ, finish_succeeded_branch, epilogue)?;
+    code[finish_succeeded_branch..finish_succeeded_branch + 4]
+        .copy_from_slice(&finish_succeeded_word.to_le_bytes());
+    let finish_failed_word = patch_uncond_branch_imm26(AARCH64_B, finish_failed_branch, epilogue)?;
+    code[finish_failed_branch..finish_failed_branch + 4]
+        .copy_from_slice(&finish_failed_word.to_le_bytes());
+
+    ExecutableMemory::new(&code)
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn emit_copy_op(code: &mut Vec<u8>, op: CopyOp) -> Result<(), StencilError> {
+    emit_copy_op_with_bases(code, op, 0, 2)
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_copy_op_with_bases(
+    code: &mut Vec<u8>,
+    op: CopyOp,
+    input_base_reg: u8,
+    output_base_reg: u8,
+) -> Result<(), StencilError> {
     let (load, store) = match op.width {
         CopyWidth::One => (0x3840_0009, 0x3800_0049),
         CopyWidth::Two => (0x7840_0009, 0x7800_0049),
@@ -339,10 +472,14 @@ fn emit_copy_op(code: &mut Vec<u8>, op: CopyOp) -> Result<(), StencilError> {
         CopyWidth::Eight => (0xF840_0009, 0xF800_0049),
     };
     push_u32(code, patch_ldur_stur_imm9(load, op.input_offset, "$input")?);
+    let last = code.len() - 4;
+    patch_registers(&mut code[last..last + 4], 9, input_base_reg)?;
     push_u32(
         code,
         patch_ldur_stur_imm9(store, op.output_offset, "$output")?,
     );
+    let last = code.len() - 4;
+    patch_registers(&mut code[last..last + 4], 9, output_base_reg)?;
     Ok(())
 }
 
@@ -496,6 +633,28 @@ fn emit_hybrid_prologue(code: &mut Vec<u8>) {
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn emit_hybrid_epilogue(code: &mut Vec<u8>) {
+    push_u32(code, AARCH64_LDP_X23_X24_POST);
+    push_u32(code, AARCH64_LDP_X21_X22_POST);
+    push_u32(code, AARCH64_LDP_X19_X20_POST);
+    push_u32(code, AARCH64_LDP_X29_X30_POST);
+    push_u32(code, AARCH64_RET);
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_root_list_decode_prologue(code: &mut Vec<u8>) {
+    push_u32(code, AARCH64_STP_X29_X30_PRE);
+    push_u32(code, AARCH64_MOV_X29_SP);
+    push_u32(code, AARCH64_STP_X19_X20_PRE);
+    push_u32(code, AARCH64_STP_X21_X22_PRE);
+    push_u32(code, AARCH64_STP_X23_X24_PRE);
+    push_u32(code, AARCH64_STP_X25_X26_PRE);
+    push_u32(code, AARCH64_MOV_X19_X0);
+    push_u32(code, AARCH64_MOV_X20_X2);
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_root_list_decode_epilogue(code: &mut Vec<u8>) {
+    push_u32(code, AARCH64_LDP_X25_X26_POST);
     push_u32(code, AARCH64_LDP_X23_X24_POST);
     push_u32(code, AARCH64_LDP_X21_X22_POST);
     push_u32(code, AARCH64_LDP_X19_X20_POST);
@@ -1334,6 +1493,21 @@ fn stur_w_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, Ste
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn ldur_w_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, StencilError> {
+    if rt > 31 || rn > 31 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil register index exceeds AArch64 range",
+        });
+    }
+    patch_ldur_stur_imm9(
+        0xB840_0000 | (u32::from(rn) << 5) | u32::from(rt),
+        offset,
+        path,
+    )
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn stur_b_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, StencilError> {
     if rt > 31 || rn > 31 {
         return Err(StencilError::Unsupported {
@@ -1346,6 +1520,21 @@ fn stur_b_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, Ste
         offset,
         path,
     )
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn patch_registers(word: &mut [u8], rt: u8, rn: u8) -> Result<(), StencilError> {
+    if word.len() != 4 || rt > 31 || rn > 31 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil register patch is invalid",
+        });
+    }
+    let mut raw = u32::from_le_bytes(word.try_into().unwrap());
+    raw &= !0x3ff;
+    raw |= u32::from(rt) | (u32::from(rn) << 5);
+    word.copy_from_slice(&raw.to_le_bytes());
+    Ok(())
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]

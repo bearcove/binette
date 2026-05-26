@@ -39,8 +39,9 @@ use self::memory::ExecutableMemory;
 use self::runtime::{
     STENCIL_ENCODE_BYTES_BYTES, STENCIL_ENCODE_BYTES_STRING, STENCIL_OK, STENCIL_OPTION_NONE,
     STENCIL_OPTION_SOME, hybrid_error_status, stencil_copy_bytes, stencil_decode_helper,
-    stencil_encode_byte_parts, stencil_encode_helper, stencil_encode_reserve,
-    stencil_enum_variant_index, stencil_list_element, stencil_list_len, stencil_option_parts,
+    stencil_decode_list_begin, stencil_decode_list_finish, stencil_encode_byte_parts,
+    stencil_encode_helper, stencil_encode_reserve, stencil_enum_variant_index,
+    stencil_list_element, stencil_list_len, stencil_option_parts,
 };
 use self::types::{
     CopyOp, CopyWidth, EncodeBytesKind, EncodeEnumCase, EncodeStencilOp, EnumCase,
