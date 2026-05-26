@@ -9,10 +9,11 @@ pub(crate) struct VecLayout {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(test)]
 pub(crate) struct OptionStringLayout {
     pub(crate) same_size_niche: bool,
     pub(crate) some_string: VecLayout,
+    pub(crate) none_tag_offset: usize,
+    pub(crate) none_tag_value: usize,
 }
 
 pub(crate) fn string_layout() -> Option<VecLayout> {
@@ -26,24 +27,7 @@ pub(crate) fn string_layout() -> Option<VecLayout> {
     )
 }
 
-#[cfg(test)]
-pub(crate) fn option_string_layout() -> Option<OptionStringLayout> {
-    let mut value = String::with_capacity(37);
-    value.push_str("binette option");
-    let ptr = value.as_ptr() as usize;
-    let len = value.len();
-    let cap = value.capacity();
-    let option = ManuallyDrop::new(Some(value));
-    let some_string = probe_three_word_layout(&*option, ptr, len, cap)?;
-
-    Some(OptionStringLayout {
-        same_size_niche: size_of::<Option<String>>() == size_of::<String>(),
-        some_string,
-    })
-}
-
-#[cfg(test)]
-pub(crate) fn vec_u8_layout() -> Option<VecLayout> {
+pub(crate) fn vec_layout() -> Option<VecLayout> {
     let mut value = ManuallyDrop::new(Vec::with_capacity(31));
     value.extend_from_slice(b"binette");
     probe_three_word_layout(
@@ -52,6 +36,35 @@ pub(crate) fn vec_u8_layout() -> Option<VecLayout> {
         value.len(),
         value.capacity(),
     )
+}
+
+pub(crate) fn option_string_layout() -> Option<OptionStringLayout> {
+    let mut value = String::with_capacity(37);
+    value.push_str("binette option");
+    let ptr = value.as_ptr() as usize;
+    let len = value.len();
+    let cap = value.capacity();
+    let option = ManuallyDrop::new(Some(value));
+    let some_string = probe_three_word_layout(&*option, ptr, len, cap)?;
+    let none = ManuallyDrop::new(None::<String>);
+    let none_words = unsafe { words_of(&*none) };
+    let tag_index = some_string.cap_offset / size_of::<usize>();
+    let none_tag_value = *none_words.get(tag_index)?;
+    if none_tag_value == cap {
+        return None;
+    }
+
+    Some(OptionStringLayout {
+        same_size_niche: size_of::<Option<String>>() == size_of::<String>(),
+        some_string,
+        none_tag_offset: some_string.cap_offset,
+        none_tag_value,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn vec_u8_layout() -> Option<VecLayout> {
+    vec_layout()
 }
 
 fn probe_three_word_layout<T>(value: &T, ptr: usize, len: usize, cap: usize) -> Option<VecLayout> {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::layout::{option_string_layout, vec_layout};
 
 pub(super) struct StencilCompiler<'registry> {
     pub(super) writer_registry: &'registry SchemaRegistry,
@@ -1080,9 +1081,18 @@ impl StencilEncodeCompiler {
             return Ok(false);
         }
 
+        let layout = if matches!(element, WriterNode::Primitive(Primitive::String))
+            && option_string_layout().is_some_and(|layout| layout.same_size_niche)
+        {
+            EncodeOptionLayout::NicheString
+        } else {
+            EncodeOptionLayout::Facet
+        };
+
         self.ops.push(EncodeStencilOp::Option {
             shape,
             input_offset,
+            layout,
             some_ops: compiler.ops,
         });
         Ok(true)
@@ -1118,9 +1128,25 @@ impl StencilEncodeCompiler {
             return Ok(false);
         }
 
+        let element_stride = list
+            .t()
+            .layout
+            .sized_layout()
+            .map_err(|_| StencilError::Unsupported {
+                path: format!("{path}[]"),
+                reason: "writer list element shape is unsized",
+            })?
+            .size();
+        let layout = vec_layout().map_or(EncodeListLayout::Facet, |layout| EncodeListLayout::Vec {
+            ptr_offset: layout.ptr_offset,
+            len_offset: layout.len_offset,
+            element_stride,
+        });
+
         self.ops.push(EncodeStencilOp::List {
             shape,
             input_offset,
+            layout,
             element_ops: compiler.ops,
         });
         Ok(true)

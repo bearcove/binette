@@ -235,6 +235,64 @@ fn option_encode_stencil_compiles_helperless_some_payload_without_helpers() {
 }
 
 #[test]
+fn option_string_encode_stencil_uses_niche_layout_without_facet_option_helper() {
+    type Value = Option<String>;
+
+    let value = Some("payload".to_owned());
+    let plan = writer_plan_for::<Value>().unwrap();
+
+    let mut compiler = StencilEncodeCompiler {
+        ops: Vec::new(),
+        helpers: Vec::new(),
+        failures: Vec::new(),
+    };
+    compiler.compile_root::<Value>(plan.root_node()).unwrap();
+
+    let [EncodeStencilOp::Option { layout, .. }] = compiler.ops.as_slice() else {
+        panic!("expected one option encode op, got {:#?}", compiler.ops);
+    };
+    assert_eq!(*layout, EncodeOptionLayout::NicheString);
+    assert!(compiler.helpers.is_empty());
+
+    let encoder = strict_stencil_encoder_from_plan::<Value>(&plan).unwrap();
+    assert_eq!(
+        encoder.encode_to_vec(&value).unwrap(),
+        encode_to_vec_with_plan(&value, &plan).unwrap()
+    );
+    assert_eq!(
+        encoder.encode_to_vec(&None).unwrap(),
+        encode_to_vec_with_plan(&None::<String>, &plan).unwrap()
+    );
+}
+
+#[test]
+fn list_encode_stencil_uses_vec_layout_without_facet_list_helpers() {
+    type Value = Vec<(u16, String)>;
+
+    let value = vec![(1, "one".to_owned()), (2, "two".to_owned())];
+    let plan = writer_plan_for::<Value>().unwrap();
+
+    let mut compiler = StencilEncodeCompiler {
+        ops: Vec::new(),
+        helpers: Vec::new(),
+        failures: Vec::new(),
+    };
+    compiler.compile_root::<Value>(plan.root_node()).unwrap();
+
+    let [EncodeStencilOp::List { layout, .. }] = compiler.ops.as_slice() else {
+        panic!("expected one list encode op, got {:#?}", compiler.ops);
+    };
+    assert!(matches!(layout, EncodeListLayout::Vec { .. }));
+    assert!(compiler.helpers.is_empty());
+
+    let encoder = strict_stencil_encoder_from_plan::<Value>(&plan).unwrap();
+    assert_eq!(
+        encoder.encode_to_vec(&value).unwrap(),
+        encode_to_vec_with_plan(&value, &plan).unwrap()
+    );
+}
+
+#[test]
 fn strict_encode_rejects_option_payload_that_needs_helper() {
     type Value = Option<std::collections::HashSet<u16>>;
 

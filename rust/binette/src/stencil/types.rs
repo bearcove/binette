@@ -117,11 +117,13 @@ pub(super) enum EncodeStencilOp {
     Option {
         shape: &'static Shape,
         input_offset: usize,
+        layout: EncodeOptionLayout,
         some_ops: Vec<EncodeStencilOp>,
     },
     List {
         shape: &'static Shape,
         input_offset: usize,
+        layout: EncodeListLayout,
         element_ops: Vec<EncodeStencilOp>,
     },
 }
@@ -130,6 +132,22 @@ pub(super) enum EncodeStencilOp {
 pub(super) enum EncodeBytesKind {
     String,
     Bytes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EncodeOptionLayout {
+    Facet,
+    NicheString,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EncodeListLayout {
+    Facet,
+    Vec {
+        ptr_offset: usize,
+        len_offset: usize,
+        element_stride: usize,
+    },
 }
 
 #[derive(Debug, Clone)]

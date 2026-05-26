@@ -44,9 +44,10 @@ use self::runtime::{
     stencil_enum_variant_index, stencil_list_element, stencil_list_len, stencil_option_parts,
 };
 use self::types::{
-    CopyOp, CopyWidth, EncodeBytesKind, EncodeEnumCase, EncodeStencilOp, EnumCase,
-    FixedEncodeCompiler, FixedEncodeSegment, HybridStencilOp, LengthCheck, StencilEncodeHelper,
-    StencilEncodeRuntime, StencilFailure, StencilHelper, StencilOp, StencilRuntime, TaggedLength,
+    CopyOp, CopyWidth, EncodeBytesKind, EncodeEnumCase, EncodeListLayout, EncodeOptionLayout,
+    EncodeStencilOp, EnumCase, FixedEncodeCompiler, FixedEncodeSegment, HybridStencilOp,
+    LengthCheck, StencilEncodeHelper, StencilEncodeRuntime, StencilFailure, StencilHelper,
+    StencilOp, StencilRuntime, TaggedLength,
 };
 
 type FixedStencilFn = unsafe extern "C" fn(input: *const u8, len: usize, out: *mut u8) -> u32;
