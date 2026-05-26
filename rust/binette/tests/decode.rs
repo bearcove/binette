@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
@@ -94,6 +95,51 @@ fn compact_encode_handles_recursive_writer_schema() {
     let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
     let decoded =
         decode_from_slice::<LocalTypeRef>(&bytes, writer_plan.root(), &writer_registry).unwrap();
+
+    assert_eq!(decoded, value);
+}
+
+// r[verify binette.type-id.context-free]
+// r[verify binette.mode.compact]
+#[test]
+fn compact_decode_enters_transparent_reader_fields() {
+    #[derive(Debug, Facet, PartialEq)]
+    #[facet(transparent)]
+    #[repr(transparent)]
+    struct SchemaHash(u64);
+
+    #[derive(Debug, Facet, PartialEq)]
+    struct Schema {
+        id: SchemaHash,
+    }
+
+    let writer_plan = writer_plan_for::<Schema>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let value = Schema { id: SchemaHash(42) };
+
+    let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+    let decoded =
+        decode_from_slice::<Schema>(&bytes, writer_plan.root(), &writer_registry).unwrap();
+
+    assert_eq!(decoded, value);
+}
+
+// r[verify binette.mode.compact]
+#[test]
+fn compact_decode_handles_cow_str_reader_fields() {
+    #[derive(Debug, Facet, PartialEq)]
+    struct Entry {
+        key: Cow<'static, str>,
+    }
+
+    let writer_plan = writer_plan_for::<Entry>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let value = Entry {
+        key: Cow::Borrowed("metadata-key"),
+    };
+
+    let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+    let decoded = decode_from_slice::<Entry>(&bytes, writer_plan.root(), &writer_registry).unwrap();
 
     assert_eq!(decoded, value);
 }

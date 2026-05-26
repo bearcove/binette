@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
-use facet_core::{Facet, PtrUninit, Shape};
+use facet_core::{Facet, PtrUninit, ScalarType, Shape};
 use facet_reflect::{AllocError, Partial, ReflectError, ShapeMismatchError};
 use thiserror::Error;
 
@@ -121,6 +121,22 @@ impl DecodeExecutor<'_, '_> {
         partial: Partial<'static, false>,
         node: &PlanNode,
     ) -> Result<Partial<'static, false>, DecodeError> {
+        let shape = partial.shape();
+        if let facet_core::Def::Pointer(pointer) = shape.def
+            && pointer.constructible_from_pointee()
+            && shape.scalar_type().is_none()
+        {
+            let partial = partial.begin_smart_ptr()?;
+            let partial = self.decode_node(partial, node)?;
+            return Ok(partial.end()?);
+        }
+
+        if shape.builder_shape.is_some() || (shape.is_transparent() && shape.inner.is_some()) {
+            let partial = partial.begin_inner()?;
+            let partial = self.decode_node(partial, node)?;
+            return Ok(partial.end()?);
+        }
+
         match node {
             PlanNode::Ref { node_index } => {
                 let node =
@@ -395,7 +411,14 @@ impl DecodeExecutor<'_, '_> {
             Primitive::F32 => Ok(partial.set(self.reader.read_f32()?)?),
             Primitive::F64 => Ok(partial.set(self.reader.read_f64()?)?),
             Primitive::Char => Ok(partial.set(self.reader.read_char()?)?),
-            Primitive::String => Ok(partial.set(self.reader.read_string()?)?),
+            Primitive::String => {
+                let value = self.reader.read_string()?;
+                if partial.shape().scalar_type() == Some(ScalarType::CowStr) {
+                    Ok(partial.set(Cow::<'static, str>::Owned(value))?)
+                } else {
+                    Ok(partial.set(value)?)
+                }
+            }
             Primitive::Bytes | Primitive::Payload => Ok(partial.set(self.reader.read_byte_vec()?)?),
         }
     }
