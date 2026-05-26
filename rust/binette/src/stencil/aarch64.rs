@@ -1,4 +1,5 @@
 use super::*;
+use crate::layout::string_layout;
 
 pub(super) fn generate_code(
     ops: &[StencilOp],
@@ -1086,39 +1087,71 @@ fn emit_encode_bytes_op(
     error_branches: &mut Vec<EncodeBranchFixup>,
     value_base_reg: u8,
 ) -> Result<(), StencilError> {
-    if input_offset == 0 {
-        push_u32(code, mov_x_register(0, value_base_reg)?);
+    if kind == EncodeBytesKind::String {
+        let Some(layout) = string_layout() else {
+            return Err(StencilError::Unsupported {
+                path: "$string".to_owned(),
+                reason: "string layout probe failed",
+            });
+        };
+        if input_offset == 0 {
+            push_u32(code, mov_x_register(10, value_base_reg)?);
+        } else {
+            push_u32(
+                code,
+                add_x_immediate(10, value_base_reg, input_offset, "$input")?,
+            );
+        }
+        push_u32(code, ldur_x_register(22, 10, layout.ptr_offset, "$string")?);
+        push_u32(code, ldur_x_register(23, 10, layout.len_offset, "$string")?);
     } else {
-        push_u32(
+        if input_offset == 0 {
+            push_u32(code, mov_x_register(0, value_base_reg)?);
+        } else {
+            push_u32(
+                code,
+                add_x_immediate(0, value_base_reg, input_offset, "$input")?,
+            );
+        }
+        emit_mov_x_immediate(code, 1, shape as *const Shape as usize as u64)?;
+        let kind = u64::try_from(kind.abi_tag()).map_err(|_| StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil byte kind exceeds u64",
+        })?;
+        emit_mov_x_immediate(code, 2, kind)?;
+        emit_mov_x_immediate(
             code,
-            add_x_immediate(0, value_base_reg, input_offset, "$input")?,
-        );
-    }
-    emit_mov_x_immediate(code, 1, shape as *const Shape as usize as u64)?;
-    let kind = u64::try_from(kind.abi_tag()).map_err(|_| StencilError::Unsupported {
-        path: "$code".to_owned(),
-        reason: "stencil byte kind exceeds u64",
-    })?;
-    emit_mov_x_immediate(code, 2, kind)?;
-    emit_mov_x_immediate(
-        code,
-        16,
-        stencil_encode_byte_parts as *const () as usize as u64,
-    )?;
-    push_u32(code, AARCH64_BLR_X16);
+            16,
+            stencil_encode_byte_parts as *const () as usize as u64,
+        )?;
+        push_u32(code, AARCH64_BLR_X16);
 
-    let parts_succeeded_branch = code.len();
+        let parts_succeeded_branch = code.len();
+        push_u32(code, 0);
+        emit_encode_failure_branch(code, error_branches)?;
+
+        let parts_success = code.len();
+        let parts_branch_word = patch_compare_zero_branch_imm19(
+            AARCH64_CBNZ_X0,
+            parts_succeeded_branch,
+            parts_success,
+        )?;
+        code[parts_succeeded_branch..parts_succeeded_branch + 4]
+            .copy_from_slice(&parts_branch_word.to_le_bytes());
+
+        push_u32(code, mov_x_register(22, 0)?);
+        push_u32(code, mov_x_register(23, 1)?);
+    }
+
+    emit_mov_x_immediate(code, 10, u64::from(u32::MAX))?;
+    push_u32(code, cmp_x_register(23, 10)?);
+    let len_succeeded_branch = code.len();
     push_u32(code, 0);
     emit_encode_failure_branch(code, error_branches)?;
-
-    let parts_success = code.len();
-    let parts_branch_word =
-        patch_compare_zero_branch_imm19(AARCH64_CBNZ_X0, parts_succeeded_branch, parts_success)?;
-    code[parts_succeeded_branch..parts_succeeded_branch + 4]
-        .copy_from_slice(&parts_branch_word.to_le_bytes());
-
-    push_u32(code, mov_x_register(22, 0)?);
-    push_u32(code, mov_x_register(23, 1)?);
+    let len_success = code.len();
+    let len_branch_word = patch_cond_branch_imm19(AARCH64_B_LS, len_succeeded_branch, len_success)?;
+    code[len_succeeded_branch..len_succeeded_branch + 4]
+        .copy_from_slice(&len_branch_word.to_le_bytes());
 
     push_u32(code, mov_x_register(0, 21)?);
     push_u32(code, add_x_immediate(1, 23, 4, "$bytes")?);
@@ -1732,6 +1765,21 @@ fn ldur_w_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, Ste
     }
     patch_ldur_stur_imm9(
         0xB840_0000 | (u32::from(rn) << 5) | u32::from(rt),
+        offset,
+        path,
+    )
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn ldur_x_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, StencilError> {
+    if rt > 31 || rn > 31 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil register index exceeds AArch64 range",
+        });
+    }
+    patch_ldur_stur_imm9(
+        0xF840_0000 | (u32::from(rn) << 5) | u32::from(rt),
         offset,
         path,
     )

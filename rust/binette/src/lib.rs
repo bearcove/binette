@@ -10,6 +10,7 @@ mod encode;
 mod error;
 mod facet;
 mod hash;
+mod layout;
 mod plan;
 mod registry;
 mod schema;

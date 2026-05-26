@@ -126,7 +126,7 @@ pub(super) enum EncodeStencilOp {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EncodeBytesKind {
     String,
     Bytes,
