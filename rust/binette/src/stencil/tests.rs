@@ -189,6 +189,9 @@ fn strict_encode_accepts_helperless_enum_stencils() {
         EncodeStencilEntry::Direct { .. } => {}
         EncodeStencilEntry::Helper { runtime, .. } => assert!(runtime.helpers.is_empty()),
     }
+    assert_eq!(encoder.report().mode, StencilMode::Strict);
+    assert_eq!(encoder.report().helper_count, 0);
+    assert!(encoder.report().helper_paths.is_empty());
     assert_eq!(
         encoder.encode_to_vec(&value).unwrap(),
         encode_to_vec_with_plan(&value, &plan).unwrap()
@@ -240,6 +243,11 @@ fn strict_encode_rejects_option_payload_that_needs_helper() {
         strict_stencil_encoder_from_plan::<Value>(&plan),
         Err(StencilError::Unsupported { .. })
     ));
+
+    let encoder = hybrid_stencil_encoder_from_plan::<Value>(&plan).unwrap();
+    assert_eq!(encoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(encoder.report().helper_count, 1);
+    assert_eq!(encoder.report().helper_paths, vec!["$"]);
 }
 
 #[test]

@@ -3,9 +3,10 @@ use std::hash::{Hash, Hasher};
 
 use binette::{
     CompactError, DecodeError, EncodeError, Primitive, SchemaBundle, SchemaRegistry, StencilError,
-    TypeRef, decode_from_slice, encode_to_vec, encode_to_vec_with_plan, encode_to_vec_with_stencil,
-    hybrid_stencil_decoder_for, primitive_type_id, stencil_decoder_for, stencil_encoder_from_plan,
-    strict_stencil_decoder_for, strict_stencil_encoder_from_plan, writer_plan_for,
+    StencilMode, TypeRef, decode_from_slice, encode_to_vec, encode_to_vec_with_plan,
+    encode_to_vec_with_stencil, hybrid_stencil_decoder_for, primitive_type_id, stencil_decoder_for,
+    stencil_encoder_from_plan, strict_stencil_decoder_for, strict_stencil_encoder_from_plan,
+    writer_plan_for,
 };
 use facet::Facet;
 use facet_value::{VArray, VObject, Value as FacetValue};
@@ -777,6 +778,9 @@ fn strict_stencil_decodes_structs_with_fixed_element_list_fields() {
         strict_stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry)
             .unwrap();
     assert_eq!(decoder.fixed_expected_len(), None);
+    assert_eq!(decoder.report().mode, StencilMode::Strict);
+    assert_eq!(decoder.report().helper_count, 0);
+    assert!(decoder.report().helper_paths.is_empty());
 
     let decoded = decoder.decode(&bytes).unwrap();
     let interpreted =
@@ -845,6 +849,11 @@ fn hybrid_stencil_decodes_structs_with_mixed_element_list_fields() {
     let decoder =
         hybrid_stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry)
             .unwrap();
+    assert_eq!(decoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(decoder.report().helper_count, 1);
+    assert_eq!(decoder.report().helper_paths, vec!["$.items[].1"]);
+    assert!(decoder.report().native_ops >= 4);
+
     let decoded = decoder.decode(&bytes).unwrap();
     let interpreted =
         decode_from_slice::<reader::Message>(&bytes, writer_plan.root(), &writer_registry).unwrap();

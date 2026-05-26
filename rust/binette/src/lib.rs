@@ -53,10 +53,10 @@ pub use schema_format::{
     schema_bundle_to_value, schema_from_value, schema_to_value,
 };
 pub use stencil::{
-    StencilDecoder, StencilEncoder, StencilError, decode_from_slice_with_stencil,
-    encode_to_vec_with_stencil, hybrid_stencil_decoder_for, hybrid_stencil_decoder_from_plan,
-    hybrid_stencil_encoder_for, hybrid_stencil_encoder_from_plan, stencil_decoder_for,
-    stencil_decoder_from_plan, stencil_encoder_for, stencil_encoder_from_plan,
+    StencilDecoder, StencilEncoder, StencilError, StencilMode, StencilReport,
+    decode_from_slice_with_stencil, encode_to_vec_with_stencil, hybrid_stencil_decoder_for,
+    hybrid_stencil_decoder_from_plan, hybrid_stencil_encoder_for, hybrid_stencil_encoder_from_plan,
+    stencil_decoder_for, stencil_decoder_from_plan, stencil_encoder_for, stencil_encoder_from_plan,
     strict_stencil_decoder_for, strict_stencil_decoder_from_plan, strict_stencil_encoder_for,
     strict_stencil_encoder_from_plan,
 };

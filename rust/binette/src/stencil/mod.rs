@@ -67,13 +67,30 @@ pub struct StencilDecoder<T> {
     code: ExecutableMemory,
     entry: StencilEntry,
     failures: Vec<StencilFailure>,
+    report: StencilReport,
     _marker: PhantomData<fn() -> T>,
 }
 
 pub struct StencilEncoder<T> {
     code: ExecutableMemory,
     entry: EncodeStencilEntry,
+    report: StencilReport,
     _marker: PhantomData<fn() -> T>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StencilMode {
+    Strict,
+    Hybrid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StencilReport {
+    pub mode: StencilMode,
+    pub code_len: usize,
+    pub native_ops: usize,
+    pub helper_count: usize,
+    pub helper_paths: Vec<String>,
 }
 
 enum StencilEntry {
@@ -159,6 +176,10 @@ impl<T> StencilDecoder<T> {
 
     pub fn code_len(&self) -> usize {
         self.code.len()
+    }
+
+    pub fn report(&self) -> &StencilReport {
+        &self.report
     }
 }
 
@@ -246,6 +267,10 @@ impl<T: Facet<'static>> StencilDecoder<T> {
 impl<T> StencilEncoder<T> {
     pub fn code_len(&self) -> usize {
         self.code.len()
+    }
+
+    pub fn report(&self) -> &StencilReport {
+        &self.report
     }
 }
 
@@ -401,10 +426,18 @@ fn fixed_encode_stencil_encoder_from_plan<T: Facet<'static>>(
     let output_len = compiler.compile_root::<T>(plan.root_node())?;
 
     let code = generate_direct_encode_code(&compiler.ops, output_len)?;
+    let report = StencilReport {
+        mode: StencilMode::Strict,
+        code_len: code.len(),
+        native_ops: compiler.ops.len(),
+        helper_count: 0,
+        helper_paths: Vec::new(),
+    };
     let func = code.as_direct_encode_fn();
     Ok(StencilEncoder {
         code,
         entry: EncodeStencilEntry::Direct { func },
+        report,
         _marker: PhantomData,
     })
 }
@@ -432,6 +465,7 @@ fn strict_encode_stencil_encoder_from_plan<T: Facet<'static>>(
     }
 
     let code = generate_encode_code(&compiler.ops)?;
+    let report = encode_report(&code, &compiler.ops, &compiler.helpers, &compiler.failures);
     let func = code.as_encode_fn();
     Ok(StencilEncoder {
         code,
@@ -441,6 +475,7 @@ fn strict_encode_stencil_encoder_from_plan<T: Facet<'static>>(
                 helpers: compiler.helpers,
             }),
         },
+        report,
         _marker: PhantomData,
     })
 }
@@ -456,6 +491,7 @@ fn build_hybrid_stencil_encoder_from_plan<T: Facet<'static>>(
     compiler.compile_root::<T>(plan.root_node())?;
 
     let code = generate_encode_code(&compiler.ops)?;
+    let report = encode_report(&code, &compiler.ops, &compiler.helpers, &compiler.failures);
     let func = code.as_encode_fn();
     Ok(StencilEncoder {
         code,
@@ -465,8 +501,131 @@ fn build_hybrid_stencil_encoder_from_plan<T: Facet<'static>>(
                 helpers: compiler.helpers,
             }),
         },
+        report,
         _marker: PhantomData,
     })
+}
+
+fn decode_report(
+    code: &ExecutableMemory,
+    ops: &[HybridStencilOp],
+    helpers: &[StencilHelper],
+    failures: &[StencilFailure],
+) -> StencilReport {
+    let helper_paths = decode_helper_paths(helpers, failures);
+    StencilReport {
+        mode: if helper_paths.is_empty() {
+            StencilMode::Strict
+        } else {
+            StencilMode::Hybrid
+        },
+        code_len: code.len(),
+        native_ops: hybrid_decode_native_op_count(ops),
+        helper_count: helper_paths.len(),
+        helper_paths,
+    }
+}
+
+fn encode_report(
+    code: &ExecutableMemory,
+    ops: &[EncodeStencilOp],
+    helpers: &[StencilEncodeHelper],
+    failures: &[StencilFailure],
+) -> StencilReport {
+    let helper_paths = encode_helper_paths(helpers, failures);
+    StencilReport {
+        mode: if helper_paths.is_empty() {
+            StencilMode::Strict
+        } else {
+            StencilMode::Hybrid
+        },
+        code_len: code.len(),
+        native_ops: encode_native_op_count(ops),
+        helper_count: helper_paths.len(),
+        helper_paths,
+    }
+}
+
+fn decode_helper_paths(helpers: &[StencilHelper], failures: &[StencilFailure]) -> Vec<String> {
+    helpers
+        .iter()
+        .filter_map(|helper| match helper {
+            StencilHelper::Decode { failure_index, .. }
+            | StencilHelper::Skip { failure_index, .. } => helper_path(failures, *failure_index),
+        })
+        .collect()
+}
+
+fn encode_helper_paths(
+    helpers: &[StencilEncodeHelper],
+    failures: &[StencilFailure],
+) -> Vec<String> {
+    helpers
+        .iter()
+        .filter_map(|helper| match helper {
+            StencilEncodeHelper::Node { failure_index, .. } => {
+                helper_path(failures, *failure_index)
+            }
+        })
+        .collect()
+}
+
+fn helper_path(failures: &[StencilFailure], failure_index: usize) -> Option<String> {
+    match failures.get(failure_index) {
+        Some(StencilFailure::Helper { path }) => Some(path.clone()),
+        _ => None,
+    }
+}
+
+fn fixed_decode_native_op_count(ops: &[StencilOp]) -> usize {
+    ops.iter()
+        .map(|op| match op {
+            StencilOp::Copy(_) | StencilOp::Bool { .. } | StencilOp::RootList { .. } => 1,
+            StencilOp::RootEnum { bodies, .. } => {
+                1 + bodies
+                    .iter()
+                    .map(|body| fixed_decode_native_op_count(body))
+                    .sum::<usize>()
+            }
+        })
+        .sum()
+}
+
+fn hybrid_decode_native_op_count(ops: &[HybridStencilOp]) -> usize {
+    ops.iter()
+        .map(|op| match op {
+            HybridStencilOp::Helper { .. } => 0,
+            HybridStencilOp::Copy { .. } => 1,
+            HybridStencilOp::List { element_ops, .. } => {
+                1 + hybrid_decode_native_op_count(element_ops)
+            }
+        })
+        .sum()
+}
+
+fn encode_native_op_count(ops: &[EncodeStencilOp]) -> usize {
+    ops.iter()
+        .map(|op| match op {
+            EncodeStencilOp::Helper { .. } => 0,
+            EncodeStencilOp::Direct { .. }
+            | EncodeStencilOp::Bytes { .. }
+            | EncodeStencilOp::Enum { .. }
+            | EncodeStencilOp::Option { .. }
+            | EncodeStencilOp::List { .. } => {
+                1 + match op {
+                    EncodeStencilOp::Enum { cases, .. } => cases
+                        .iter()
+                        .map(|case| encode_native_op_count(&case.ops))
+                        .sum::<usize>(),
+                    EncodeStencilOp::Option { some_ops, .. } => encode_native_op_count(some_ops),
+                    EncodeStencilOp::List { element_ops, .. } => {
+                        encode_native_op_count(element_ops)
+                    }
+                    _ => 0,
+                }
+            }
+        })
+        .sum()
 }
 
 pub fn encode_to_vec_with_stencil<T: Facet<'static>>(
@@ -489,11 +648,19 @@ fn fixed_stencil_decoder_from_plan<T: Facet<'static>>(
     let length_check = compiler.compile_root::<T>(&plan.root)?;
 
     let code = generate_code(&compiler.ops, compiler.failures.len())?;
+    let report = StencilReport {
+        mode: StencilMode::Strict,
+        code_len: code.len(),
+        native_ops: fixed_decode_native_op_count(&compiler.ops),
+        helper_count: 0,
+        helper_paths: Vec::new(),
+    };
     let func = code.as_fixed_fn();
     Ok(StencilDecoder {
         code,
         entry: StencilEntry::Fixed { func, length_check },
         failures: compiler.failures,
+        report,
         _marker: PhantomData,
     })
 }
@@ -511,8 +678,15 @@ fn cursor_stencil_decoder_from_plan<T: Facet<'static>>(
         allow_helpers,
     };
     compiler.compile_root::<T>(&plan.root)?;
+    if !allow_helpers && !compiler.helpers.is_empty() {
+        return Err(StencilError::Unsupported {
+            path: "$".to_owned(),
+            reason: "strict decode stencil does not support helper fallbacks",
+        });
+    }
 
     let code = generate_hybrid_code(&compiler.ops)?;
+    let report = decode_report(&code, &compiler.ops, &compiler.helpers, &compiler.failures);
     let func = code.as_hybrid_fn();
     Ok(StencilDecoder {
         code,
@@ -524,6 +698,7 @@ fn cursor_stencil_decoder_from_plan<T: Facet<'static>>(
             }),
         },
         failures: compiler.failures,
+        report,
         _marker: PhantomData,
     })
 }
