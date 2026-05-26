@@ -139,6 +139,73 @@ export function schemaTypeId(schema: Pick<Schema, "typeParams" | "kind">): TypeI
   return hashTypeId(typeIdHashBytes(schema.kind, schema.typeParams, null));
 }
 
+// r[impl binette.hash.recursive]
+export function recursiveSchemaTypeIds(schemas: readonly Schema[]): TypeId[] {
+  const map = recursiveTypeIdMap(schemas);
+  return schemas.map((schema) => {
+    const typeId = map.get(schema.id);
+    if (typeId === undefined) {
+      throw new BinetteError(
+        `recursive type-id map is missing schema ${schema.id}`,
+      );
+    }
+    return typeId;
+  });
+}
+
+export function recursiveTypeIdMap(
+  schemas: readonly Schema[],
+): Map<TypeId, TypeId> {
+  const groupIds = new Set<TypeId>(schemas.map((schema) => schema.id));
+  const entries: Array<{
+    originalIds: TypeId[];
+    preliminary: TypeId;
+    bytes: Uint8Array;
+  }> = [];
+
+  for (const schema of schemas) {
+    const bytes = typeIdHashBytes(schema.kind, schema.typeParams, groupIds);
+    const existing = entries.find((entry) => bytesEqual(entry.bytes, bytes));
+    if (existing !== undefined) {
+      existing.originalIds.push(schema.id);
+    } else {
+      entries.push({
+        originalIds: [schema.id],
+        preliminary: hashTypeId(bytes),
+        bytes,
+      });
+    }
+  }
+
+  entries.sort((left, right) => {
+    if (left.preliminary < right.preliminary) {
+      return -1;
+    }
+    if (left.preliminary > right.preliminary) {
+      return 1;
+    }
+    return compareBytes(left.bytes, right.bytes);
+  });
+
+  const groupHashInput = new Uint8Array(entries.length * 8);
+  entries.forEach((entry, index) => {
+    groupHashInput.set(typeIdToLeBytes(entry.preliminary), index * 8);
+  });
+  const groupHash = hashTypeId(groupHashInput);
+
+  const result = new Map<TypeId, TypeId>();
+  entries.forEach((entry, index) => {
+    const input = new Uint8Array(16);
+    input.set(typeIdToLeBytes(groupHash), 0);
+    input.set(typeIdToLeBytes(BigInt(index)), 8);
+    const finalId = hashTypeId(input);
+    for (const originalId of entry.originalIds) {
+      result.set(originalId, finalId);
+    }
+  });
+  return result;
+}
+
 // r[impl binette.schema.encoding.self-describing]
 // r[impl binette.schema.format+2]
 export function schemaToValue(schema: Schema): Value {
@@ -589,6 +656,47 @@ function hashTypeId(bytes: Uint8Array): TypeId {
     value |= BigInt(byte) << BigInt(index * 8);
   }
   return value;
+}
+
+function typeIdToLeBytes(typeId: TypeId): Uint8Array {
+  if (typeId < 0n || typeId >= 1n << 64n) {
+    throw new BinetteError("u64 out of range");
+  }
+  const bytes = new Uint8Array(8);
+  for (let index = 0; index < 8; index += 1) {
+    bytes[index] = Number((typeId >> BigInt(index * 8)) & 0xffn);
+  }
+  return bytes;
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function compareBytes(left: Uint8Array, right: Uint8Array): number {
+  const length = Math.min(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftByte = left[index];
+    const rightByte = right[index];
+    if (leftByte === undefined || rightByte === undefined) {
+      throw new BinetteError("byte comparison index out of bounds");
+    }
+    if (leftByte < rightByte) {
+      return -1;
+    }
+    if (leftByte > rightByte) {
+      return 1;
+    }
+  }
+  return left.length - right.length;
 }
 
 class HashWriter {

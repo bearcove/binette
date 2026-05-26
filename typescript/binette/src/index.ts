@@ -15,6 +15,8 @@ export {
   isPrimitive,
   primitiveForTypeId,
   primitiveTypeId,
+  recursiveSchemaTypeIds,
+  recursiveTypeIdMap,
   schemaBundleFromValue,
   schemaBundleToValue,
   schemaFromValue,
@@ -24,6 +26,8 @@ export {
   typeRefToValue,
   typeVar,
 } from "./schema.js";
+
+export { SchemaRegistry } from "./registry.js";
 
 export type { Value } from "./value.js";
 
