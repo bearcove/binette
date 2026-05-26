@@ -612,6 +612,40 @@ fn stencil_encodes_enum_through_writer_plan() {
     assert_eq!(stencil_bytes, interpreted_bytes);
 }
 
+// r[verify binette.aggregate.tuple]
+// r[verify binette.aggregate.list]
+// r[verify binette.aggregate.set]
+// r[verify binette.aggregate.map]
+// r[verify binette.aggregate.option]
+// r[verify binette.aggregate.array]
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[test]
+fn stencil_handles_aggregate_roots_through_schema_plan() {
+    fn assert_stencil_matches_interpreter<T>(value: T)
+    where
+        T: Facet<'static> + std::fmt::Debug + PartialEq,
+    {
+        let writer_plan = writer_plan_for::<T>().unwrap();
+        let writer_registry = registry_for(writer_plan.schema_bundle());
+        let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+
+        let decoder = stencil_decoder_for::<T>(writer_plan.root(), &writer_registry).unwrap();
+        let decoded = decoder.decode(&bytes).unwrap();
+        assert_eq!(decoded, value);
+
+        let encoder = stencil_encoder_from_plan::<T>(&writer_plan).unwrap();
+        let stencil_bytes = encode_to_vec_with_stencil(&value, &encoder).unwrap();
+        assert_eq!(stencil_bytes, bytes);
+    }
+
+    assert_stencil_matches_interpreter((7u16, "seven".to_owned(), vec![1u32, 2, 3], Some(true)));
+    assert_stencil_matches_interpreter(vec![(1u16, "one".to_owned()), (2, "two".to_owned())]);
+    assert_stencil_matches_interpreter(HashSet::from([3u16, 1, 2]));
+    assert_stencil_matches_interpreter(HashMap::from([(2u16, 20u8), (1, 10), (3, 30)]));
+    assert_stencil_matches_interpreter(Some((9u16, "nine".to_owned())));
+    assert_stencil_matches_interpreter([5u16, 8, 13, 21]);
+}
+
 // r[verify binette.aggregate.list]
 // r[verify binette.aggregate.option]
 // r[verify binette.aggregate.array]

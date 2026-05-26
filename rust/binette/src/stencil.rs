@@ -990,10 +990,7 @@ impl HybridStencilCompiler {
     fn compile_root<T: Facet<'static>>(&mut self, root: &PlanNode) -> Result<(), StencilError> {
         match root {
             PlanNode::Struct { fields } => self.compile_struct_root(T::SHAPE, fields, 0, "$"),
-            _ => Err(StencilError::Unsupported {
-                path: "$".to_owned(),
-                reason: "hybrid stencil backend currently supports root structs",
-            }),
+            _ => self.push_decode_helper(root, T::SHAPE, 0, "$"),
         }
     }
 
@@ -1087,11 +1084,7 @@ impl StencilEncodeCompiler {
     fn compile_root<T: Facet<'static>>(&mut self, root: &WriterNode) -> Result<(), StencilError> {
         match root {
             WriterNode::Struct { fields } => self.compile_struct_root::<T>(fields),
-            WriterNode::Enum { .. } => self.push_value_helper(root, "$"),
-            _ => Err(StencilError::Unsupported {
-                path: "$".to_owned(),
-                reason: "encode stencil backend currently supports root structs and enums",
-            }),
+            _ => self.push_value_helper(root, "$"),
         }
     }
 

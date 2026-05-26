@@ -8,6 +8,7 @@ use binette::{
     stencil_encoder_from_plan,
 };
 use divan::{Bencher, black_box};
+use facet::Facet;
 
 fn main() {
     divan::main();
@@ -211,6 +212,45 @@ mod enum_reader {
     }
 }
 
+mod aggregate {
+    use std::collections::{HashMap, HashSet};
+
+    pub type Tuple = (u16, String, Vec<u32>, Option<bool>);
+    pub type List = Vec<(u16, String)>;
+    pub type Set = HashSet<u16>;
+    pub type Map = HashMap<u16, u8>;
+    pub type OptionValue = Option<(u16, String)>;
+    pub type Array = [u16; 4];
+
+    pub fn tuple_sample() -> Tuple {
+        (7, "seven".to_owned(), vec![1, 2, 3, 5, 8], Some(true))
+    }
+
+    pub fn list_sample() -> List {
+        vec![
+            (1, "one".to_owned()),
+            (2, "two".to_owned()),
+            (3, "three".to_owned()),
+        ]
+    }
+
+    pub fn set_sample() -> Set {
+        HashSet::from([3, 1, 2, 5, 8, 13])
+    }
+
+    pub fn map_sample() -> Map {
+        HashMap::from([(2, 20), (1, 10), (3, 30), (5, 50)])
+    }
+
+    pub fn option_sample() -> OptionValue {
+        Some((9, "nine".to_owned()))
+    }
+
+    pub fn array_sample() -> Array {
+        [5, 8, 13, 21]
+    }
+}
+
 struct Fixture {
     writer_plan: binette::WriterPlan,
     writer_registry: SchemaRegistry,
@@ -299,6 +339,29 @@ fn enum_fixture() -> EnumFixture {
     }
 }
 
+struct SameFixture<T> {
+    writer_plan: binette::WriterPlan,
+    writer_registry: SchemaRegistry,
+    bytes: Vec<u8>,
+    reader_plan: ReaderPlan,
+    sample: T,
+}
+
+fn same_fixture<T: Facet<'static>>(sample: T) -> SameFixture<T> {
+    let writer_plan = writer_plan_for::<T>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let bytes = encode_to_vec_with_plan(&sample, &writer_plan).unwrap();
+    let reader_plan = reader_plan_for::<T>(writer_plan.root(), &writer_registry).unwrap();
+
+    SameFixture {
+        writer_plan,
+        writer_registry,
+        bytes,
+        reader_plan,
+        sample,
+    }
+}
+
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 struct FixedStencilFixture {
     bytes: Vec<u8>,
@@ -384,6 +447,27 @@ fn mixed_stencil_fixture() -> MixedStencilFixture {
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+struct SameStencilFixture<T> {
+    fixture: SameFixture<T>,
+    decoder: StencilDecoder<T>,
+    encoder: StencilEncoder<T>,
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn same_stencil_fixture<T: Facet<'static>>(sample: T) -> SameStencilFixture<T> {
+    let fixture = same_fixture(sample);
+    let decoder =
+        stencil_decoder_for::<T>(fixture.writer_plan.root(), &fixture.writer_registry).unwrap();
+    let encoder = stencil_encoder_from_plan::<T>(&fixture.writer_plan).unwrap();
+
+    SameStencilFixture {
+        fixture,
+        decoder,
+        encoder,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 struct EncodeStencilFixture {
     sample: writer::Message,
     stencil: StencilEncoder<writer::Message>,
@@ -415,6 +499,103 @@ fn encode_enum_stencil_fixture() -> EncodeEnumStencilFixture {
         sample: enum_writer::sample(),
         stencil,
     }
+}
+
+macro_rules! same_schema_encode_benches {
+    ($module:ident, $ty:ty, $sample:expr) => {
+        mod $module {
+            use super::*;
+
+            #[divan::bench]
+            pub fn interp(bencher: Bencher) {
+                let fixture = same_fixture::<$ty>($sample);
+
+                bencher.bench(|| {
+                    black_box(
+                        encode_to_vec_with_plan(
+                            black_box(&fixture.sample),
+                            black_box(&fixture.writer_plan),
+                        )
+                        .unwrap(),
+                    )
+                });
+            }
+
+            #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+            #[divan::bench]
+            pub fn stencil(bencher: Bencher) {
+                let fixture = same_stencil_fixture::<$ty>($sample);
+
+                bencher.bench(|| {
+                    black_box(
+                        encode_to_vec_with_stencil(
+                            black_box(&fixture.fixture.sample),
+                            &fixture.encoder,
+                        )
+                        .unwrap(),
+                    )
+                });
+            }
+        }
+    };
+}
+
+macro_rules! same_schema_decode_benches {
+    ($module:ident, $ty:ty, $sample:expr) => {
+        mod $module {
+            use super::*;
+
+            #[divan::bench]
+            pub fn interp(bencher: Bencher) {
+                let fixture = same_fixture::<$ty>($sample);
+
+                bencher.bench(|| {
+                    black_box(
+                        decode_from_slice_with_plan::<$ty>(
+                            black_box(&fixture.bytes),
+                            black_box(&fixture.reader_plan),
+                            black_box(&fixture.writer_registry),
+                        )
+                        .unwrap(),
+                    )
+                });
+            }
+
+            #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+            #[divan::bench]
+            pub fn stencil(bencher: Bencher) {
+                let fixture = same_stencil_fixture::<$ty>($sample);
+
+                bencher.bench(|| {
+                    black_box(
+                        fixture
+                            .decoder
+                            .decode(black_box(&fixture.fixture.bytes))
+                            .unwrap(),
+                    )
+                });
+            }
+        }
+    };
+}
+
+macro_rules! same_schema_plan_bench {
+    ($name:ident, $ty:ty, $sample:expr) => {
+        #[divan::bench]
+        pub fn $name(bencher: Bencher) {
+            let fixture = same_fixture::<$ty>($sample);
+
+            bencher.bench(|| {
+                black_box(
+                    reader_plan_for::<$ty>(
+                        black_box(fixture.writer_plan.root()),
+                        black_box(&fixture.writer_registry),
+                    )
+                    .unwrap(),
+                )
+            });
+        }
+    };
 }
 
 mod encode {
@@ -479,6 +660,13 @@ mod encode {
             });
         }
     }
+
+    same_schema_encode_benches!(tuple, aggregate::Tuple, aggregate::tuple_sample());
+    same_schema_encode_benches!(list, aggregate::List, aggregate::list_sample());
+    same_schema_encode_benches!(set, aggregate::Set, aggregate::set_sample());
+    same_schema_encode_benches!(map, aggregate::Map, aggregate::map_sample());
+    same_schema_encode_benches!(option, aggregate::OptionValue, aggregate::option_sample());
+    same_schema_encode_benches!(array, aggregate::Array, aggregate::array_sample());
 }
 
 mod plan {
@@ -513,6 +701,13 @@ mod plan {
             )
         });
     }
+
+    same_schema_plan_bench!(tuple, aggregate::Tuple, aggregate::tuple_sample());
+    same_schema_plan_bench!(list, aggregate::List, aggregate::list_sample());
+    same_schema_plan_bench!(set, aggregate::Set, aggregate::set_sample());
+    same_schema_plan_bench!(map, aggregate::Map, aggregate::map_sample());
+    same_schema_plan_bench!(option, aggregate::OptionValue, aggregate::option_sample());
+    same_schema_plan_bench!(array, aggregate::Array, aggregate::array_sample());
 }
 
 mod fixed_struct {
@@ -626,3 +821,10 @@ mod mixed_struct {
         bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
     }
 }
+
+same_schema_decode_benches!(tuple, aggregate::Tuple, aggregate::tuple_sample());
+same_schema_decode_benches!(list, aggregate::List, aggregate::list_sample());
+same_schema_decode_benches!(set, aggregate::Set, aggregate::set_sample());
+same_schema_decode_benches!(map, aggregate::Map, aggregate::map_sample());
+same_schema_decode_benches!(option, aggregate::OptionValue, aggregate::option_sample());
+same_schema_decode_benches!(array, aggregate::Array, aggregate::array_sample());
