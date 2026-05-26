@@ -134,6 +134,7 @@ export function primitiveForTypeId(typeId: TypeId): Primitive | null {
 // r[impl binette.type-id.hash.tuple]
 // r[impl binette.type-id.hash.dynamic]
 // r[impl binette.type-id.hash.external]
+// r[impl binette.type-id.context-free]
 // r[impl binette.hash.recursive.non-recursive]
 export function schemaTypeId(schema: Pick<Schema, "typeParams" | "kind">): TypeId {
   return hashTypeId(typeIdHashBytes(schema.kind, schema.typeParams, null));

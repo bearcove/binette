@@ -21,4 +21,9 @@ facet-value.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+divan.workspace = true
 facet.workspace = true
+
+[[bench]]
+name = "codec"
+harness = false

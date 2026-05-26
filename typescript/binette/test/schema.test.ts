@@ -287,6 +287,50 @@ test("schema type IDs change with canonical schema content", () => {
   assert.notEqual(tuple.id, array.id);
 });
 
+// r[verify binette.type-id.context-free]
+test("schema type IDs are independent of use site", () => {
+  const payload = schema({
+    kind: "struct",
+    name: "Payload",
+    fields: [{ name: "value", typeRef: primitiveRef("string") }],
+  });
+  const payloadRef = concreteTypeRef(payload.id);
+  const asFieldKind: SchemaKind = {
+    kind: "struct",
+    name: "Envelope",
+    fields: [{ name: "payload", typeRef: payloadRef }],
+  };
+  const asListKind: SchemaKind = {
+    kind: "list",
+    element: payloadRef,
+  };
+  const asEnumPayloadKind: SchemaKind = {
+    kind: "enum",
+    name: "Event",
+    variants: [
+      {
+        name: "Received",
+        index: 0,
+        payload: { kind: "newtype", typeRef: payloadRef },
+      },
+    ],
+  };
+
+  assert.notEqual(schema(asFieldKind).id, payload.id);
+  assert.notEqual(schema(asListKind).id, payload.id);
+  assert.notEqual(schema(asEnumPayloadKind).id, payload.id);
+  assert.equal(payload.id, schemaTypeId(payload));
+  assert.deepEqual(asFieldKind.fields[0]?.typeRef, payloadRef);
+  assert.deepEqual(asListKind.element, payloadRef);
+  assert.equal(asEnumPayloadKind.variants[0]?.payload.kind, "newtype");
+  assert.deepEqual(
+    asEnumPayloadKind.variants[0]?.payload.kind === "newtype"
+      ? asEnumPayloadKind.variants[0].payload.typeRef
+      : null,
+    payloadRef,
+  );
+});
+
 test("schema format rejects mismatched declared IDs", () => {
   const valid = schema({ kind: "primitive", primitive: "u8" });
   const value = schemaToValue({ ...valid, id: valid.id + 1n });
