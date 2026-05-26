@@ -21,6 +21,19 @@ export {
   readerPlanForBundles,
 } from "./plan.js";
 
+export { compatibilityReport } from "./compatibility.js";
+
+export {
+  decodeSchemaDump,
+  decodeSchemaSnapshot,
+  encodeSchemaDump,
+  encodeSchemaSnapshot,
+  schemaDumpFromValue,
+  schemaDumpToValue,
+  schemaSnapshotFromValue,
+  schemaSnapshotToValue,
+} from "./dump.js";
+
 export {
   decodeSchema,
   decodeSchemaBundle,
@@ -56,6 +69,23 @@ export type {
   ReaderPlan,
   StructFieldPlan,
 } from "./plan.js";
+
+export type {
+  CompatibilityDirection,
+  CompatibilityFailure,
+  CompatibilityFailureReason,
+  CompatibilityReport,
+  CompatibilityStatus,
+} from "./compatibility.js";
+
+export type {
+  DeclarationMetadata,
+  Defaultability,
+  FieldMetadata,
+  ProducerMetadata,
+  SchemaDump,
+  SchemaSnapshot,
+} from "./dump.js";
 
 export type {
   AttachmentDeclaration,
