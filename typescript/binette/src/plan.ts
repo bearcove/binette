@@ -1,9 +1,10 @@
-import { BinetteError } from "./value.js";
+import { BinetteError, encodeSelfDescribed, type Value } from "./value.js";
 
 import { SchemaRegistry } from "./registry.js";
 import {
   primitiveForTypeId,
   type Field,
+  type Primitive,
   type Schema,
   type SchemaBundle,
   type SchemaKind,
@@ -18,7 +19,7 @@ export type ReaderPlan = {
 };
 
 export type PlanNode =
-  | { kind: "direct"; writer: TypeRef; reader: TypeRef }
+  | { kind: "primitive"; primitive: Primitive }
   | { kind: "struct"; fields: StructFieldPlan[] }
   | { kind: "tuple"; elements: PlanNode[] }
   | { kind: "list"; element: PlanNode }
@@ -27,7 +28,8 @@ export type PlanNode =
   | { kind: "array"; dimensions: bigint[]; element: PlanNode }
   | { kind: "enum"; variants: EnumVariantPlan[] }
   | { kind: "option"; element: PlanNode }
-  | { kind: "dynamic" };
+  | { kind: "dynamic" }
+  | { kind: "external"; externalKind: string };
 
 export type StructFieldPlan =
   | {
@@ -115,7 +117,7 @@ export function readerPlanForBundles(
 }
 
 type ResolvedKind =
-  | { kind: "primitive" }
+  | { kind: "primitive"; primitive: Primitive }
   | { kind: "schema"; schema: Schema; env: Env };
 
 type SchemaPlanInput = {
@@ -142,12 +144,6 @@ class PlanBuilder {
     const resolvedWriter = this.resolveTypeRef(writerRef, writerEnv, path);
     const resolvedReader = this.resolveTypeRef(readerRef, readerEnv, path);
 
-    if (typeRefsEqual(resolvedWriter, resolvedReader)) {
-      this.knownTypeRef(resolvedWriter, this.writerRegistry, path, "writer");
-      this.knownTypeRef(resolvedReader, this.readerRegistry, path, "reader");
-      return { kind: "direct", writer: resolvedWriter, reader: resolvedReader };
-    }
-
     const writerKind = this.resolveKind(
       resolvedWriter,
       this.writerRegistry,
@@ -160,6 +156,13 @@ class PlanBuilder {
       path,
       "reader",
     );
+
+    if (writerKind.kind === "primitive" && readerKind.kind === "primitive") {
+      if (writerKind.primitive === readerKind.primitive) {
+        return { kind: "primitive", primitive: writerKind.primitive };
+      }
+      throw this.typeMismatch(path, resolvedWriter, resolvedReader);
+    }
 
     if (writerKind.kind === "primitive" || readerKind.kind === "primitive") {
       throw this.typeMismatch(path, resolvedWriter, resolvedReader);
@@ -282,6 +285,14 @@ class PlanBuilder {
     }
     if (writer.kind === "dynamic" && reader.kind === "dynamic") {
       return { kind: "dynamic" };
+    }
+    if (
+      writer.kind === "external" &&
+      reader.kind === "external" &&
+      writer.externalKind === reader.externalKind &&
+      valuesEqual(writer.metadata, reader.metadata)
+    ) {
+      return { kind: "external", externalKind: writer.externalKind };
     }
     if (writer.kind === "enum" && reader.kind === "enum") {
       return this.planEnum(
@@ -507,9 +518,10 @@ class PlanBuilder {
   ): ResolvedKind {
     switch (typeRef.kind) {
       case "concrete": {
-        if (primitiveForTypeId(typeRef.typeId) !== null) {
+        const primitive = primitiveForTypeId(typeRef.typeId);
+        if (primitive !== null) {
           if (typeRef.args.length === 0) {
-            return { kind: "primitive" };
+            return { kind: "primitive", primitive };
           }
           throw new PlanError(
             "unsupported",
@@ -528,34 +540,6 @@ class PlanBuilder {
           env: Env.bind(schema, typeRef.args),
         };
       }
-      case "var":
-        throw new PlanError(
-          "unboundTypeParameter",
-          path,
-          `unbound type parameter ${typeRef.name}`,
-          { name: typeRef.name },
-        );
-    }
-  }
-
-  private knownTypeRef(
-    typeRef: TypeRef,
-    registry: SchemaRegistry,
-    path: string,
-    side: "writer" | "reader",
-  ): void {
-    switch (typeRef.kind) {
-      case "concrete":
-        if (
-          primitiveForTypeId(typeRef.typeId) === null &&
-          registry.get(typeRef.typeId) === undefined
-        ) {
-          throw unknownType(side, path, typeRef.typeId);
-        }
-        for (const arg of typeRef.args) {
-          this.knownTypeRef(arg, registry, path, side);
-        }
-        break;
       case "var":
         throw new PlanError(
           "unboundTypeParameter",
@@ -625,28 +609,22 @@ function unknownType(
   );
 }
 
-function typeRefsEqual(left: TypeRef, right: TypeRef): boolean {
-  if (left.kind !== right.kind) {
-    return false;
-  }
-  if (left.kind === "var" && right.kind === "var") {
-    return left.name === right.name;
-  }
-  if (left.kind === "concrete" && right.kind === "concrete") {
-    return (
-      left.typeId === right.typeId &&
-      left.args.length === right.args.length &&
-      left.args.every((arg, index) => typeRefsEqual(arg, mustTypeRef(right.args[index])))
-    );
-  }
-  return false;
-}
-
 function dimensionsEqual(left: readonly bigint[], right: readonly bigint[]): boolean {
   if (left.length !== right.length) {
     return false;
   }
   return left.every((dimension, index) => dimension === right[index]);
+}
+
+function valuesEqual(left: Value, right: Value): boolean {
+  return bytesEqual(encodeSelfDescribed(left), encodeSelfDescribed(right));
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((byte, index) => byte === right[index]);
 }
 
 function mustTypeRef(typeRef: TypeRef | undefined): TypeRef {

@@ -7,7 +7,7 @@ use crate::error::SchemaError;
 use crate::facet::schema_bundle_for_shape;
 use crate::hash::primitive_for_type_id;
 use crate::registry::SchemaRegistry;
-use crate::schema::{Field, Schema, SchemaBundle, SchemaKind, TypeId, TypeRef};
+use crate::schema::{Field, Primitive, Schema, SchemaBundle, SchemaKind, TypeId, TypeRef};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReaderPlan {
@@ -16,9 +16,8 @@ pub struct ReaderPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanNode {
-    Direct {
-        writer: TypeRef,
-        reader: TypeRef,
+    Primitive {
+        primitive: Primitive,
     },
     Struct {
         fields: Vec<StructFieldPlan>,
@@ -47,6 +46,9 @@ pub enum PlanNode {
         element: Box<PlanNode>,
     },
     Dynamic,
+    External {
+        kind: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,7 +214,7 @@ impl Env {
 }
 
 enum ResolvedKind<'a> {
-    Primitive,
+    Primitive(Primitive),
     Schema { schema: &'a Schema, env: Env },
 }
 
@@ -236,25 +238,6 @@ impl PlanBuilder<'_> {
         let writer_ref = self.resolve_type_ref(writer_ref, writer_env, path)?;
         let reader_ref = self.resolve_type_ref(reader_ref, reader_env, path)?;
 
-        if writer_ref == reader_ref {
-            self.known_type_ref(
-                &writer_ref,
-                self.writer_registry,
-                path,
-                RegistrySide::Writer,
-            )?;
-            self.known_type_ref(
-                &reader_ref,
-                self.reader_registry,
-                path,
-                RegistrySide::Reader,
-            )?;
-            return Ok(PlanNode::Direct {
-                writer: writer_ref,
-                reader: reader_ref,
-            });
-        }
-
         let writer_kind = self.resolve_kind(
             &writer_ref,
             self.writer_registry,
@@ -269,7 +252,12 @@ impl PlanBuilder<'_> {
         )?;
 
         match (writer_kind, reader_kind) {
-            (ResolvedKind::Primitive, ResolvedKind::Primitive) => {
+            (ResolvedKind::Primitive(writer), ResolvedKind::Primitive(reader))
+                if writer == reader =>
+            {
+                Ok(PlanNode::Primitive { primitive: writer })
+            }
+            (ResolvedKind::Primitive(_), ResolvedKind::Primitive(_)) => {
                 Err(self.type_mismatch(path, writer_ref, reader_ref))
             }
             (
@@ -402,6 +390,20 @@ impl PlanBuilder<'_> {
                 })
             }
             (SchemaKind::Dynamic, SchemaKind::Dynamic) => Ok(PlanNode::Dynamic),
+            (
+                SchemaKind::External {
+                    kind: writer_kind,
+                    metadata: writer_metadata,
+                },
+                SchemaKind::External {
+                    kind: reader_kind,
+                    metadata: reader_metadata,
+                },
+            ) if writer_kind == reader_kind && writer_metadata == reader_metadata => {
+                Ok(PlanNode::External {
+                    kind: writer_kind.clone(),
+                })
+            }
             (
                 SchemaKind::Enum {
                     variants: writer, ..
@@ -642,9 +644,9 @@ impl PlanBuilder<'_> {
     ) -> Result<ResolvedKind<'a>, PlanError> {
         match type_ref {
             TypeRef::Concrete { type_id, args } => {
-                if primitive_for_type_id(*type_id).is_some() {
+                if let Some(primitive) = primitive_for_type_id(*type_id) {
                     if args.is_empty() {
-                        return Ok(ResolvedKind::Primitive);
+                        return Ok(ResolvedKind::Primitive(primitive));
                     }
                     return Err(PlanError::Unsupported {
                         path: path.to_owned(),
@@ -659,30 +661,6 @@ impl PlanBuilder<'_> {
                     schema,
                     env: Env::bind(schema, args),
                 })
-            }
-            TypeRef::Var { name } => Err(PlanError::UnboundTypeParameter {
-                path: path.to_owned(),
-                name: name.clone(),
-            }),
-        }
-    }
-
-    fn known_type_ref(
-        &self,
-        type_ref: &TypeRef,
-        registry: &SchemaRegistry,
-        path: &str,
-        side: RegistrySide,
-    ) -> Result<(), PlanError> {
-        match type_ref {
-            TypeRef::Concrete { type_id, args } => {
-                if primitive_for_type_id(*type_id).is_none() && registry.get(*type_id).is_none() {
-                    return Err(side.unknown(path, *type_id));
-                }
-                for arg in args {
-                    self.known_type_ref(arg, registry, path, side)?;
-                }
-                Ok(())
             }
             TypeRef::Var { name } => Err(PlanError::UnboundTypeParameter {
                 path: path.to_owned(),

@@ -351,8 +351,8 @@ impl StencilCompiler<'_> {
         path: &str,
     ) -> Result<(), StencilError> {
         match node {
-            PlanNode::Direct { writer, .. } => {
-                self.compile_direct(reader_shape, writer, output_offset, path)
+            PlanNode::Primitive { primitive } => {
+                self.compile_primitive_read(*primitive, output_offset, path)
             }
             PlanNode::Struct { fields } => {
                 self.compile_struct_plan(reader_shape, fields, output_offset, path)
@@ -363,107 +363,15 @@ impl StencilCompiler<'_> {
             PlanNode::Enum { variants } if output_offset == 0 => self
                 .compile_enum_root(reader_shape, variants, path)
                 .map(|_| ()),
+            PlanNode::External { .. } => Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "stencil external attachment decode is not implemented yet",
+            }),
             _ => Err(StencilError::Unsupported {
                 path: path.to_owned(),
                 reason: "first stencil backend only supports scalar structs, tuples, and root enums",
             }),
         }
-    }
-
-    fn compile_direct(
-        &mut self,
-        reader_shape: &'static Shape,
-        writer: &TypeRef,
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        if let Some(primitive) = primitive_for_plain_type_ref(writer) {
-            self.compile_primitive_read(primitive, output_offset, path)?;
-            return Ok(());
-        }
-
-        let kind = self.schema_for(writer, path)?.kind.clone();
-        self.compile_direct_kind(reader_shape, &kind, output_offset, path)
-    }
-
-    fn compile_direct_kind(
-        &mut self,
-        reader_shape: &'static Shape,
-        kind: &SchemaKind,
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        match kind {
-            SchemaKind::Primitive(primitive) => {
-                self.compile_primitive_read(*primitive, output_offset, path)
-            }
-            SchemaKind::Struct { fields, .. } => {
-                self.compile_direct_struct(reader_shape, fields, output_offset, path)
-            }
-            SchemaKind::Tuple { elements } => {
-                self.compile_direct_tuple(reader_shape, elements, output_offset, path)
-            }
-            _ => Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "first stencil backend only supports scalar structs and tuples",
-            }),
-        }
-    }
-
-    fn compile_direct_struct(
-        &mut self,
-        reader_shape: &'static Shape,
-        fields: &[crate::schema::Field],
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let reader_fields = shape_struct_fields(reader_shape, path)?;
-        if reader_fields.len() != fields.len() {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "direct stencil struct field count differs from reader shape",
-            });
-        }
-
-        for (index, field) in fields.iter().enumerate() {
-            let reader_field = &reader_fields[index];
-            let field_offset = checked_offset(output_offset, reader_field.offset, path)?;
-            self.compile_direct(
-                reader_field.shape.get(),
-                &field.type_ref,
-                field_offset,
-                &format!("{path}.{}", field.name),
-            )?;
-        }
-        Ok(())
-    }
-
-    fn compile_direct_tuple(
-        &mut self,
-        reader_shape: &'static Shape,
-        elements: &[TypeRef],
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let reader_fields = shape_struct_fields(reader_shape, path)?;
-        if reader_fields.len() != elements.len() {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "direct stencil tuple element count differs from reader shape",
-            });
-        }
-
-        for (index, element) in elements.iter().enumerate() {
-            let reader_field = &reader_fields[index];
-            let field_offset = checked_offset(output_offset, reader_field.offset, path)?;
-            self.compile_direct(
-                reader_field.shape.get(),
-                element,
-                field_offset,
-                &format!("{path}.{index}"),
-            )?;
-        }
-        Ok(())
     }
 
     // r[impl binette.compat.field-matching]

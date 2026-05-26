@@ -100,7 +100,7 @@ impl DecodeExecutor<'_, '_> {
         node: &PlanNode,
     ) -> Result<Partial<'static, false>, DecodeError> {
         match node {
-            PlanNode::Direct { writer, .. } => self.decode_type(partial, writer, &Env::default()),
+            PlanNode::Primitive { primitive } => self.decode_primitive(partial, *primitive),
             // r[impl binette.compat.field-matching]
             // r[impl binette.compat.skip-unknown]
             PlanNode::Struct { fields } => self.decode_struct_plan(partial, fields),
@@ -115,6 +115,7 @@ impl DecodeExecutor<'_, '_> {
             PlanNode::Enum { variants } => self.decode_enum_plan(partial, variants),
             PlanNode::Option { element } => self.decode_option_plan(partial, element),
             PlanNode::Dynamic => self.decode_dynamic(partial),
+            PlanNode::External { .. } => Ok(partial.set(())?),
         }
     }
 
@@ -328,244 +329,6 @@ impl DecodeExecutor<'_, '_> {
         }
     }
 
-    fn decode_type(
-        &mut self,
-        partial: Partial<'static, false>,
-        type_ref: &TypeRef,
-        env: &Env,
-    ) -> Result<Partial<'static, false>, DecodeError> {
-        match type_ref {
-            TypeRef::Concrete { type_id, args } => {
-                if let Some(primitive) = primitive_for_type_id(*type_id) {
-                    return self.decode_primitive(partial, primitive);
-                }
-
-                let schema =
-                    self.writer_registry
-                        .get(*type_id)
-                        .ok_or(DecodeError::UnknownWriterType {
-                            position: self.reader.position(),
-                            type_id: *type_id,
-                        })?;
-                let child_env = Env::bind(schema, args);
-                self.decode_kind(partial, &schema.kind, &child_env)
-            }
-            TypeRef::Var { name } => {
-                let resolved =
-                    env.resolve(name)
-                        .ok_or_else(|| DecodeError::UnboundTypeParameter {
-                            position: self.reader.position(),
-                            name: name.clone(),
-                        })?;
-                self.decode_type(partial, resolved, env)
-            }
-        }
-    }
-
-    fn decode_kind(
-        &mut self,
-        partial: Partial<'static, false>,
-        kind: &SchemaKind,
-        env: &Env,
-    ) -> Result<Partial<'static, false>, DecodeError> {
-        match kind {
-            SchemaKind::Primitive(primitive) => self.decode_primitive(partial, *primitive),
-            // r[impl binette.aggregate.struct.compact]
-            SchemaKind::Struct { fields, .. } => self.decode_struct_kind(partial, fields, env),
-            SchemaKind::Enum { variants, .. } => self.decode_enum_kind(partial, variants, env),
-            SchemaKind::Tuple { elements } => self.decode_tuple_kind(partial, elements, env),
-            SchemaKind::List { element } => self.decode_list_kind(partial, element, env),
-            SchemaKind::Set { element } => self.decode_set_kind(partial, element, env),
-            SchemaKind::Map { key, value } => self.decode_map_kind(partial, key, value, env),
-            SchemaKind::Array {
-                dimensions,
-                element,
-            } => self.decode_array_kind(partial, dimensions, element, env),
-            SchemaKind::Option { element } => self.decode_option_kind(partial, element, env),
-            SchemaKind::Dynamic => self.decode_dynamic(partial),
-            SchemaKind::External { .. } => Ok(partial.set(())?),
-        }
-    }
-
-    fn decode_struct_kind(
-        &mut self,
-        mut partial: Partial<'static, false>,
-        fields: &[crate::schema::Field],
-        env: &Env,
-    ) -> Result<Partial<'static, false>, DecodeError> {
-        for (index, field) in fields.iter().enumerate() {
-            partial = partial.begin_nth_field(index)?;
-            partial = self.decode_type(partial, &field.type_ref, env)?;
-            partial = partial.end()?;
-        }
-        Ok(partial)
-    }
-
-    fn decode_enum_kind(
-        &mut self,
-        mut partial: Partial<'static, false>,
-        variants: &[crate::schema::Variant],
-        env: &Env,
-    ) -> Result<Partial<'static, false>, DecodeError> {
-        let position = self.reader.position();
-        let variant_index = self.reader.read_u32()?;
-        let variant_position = variants
-            .iter()
-            .position(|variant| variant.index == variant_index)
-            .ok_or(CompactError::UnknownVariantIndex {
-                position,
-                variant_index,
-            })?;
-        partial = partial.select_nth_variant(variant_position)?;
-        self.decode_variant_payload(partial, &variants[variant_position].payload, env)
-    }
-
-    fn decode_variant_payload(
-        &mut self,
-        mut partial: Partial<'static, false>,
-        payload: &VariantPayload,
-        env: &Env,
-    ) -> Result<Partial<'static, false>, DecodeError> {
-        match payload {
-            VariantPayload::Unit => Ok(partial),
-            VariantPayload::Newtype { type_ref } => {
-                partial = partial.begin_nth_field(0)?;
-                partial = self.decode_type(partial, type_ref, env)?;
-                Ok(partial.end()?)
-            }
-            VariantPayload::Tuple { elements } => self.decode_tuple_kind(partial, elements, env),
-            VariantPayload::Struct { fields } => self.decode_struct_kind(partial, fields, env),
-        }
-    }
-
-    // r[impl binette.aggregate.tuple]
-    fn decode_tuple_kind(
-        &mut self,
-        mut partial: Partial<'static, false>,
-        elements: &[TypeRef],
-        env: &Env,
-    ) -> Result<Partial<'static, false>, DecodeError> {
-        for (index, element) in elements.iter().enumerate() {
-            partial = partial.begin_nth_field(index)?;
-            partial = self.decode_type(partial, element, env)?;
-            partial = partial.end()?;
-        }
-        Ok(partial)
-    }
-
-    fn decode_list_kind(
-        &mut self,
-        partial: Partial<'static, false>,
-        element: &TypeRef,
-        env: &Env,
-    ) -> Result<Partial<'static, false>, DecodeError> {
-        let count = self.reader.read_u32()? as usize;
-        let mut partial = partial.init_list_with_capacity(count)?;
-        for _ in 0..count {
-            partial = partial.begin_list_item()?;
-            partial = self.decode_type(partial, element, env)?;
-            partial = partial.end()?;
-        }
-        Ok(partial)
-    }
-
-    // r[impl binette.aggregate.set]
-    // r[impl binette.aggregate.set-map.canonical]
-    // r[impl binette.aggregate.set-map.decode-policy]
-    fn decode_set_kind(
-        &mut self,
-        partial: Partial<'static, false>,
-        element: &TypeRef,
-        env: &Env,
-    ) -> Result<Partial<'static, false>, DecodeError> {
-        let count = self.reader.read_u32()? as usize;
-        let mut partial = partial.init_set()?;
-        let mut previous = None;
-        for _ in 0..count {
-            let element_start = self.reader.position();
-            partial = partial.begin_set_item()?;
-            partial = self.decode_type(partial, element, env)?;
-            partial = partial.end()?;
-            self.validate_no_nan_type_key(element_start, element, env, "set")?;
-            self.validate_canonical_key_bytes(&mut previous, element_start, "set")?;
-        }
-        Ok(partial)
-    }
-
-    // r[impl binette.aggregate.map]
-    // r[impl binette.aggregate.set-map.canonical]
-    // r[impl binette.aggregate.set-map.decode-policy]
-    fn decode_map_kind(
-        &mut self,
-        partial: Partial<'static, false>,
-        key: &TypeRef,
-        value: &TypeRef,
-        env: &Env,
-    ) -> Result<Partial<'static, false>, DecodeError> {
-        let count = self.reader.read_u32()? as usize;
-        let mut partial = partial.init_map()?;
-        let mut previous = None;
-        for _ in 0..count {
-            let key_start = self.reader.position();
-            partial = partial.begin_key()?;
-            partial = self.decode_type(partial, key, env)?;
-            partial = partial.end()?;
-            self.validate_no_nan_type_key(key_start, key, env, "map")?;
-            self.validate_canonical_key_bytes(&mut previous, key_start, "map")?;
-
-            partial = partial.begin_value()?;
-            partial = self.decode_type(partial, value, env)?;
-            partial = partial.end()?;
-        }
-        Ok(partial)
-    }
-
-    fn decode_array_kind(
-        &mut self,
-        partial: Partial<'static, false>,
-        dimensions: &[u64],
-        element: &TypeRef,
-        env: &Env,
-    ) -> Result<Partial<'static, false>, DecodeError> {
-        let count = dimensions.iter().try_fold(1usize, |acc, dimension| {
-            let dimension = usize::try_from(*dimension).map_err(|_| DecodeError::Unsupported {
-                position: self.reader.position(),
-                reason: "array dimension exceeds usize",
-            })?;
-            acc.checked_mul(dimension)
-                .ok_or_else(|| DecodeError::Unsupported {
-                    position: self.reader.position(),
-                    reason: "array element count overflows usize",
-                })
-        })?;
-
-        let mut partial = partial.init_array()?;
-        for index in 0..count {
-            partial = partial.begin_nth_field(index)?;
-            partial = self.decode_type(partial, element, env)?;
-            partial = partial.end()?;
-        }
-        Ok(partial)
-    }
-
-    fn decode_option_kind(
-        &mut self,
-        partial: Partial<'static, false>,
-        element: &TypeRef,
-        env: &Env,
-    ) -> Result<Partial<'static, false>, DecodeError> {
-        let position = self.reader.position();
-        match self.reader.read_u8()? {
-            0x00 => Ok(partial.set_default()?),
-            0x01 => {
-                let mut partial = partial.begin_some()?;
-                partial = self.decode_type(partial, element, env)?;
-                Ok(partial.end()?)
-            }
-            value => Err(CompactError::InvalidOptionTag { position, value }.into()),
-        }
-    }
-
     fn decode_primitive(
         &mut self,
         partial: Partial<'static, false>,
@@ -646,18 +409,6 @@ impl DecodeExecutor<'_, '_> {
         self.scan_no_nan_plan(&mut reader, node, start, aggregate)
     }
 
-    // r[impl binette.aggregate.set-map.float-keys]
-    fn validate_no_nan_type_key(
-        &self,
-        start: usize,
-        type_ref: &TypeRef,
-        env: &Env,
-        aggregate: &'static str,
-    ) -> Result<(), DecodeError> {
-        let mut reader = CompactReader::new(self.reader.consumed_from(start));
-        self.scan_no_nan_type(&mut reader, type_ref, env, start, aggregate)
-    }
-
     fn scan_no_nan_plan(
         &self,
         reader: &mut CompactReader<'_>,
@@ -666,8 +417,8 @@ impl DecodeExecutor<'_, '_> {
         aggregate: &'static str,
     ) -> Result<(), DecodeError> {
         match node {
-            PlanNode::Direct { writer, .. } => {
-                self.scan_no_nan_type(reader, writer, &Env::default(), base, aggregate)
+            PlanNode::Primitive { primitive } => {
+                self.scan_no_nan_primitive(reader, *primitive, base, aggregate)
             }
             PlanNode::Struct { fields } => {
                 for field in fields {
@@ -744,6 +495,7 @@ impl DecodeExecutor<'_, '_> {
                 position: base + reader.position(),
                 reason: "dynamic decode is not implemented yet",
             }),
+            PlanNode::External { .. } => Ok(()),
         }
     }
 

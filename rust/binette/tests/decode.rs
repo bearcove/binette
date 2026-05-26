@@ -413,6 +413,29 @@ fn stencil_decodes_enum_variants_by_name_and_payload_plan() {
     ));
 }
 
+// r[verify binette.aggregate.enum.compact]
+// r[verify binette.compat.plan]
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[test]
+fn stencil_decodes_same_schema_enum_through_translation_plan() {
+    #[derive(Debug, Facet, PartialEq)]
+    #[allow(dead_code)]
+    #[repr(u8)]
+    enum Event {
+        Started,
+        Moved(u32, u16),
+        Failed { code: u16, flag: bool },
+    }
+
+    let writer_plan = writer_plan_for::<Event>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let bytes = encode_to_vec_with_plan(&Event::Moved(10, 20), &writer_plan).unwrap();
+
+    let stencil = stencil_decoder_for::<Event>(writer_plan.root(), &writer_registry).unwrap();
+
+    assert_eq!(stencil.decode(&bytes).unwrap(), Event::Moved(10, 20));
+}
+
 // r[verify binette.aggregate.list]
 // r[verify binette.aggregate.option]
 // r[verify binette.aggregate.array]

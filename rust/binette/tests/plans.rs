@@ -13,7 +13,7 @@ fn registry_for(bundle: &SchemaBundle) -> SchemaRegistry {
 
 // r[verify binette.compat.plan]
 #[test]
-fn same_reader_shape_plans_as_direct() {
+fn same_reader_shape_plans_structurally() {
     #[derive(Facet)]
     struct Account {
         id: u64,
@@ -24,12 +24,27 @@ fn same_reader_shape_plans_as_direct() {
     let writer_registry = registry_for(&writer_bundle);
 
     let plan = reader_plan_for::<Account>(&writer_bundle.root, &writer_registry).unwrap();
+    let PlanNode::Struct { fields } = plan.root else {
+        panic!("expected struct plan, got {:#?}", plan.root);
+    };
+    assert_eq!(fields.len(), 2);
     assert!(matches!(
-        plan.root,
-        PlanNode::Direct {
-            writer: TypeRef::Concrete { .. },
-            reader: TypeRef::Concrete { .. },
-        }
+        &fields[0],
+        StructFieldPlan::Read {
+            writer_index: 0,
+            reader_index: 0,
+            name,
+            plan,
+        } if name == "id" && matches!(**plan, PlanNode::Primitive { .. })
+    ));
+    assert!(matches!(
+        &fields[1],
+        StructFieldPlan::Read {
+            writer_index: 1,
+            reader_index: 1,
+            name,
+            plan,
+        } if name == "name" && matches!(**plan, PlanNode::Primitive { .. })
     ));
 }
 
@@ -105,7 +120,7 @@ fn struct_fields_are_planned_by_name_not_position() {
             reader_index: 1,
             name,
             plan,
-        } if name == "id" && matches!(**plan, PlanNode::Direct { .. })
+        } if name == "id" && matches!(**plan, PlanNode::Primitive { .. })
     ));
     assert!(matches!(
         &fields[1],
@@ -114,7 +129,7 @@ fn struct_fields_are_planned_by_name_not_position() {
             reader_index: 0,
             name,
             plan,
-        } if name == "name" && matches!(**plan, PlanNode::Direct { .. })
+        } if name == "name" && matches!(**plan, PlanNode::Primitive { .. })
     ));
 }
 

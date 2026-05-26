@@ -35,7 +35,7 @@ function bundle(root: Schema, schemas: Schema[] = [root]): SchemaBundle {
 }
 
 // r[verify binette.compat.plan]
-test("same bundle roots plan as direct", () => {
+test("same bundle roots plan structurally", () => {
   const account = schema({
     kind: "struct",
     name: "Account",
@@ -47,7 +47,22 @@ test("same bundle roots plan as direct", () => {
 
   const plan = readerPlanForBundles(bundle(account), bundle(account));
 
-  assert.equal(plan.root.kind, "direct");
+  assert.equal(plan.root.kind, "struct");
+  assert.deepEqual(plan.root.fields.map((field) => field.kind), ["read", "read"]);
+  assert.deepEqual(plan.root.fields[0], {
+    kind: "read",
+    writerIndex: 0,
+    readerIndex: 0,
+    name: "id",
+    plan: { kind: "primitive", primitive: "u64" },
+  });
+  assert.deepEqual(plan.root.fields[1], {
+    kind: "read",
+    writerIndex: 1,
+    readerIndex: 1,
+    name: "name",
+    plan: { kind: "primitive", primitive: "string" },
+  });
 });
 
 // r[verify binette.compat.plan]
@@ -86,22 +101,14 @@ test("struct fields are planned by name, not position", () => {
     writerIndex: 0,
     readerIndex: 1,
     name: "id",
-    plan: {
-      kind: "direct",
-      writer: primitiveRef("u64"),
-      reader: primitiveRef("u64"),
-    },
+    plan: { kind: "primitive", primitive: "u64" },
   });
   assert.deepEqual(plan.root.fields[1], {
     kind: "read",
     writerIndex: 1,
     readerIndex: 0,
     name: "name",
-    plan: {
-      kind: "direct",
-      writer: primitiveRef("string"),
-      reader: primitiveRef("string"),
-    },
+    plan: { kind: "primitive", primitive: "string" },
   });
 });
 
