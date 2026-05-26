@@ -1,0 +1,29 @@
+{
+  "name": "@bearcove/binette",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Compact binary value format with schemas and compatibility tooling",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bearcove/binette.git",
+    "directory": "typescript/binette"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test 'dist-test/test/**/*.test.js'"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.2.0"
+  }
+}

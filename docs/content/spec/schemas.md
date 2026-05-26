@@ -1,28 +1,28 @@
 +++
-title = "Binette Schemas"
-description = "Schema model and stable type identities for compact Binette values"
+title = "binette schemas"
+description = "Schema model and stable type identities for compact binette values"
 weight = 14
 +++
 
-Compact Binette bytes are schema-driven. A compact value does not carry its own
+The compact binette byte form is schema-driven. A compact value does not carry its own
 tag, field names, variant names, type names, or fixed array shape; those facts
-come from a Binette schema known to the decoder.
+come from a binette schema known to the decoder.
 
-This specification defines the Binette schema model and the stable content
-identities assigned to schema-defined types. It is part of Binette itself:
-self-describing Binette can be decoded using only tags, while compact Binette needs
+This specification defines the binette schema model and the stable content
+identities assigned to schema-defined types. It is part of binette itself:
+self-describing binette can be decoded using only tags, while compact binette needs
 schemas to exist at all.
 
 The schema model is language-independent. A programming language, reflection
-system, IDL, RPC protocol, or transport may produce Binette schemas, exchange
-them, cache them, or attach extra metadata, but the compact Binette byte grammar
-depends only on the Binette schema model defined here.
+system, IDL, RPC protocol, or transport may produce binette schemas, exchange
+them, cache them, or attach extra metadata, but the compact binette byte grammar
+depends only on the binette schema model defined here.
 
 # Schema model
 
 > r[binette.schema.model]
 >
-> A Binette schema describes one compact-capable Binette type. A schema contains:
+> A binette schema describes one compact-capable binette type. A schema contains:
 >
 > - `id`: the `u64` type ID defined by `r[binette.type-id]`
 > - `type_params`: ordered type parameter names for generic declarations
@@ -45,7 +45,7 @@ depends only on the Binette schema model defined here.
 
 > r[binette.schema.kinds]
 >
-> Binette defines these schema kinds:
+> binette defines these schema kinds:
 >
 > | Kind | Contents |
 > |------|----------|
@@ -58,7 +58,7 @@ depends only on the Binette schema model defined here.
 > | map | key type and value type |
 > | array | homogeneous element type and one or more dimensions |
 > | option | element type |
-> | dynamic value | nested self-described Binette value |
+> | dynamic value | nested self-described binette value |
 > | external attachment | protocol-defined value carried outside the byte stream |
 
 > r[binette.schema.primitive]
@@ -75,13 +75,13 @@ depends only on the Binette schema model defined here.
 >
 > Struct and enum schemas carry a canonical declaration name. The canonical
 > declaration name is a non-empty UTF-8 string chosen by the schema producer.
-> Binette does not assign package, module, crate, or namespace prefixes.
+> binette does not assign package, module, crate, or namespace prefixes.
 >
 > By default, a source-language mapping should use the declaration's local type
 > name. A mapping may provide an explicit schema-name override when a producer
 > wants a more stable or more globally distinctive name. Two named declarations
 > with the same canonical declaration name, type parameters, and structure have
-> the same Binette type identity.
+> the same binette type identity.
 
 > r[binette.schema.fields]
 >
@@ -108,20 +108,20 @@ depends only on the Binette schema model defined here.
 > r[binette.schema.dynamic]
 >
 > A dynamic-value schema kind has no child types. Compact bytes for that schema
-> kind are exactly one self-described Binette value as defined by
+> kind are exactly one self-described binette value as defined by
 > `r[binette.aggregate.dynamic-value]`.
 
 > r[binette.schema.external]
 >
 > An external-attachment schema kind marks a compact position whose in-band
-> Binette bytes are the unit value and whose actual value is supplied by an
+> binette bytes are the unit value and whose actual value is supplied by an
 > ordered attachment list outside the byte stream. It contains:
 >
 > - `kind`: a non-empty UTF-8 string identifying the attachment kind
-> - `metadata`: a self-described Binette value whose shape is owned by that
+> - `metadata`: a self-described binette value whose shape is owned by that
 >   attachment kind
 >
-> Binette defines the attachment position and schema identity rules. A protocol
+> binette defines the attachment position and schema identity rules. A protocol
 > or storage envelope that uses an external kind defines how attachments are
 > carried, validated, and interpreted.
 
@@ -133,24 +133,36 @@ depends only on the Binette schema model defined here.
 
 > r[binette.schema.encoding.self-describing]
 >
-> Binette schemas are encoded for interchange as self-describing Binette values.
-> A schema decoder first decodes a generic self-described Binette value, then
+> binette schemas are encoded for interchange as self-describing binette values.
+> A schema decoder first decodes a generic self-described binette value, then
 > materializes that value into the schema model in this document.
 >
-> Because schema interchange uses self-describing Binette, decoding a schema does
+> Because schema interchange uses self-describing binette, decoding a schema does
 > not require a pre-existing schema for the schema type.
 
 > r[binette.schema.registry+2]
 >
-> A schema registry maps type IDs to schemas. Before installing non-primitive
-> schemas into a registry, a consumer MUST verify the declared IDs against the
-> schemas' canonical content.
+> A schema registry maps type IDs to schemas. It is the lookup context used by
+> compact decoders, schema validation, compatibility tooling, and translation
+> planning.
+
+> r[binette.schema.registry.install]
+>
+> Before installing non-primitive schemas into a registry, a consumer MUST verify
+> the declared IDs against the schemas' canonical content. Primitive type IDs are
+> built-in constants and do not need registry entries.
 >
 > Schema references may point to schemas already in the registry or to other
 > schemas being installed in the same batch. Batch order is not significant:
 > a consumer first indexes the batch by declared type ID, then resolves
 > references against the combined existing registry and batch. Duplicate
 > non-identical declarations for the same type ID are invalid.
+>
+> A concrete type reference with type arguments is valid only when the referenced
+> schema declares the same number of type parameters. A type-variable reference
+> is valid only inside the declaration that binds that type parameter.
+
+> r[binette.schema.registry.recursive]
 >
 > Verification is performed over the reference graph of the batch being
 > installed. Strongly connected components are verified in dependency order:
@@ -169,7 +181,7 @@ depends only on the Binette schema model defined here.
 
 > r[binette.schema.format+2]
 >
-> A Binette schema encoded for interchange is a self-described Binette struct with
+> A binette schema encoded for interchange is a self-described binette struct with
 > exactly these fields, emitted in this order by canonical encoders:
 >
 > - `id`: `u64`
@@ -179,11 +191,11 @@ depends only on the Binette schema model defined here.
 > Decoders identify fields by name using the self-describing struct rules in
 > `r[binette.aggregate.struct.self-describing]`. Canonical schema encoders MUST
 > NOT emit extra fields. A schema value with missing, duplicate, or extra fields
-> is not a valid core Binette schema encoding.
+> is not a valid core binette schema encoding.
 >
-> Protocols that attach metadata to Binette schemas MUST carry that metadata
+> Protocols that attach metadata to binette schemas MUST carry that metadata
 > outside this core schema value. Extra protocol metadata is not part of the
-> Binette schema content and MUST NOT affect `r[binette.type-id.hash]`.
+> binette schema content and MUST NOT affect `r[binette.type-id.hash]`.
 
 > r[binette.schema.format.type-ref+2]
 >
@@ -264,11 +276,11 @@ depends only on the Binette schema model defined here.
 > the type appears as a method argument, response, struct field, enum payload,
 > collection element, or any other use site.
 >
-> A schema producer maps a source-language type to its canonical Binette schema
+> A schema producer maps a source-language type to its canonical binette schema
 > form before hashing. If that source type is a named schema declaration, its
 > canonical name is part of identity. If that source type is a transparent alias
 > or transparent wrapper, the alias or wrapper is erased before hashing and the
-> inner type identity is used. Binette does not infer transparency or nominality
+> inner type identity is used. binette does not infer transparency or nominality
 > from use-site position.
 
 > r[binette.type-id.hash]
@@ -395,7 +407,7 @@ opt-in so a schema mapping can erase wrapper identity when that is intended.
 >   * **Map:** `"map"` then the key type reference, then the value type reference
 >
 > The kind tag string is part of the hash input even when two container kinds
-> reuse a similar body grammar. This preserves the core Binette rule that value
+> reuse a similar body grammar. This preserves the core binette rule that value
 > kind is semantic: `list<T>`, `set<T>`, and `array<T, [N]>` have distinct type
 > identities.
 
@@ -415,7 +427,7 @@ opt-in so a schema mapping can erase wrapper identity when that is intended.
 >
 >   1. The tag `"external"`
 >   2. The external kind string, length-prefixed as in `r[binette.type-id.hash]`
->   3. The canonical self-described Binette bytes of the external metadata
+>   3. The canonical self-described binette bytes of the external metadata
 >
 > The external kind string is part of type identity. Two protocols that use the
 > same in-band unit placeholder but different attachment semantics MUST use

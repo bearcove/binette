@@ -1,0 +1,14 @@
+{
+  "name": "binette-workspace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "pnpm -r check",
+    "test": "pnpm -r test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  },
+  "packageManager": "pnpm@11.3.0"
+}
