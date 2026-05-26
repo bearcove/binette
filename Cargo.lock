@@ -51,6 +51,7 @@ dependencies = [
  "facet-core",
  "facet-reflect",
  "facet-value",
+ "libc",
  "thiserror",
 ]
 

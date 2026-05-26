@@ -18,6 +18,7 @@ blake3.workspace = true
 facet-core.workspace = true
 facet-reflect.workspace = true
 facet-value.workspace = true
+libc.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

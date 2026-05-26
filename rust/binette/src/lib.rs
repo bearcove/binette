@@ -14,6 +14,7 @@ mod plan;
 mod registry;
 mod schema;
 mod schema_format;
+mod stencil;
 mod value;
 
 pub use compact::{CompactError, CompactReader, ExternalAttachmentSlot};
@@ -50,6 +51,10 @@ pub use schema_format::{
     SchemaFormatError, decode_schema_bundle_from_slice, decode_schema_from_slice,
     encode_schema_bundle_to_vec, encode_schema_to_vec, schema_bundle_from_value,
     schema_bundle_to_value, schema_from_value, schema_to_value,
+};
+pub use stencil::{
+    StencilDecoder, StencilError, decode_from_slice_with_stencil, stencil_decoder_for,
+    stencil_decoder_from_plan,
 };
 pub use value::{
     ArrayValue, EnumValue, ExtensionValue, FieldValue, SelfDescribingError, Value,

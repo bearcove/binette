@@ -2,8 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use binette::{
-    CompactError, DecodeError, EncodeError, Primitive, SchemaBundle, SchemaRegistry, TypeRef,
-    decode_from_slice, encode_to_vec, encode_to_vec_with_plan, primitive_type_id, writer_plan_for,
+    CompactError, DecodeError, EncodeError, Primitive, SchemaBundle, SchemaRegistry, StencilError,
+    TypeRef, decode_from_slice, encode_to_vec, encode_to_vec_with_plan, primitive_type_id,
+    stencil_decoder_for, writer_plan_for,
 };
 use facet::Facet;
 use facet_value::{VArray, VObject, Value as FacetValue};
@@ -111,6 +112,72 @@ fn decodes_reader_fields_by_name_and_skips_writer_only_fields() {
             id: 7,
         }
     );
+}
+
+// r[verify binette.mode.compact]
+// r[verify binette.compat.field-matching]
+// r[verify binette.compat.skip-unknown]
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[test]
+fn stencil_decodes_fixed_scalar_struct_with_reorder_and_skip() {
+    mod writer {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        pub struct Message {
+            pub id: u64,
+            pub code: u16,
+            pub writer_only: u32,
+            pub seq: u8,
+        }
+    }
+
+    mod reader {
+        use facet::Facet;
+
+        #[derive(Debug, Facet, PartialEq)]
+        pub struct Message {
+            pub seq: u8,
+            pub id: u64,
+            pub code: u16,
+        }
+    }
+
+    let writer_plan = writer_plan_for::<writer::Message>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let bytes = encode_to_vec_with_plan(
+        &writer::Message {
+            id: 0x0102_0304_0506_0708,
+            code: 0x1122,
+            writer_only: 0xaabb_ccdd,
+            seq: 7,
+        },
+        &writer_plan,
+    )
+    .unwrap();
+
+    let stencil =
+        stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry).unwrap();
+    assert_eq!(stencil.expected_len(), bytes.len());
+
+    let decoded = stencil.decode(&bytes).unwrap();
+    let interpreted =
+        decode_from_slice::<reader::Message>(&bytes, writer_plan.root(), &writer_registry).unwrap();
+
+    assert_eq!(decoded, interpreted);
+    assert_eq!(
+        decoded,
+        reader::Message {
+            seq: 7,
+            id: 0x0102_0304_0506_0708,
+            code: 0x1122,
+        }
+    );
+
+    assert!(matches!(
+        stencil.decode(&bytes[..bytes.len() - 1]),
+        Err(StencilError::InputLength { .. })
+    ));
 }
 
 // r[verify binette.aggregate.list]
