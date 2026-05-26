@@ -115,19 +115,22 @@ fn decodes_reader_fields_by_name_and_skips_writer_only_fields() {
 }
 
 // r[verify binette.mode.compact]
+// r[verify binette.scalar.bool]
 // r[verify binette.compat.field-matching]
 // r[verify binette.compat.skip-unknown]
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 #[test]
-fn stencil_decodes_fixed_scalar_struct_with_reorder_and_skip() {
+fn stencil_decodes_fixed_scalar_struct_with_validation_reorder_and_skip() {
     mod writer {
         use facet::Facet;
 
         #[derive(Facet)]
         pub struct Message {
             pub id: u64,
+            pub enabled: bool,
             pub code: u16,
             pub writer_only: u32,
+            pub writer_only_flag: bool,
             pub seq: u8,
         }
     }
@@ -138,6 +141,7 @@ fn stencil_decodes_fixed_scalar_struct_with_reorder_and_skip() {
         #[derive(Debug, Facet, PartialEq)]
         pub struct Message {
             pub seq: u8,
+            pub enabled: bool,
             pub id: u64,
             pub code: u16,
         }
@@ -148,8 +152,10 @@ fn stencil_decodes_fixed_scalar_struct_with_reorder_and_skip() {
     let bytes = encode_to_vec_with_plan(
         &writer::Message {
             id: 0x0102_0304_0506_0708,
+            enabled: true,
             code: 0x1122,
             writer_only: 0xaabb_ccdd,
+            writer_only_flag: false,
             seq: 7,
         },
         &writer_plan,
@@ -169,6 +175,7 @@ fn stencil_decodes_fixed_scalar_struct_with_reorder_and_skip() {
         decoded,
         reader::Message {
             seq: 7,
+            enabled: true,
             id: 0x0102_0304_0506_0708,
             code: 0x1122,
         }
@@ -177,6 +184,28 @@ fn stencil_decodes_fixed_scalar_struct_with_reorder_and_skip() {
     assert!(matches!(
         stencil.decode(&bytes[..bytes.len() - 1]),
         Err(StencilError::InputLength { .. })
+    ));
+
+    let mut invalid_read_bool = bytes.clone();
+    invalid_read_bool[8] = 2;
+    assert!(matches!(
+        stencil.decode(&invalid_read_bool),
+        Err(StencilError::InvalidBool {
+            position: 8,
+            value: 2,
+            ..
+        })
+    ));
+
+    let mut invalid_skipped_bool = bytes;
+    invalid_skipped_bool[15] = 2;
+    assert!(matches!(
+        stencil.decode(&invalid_skipped_bool),
+        Err(StencilError::InvalidBool {
+            position: 15,
+            value: 2,
+            ..
+        })
     ));
 }
 

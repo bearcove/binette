@@ -6,18 +6,20 @@ use std::ptr::{NonNull, copy_nonoverlapping};
 use facet_core::{Facet, Shape, StructKind, Type};
 use thiserror::Error;
 
+use crate::compact::CompactError;
 use crate::decode::DecodeError;
 use crate::hash::primitive_for_type_id;
 use crate::plan::{PlanError, PlanNode, ReaderPlan, StructFieldPlan, reader_plan_for};
 use crate::registry::SchemaRegistry;
 use crate::schema::{Primitive, SchemaKind, TypeId, TypeRef};
 
-type StencilFn = unsafe extern "C" fn(input: *const u8, len: usize, out: *mut u8);
+type StencilFn = unsafe extern "C" fn(input: *const u8, len: usize, out: *mut u8) -> u32;
 
 pub struct StencilDecoder<T> {
     code: ExecutableMemory,
     func: StencilFn,
     expected_len: usize,
+    failures: Vec<StencilFailure>,
     _marker: PhantomData<fn() -> T>,
 }
 
@@ -34,6 +36,16 @@ pub enum StencilError {
 
     #[error("expected {expected} bytes for stencil decode, got {actual}")]
     InputLength { expected: usize, actual: usize },
+
+    #[error("invalid bool byte {value:#04x} at {path} byte {position}")]
+    InvalidBool {
+        path: String,
+        position: usize,
+        value: u8,
+    },
+
+    #[error("stencil returned unknown status {status}")]
+    UnknownStatus { status: u32 },
 
     #[error("failed to allocate executable stencil memory")]
     ExecutableMemory,
@@ -64,9 +76,28 @@ impl<T: Facet<'static>> StencilDecoder<T> {
         let mut out = MaybeUninit::<T>::uninit();
         // SAFETY: the compiled stencil was built from T::SHAPE field offsets and
         // writes every supported field exactly once before returning.
-        unsafe {
-            (self.func)(input.as_ptr(), input.len(), out.as_mut_ptr().cast::<u8>());
-            Ok(out.assume_init())
+        let status = unsafe { (self.func)(input.as_ptr(), input.len(), out.as_mut_ptr().cast()) };
+        if status == STENCIL_OK {
+            // SAFETY: status zero means every supported output byte was written.
+            unsafe { Ok(out.assume_init()) }
+        } else {
+            Err(self.failure_for_status(status, input))
+        }
+    }
+
+    fn failure_for_status(&self, status: u32, input: &[u8]) -> StencilError {
+        let Some(index) = status.checked_sub(1).map(|index| index as usize) else {
+            return StencilError::UnknownStatus { status };
+        };
+        let Some(failure) = self.failures.get(index) else {
+            return StencilError::UnknownStatus { status };
+        };
+        match failure {
+            StencilFailure::InvalidBool { path, position } => StencilError::InvalidBool {
+                path: path.clone(),
+                position: *position,
+                value: input[*position],
+            },
         }
     }
 }
@@ -89,18 +120,20 @@ pub fn stencil_decoder_from_plan<T: Facet<'static>>(
 ) -> Result<StencilDecoder<T>, StencilError> {
     let mut compiler = StencilCompiler {
         writer_registry,
-        copy_ops: Vec::new(),
+        ops: Vec::new(),
+        failures: Vec::new(),
         input_offset: 0,
     };
     compiler.compile_root::<T>(&plan.root)?;
 
-    let code = generate_code(&compiler.copy_ops)?;
+    let code = generate_code(&compiler.ops, compiler.failures.len())?;
     let expected_len = compiler.input_offset;
     let func = code.as_fn();
     Ok(StencilDecoder {
         code,
         func,
         expected_len,
+        failures: compiler.failures,
         _marker: PhantomData,
     })
 }
@@ -109,19 +142,24 @@ pub fn decode_from_slice_with_stencil<T: Facet<'static>>(
     input: &[u8],
     decoder: &StencilDecoder<T>,
 ) -> Result<T, DecodeError> {
-    decoder
-        .decode(input)
-        .map_err(|err| DecodeError::Unsupported {
+    decoder.decode(input).map_err(|err| match err {
+        StencilError::InvalidBool {
+            position, value, ..
+        } => CompactError::InvalidBool { position, value }.into(),
+        err => DecodeError::Unsupported {
             position: 0,
             reason: match err {
                 StencilError::InputLength { .. } => "stencil input length mismatch",
                 StencilError::Unsupported { reason, .. } => reason,
                 StencilError::UnknownWriterType { .. } => "stencil writer type is unknown",
                 StencilError::Plan(_) => "stencil plan failed",
+                StencilError::InvalidBool { .. } => unreachable!(),
+                StencilError::UnknownStatus { .. } => "stencil returned an unknown status",
                 StencilError::ExecutableMemory => "stencil executable memory allocation failed",
                 StencilError::Mprotect => "stencil executable memory protection failed",
             },
-        })
+        },
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -139,9 +177,25 @@ enum CopyWidth {
     Eight,
 }
 
+#[derive(Debug, Clone)]
+enum StencilFailure {
+    InvalidBool { path: String, position: usize },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StencilOp {
+    Copy(CopyOp),
+    Bool {
+        input_offset: usize,
+        output_offset: Option<usize>,
+        failure_index: usize,
+    },
+}
+
 struct StencilCompiler<'registry> {
     writer_registry: &'registry SchemaRegistry,
-    copy_ops: Vec<CopyOp>,
+    ops: Vec<StencilOp>,
+    failures: Vec<StencilFailure>,
     input_offset: usize,
 }
 
@@ -163,10 +217,7 @@ impl StencilCompiler<'_> {
         path: &str,
     ) -> Result<(), StencilError> {
         if let Some(primitive) = primitive_for_plain_type_ref(writer) {
-            let Some(widths) = primitive_widths(primitive) else {
-                return Err(unsupported_primitive(path, primitive));
-            };
-            self.emit_primitive_copies(path, 0, widths)?;
+            self.compile_primitive_read(primitive, 0, path)?;
             return Ok(());
         }
 
@@ -257,10 +308,7 @@ impl StencilCompiler<'_> {
                 path: path.to_owned(),
                 reason: "first stencil backend only supports primitive scalar fields",
             })?;
-        let Some(widths) = primitive_widths(primitive) else {
-            return Err(unsupported_primitive(path, primitive));
-        };
-        self.emit_primitive_copies(path, output_offset, widths)
+        self.compile_primitive_read(primitive, output_offset, path)
     }
 
     fn compile_skip(&mut self, type_ref: &TypeRef, path: &str) -> Result<(), StencilError> {
@@ -269,6 +317,34 @@ impl StencilCompiler<'_> {
                 path: path.to_owned(),
                 reason: "first stencil backend only supports primitive scalar skips",
             })?;
+        self.compile_primitive_skip(primitive, path)
+    }
+
+    fn compile_primitive_read(
+        &mut self,
+        primitive: Primitive,
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        if primitive == Primitive::Bool {
+            return self.emit_bool(path, Some(output_offset));
+        }
+
+        let Some(widths) = primitive_widths(primitive) else {
+            return Err(unsupported_primitive(path, primitive));
+        };
+        self.emit_primitive_copies(path, output_offset, widths)
+    }
+
+    fn compile_primitive_skip(
+        &mut self,
+        primitive: Primitive,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        if primitive == Primitive::Bool {
+            return self.emit_bool(path, None);
+        }
+
         let Some(widths) = primitive_widths(primitive) else {
             return Err(unsupported_primitive(path, primitive));
         };
@@ -289,14 +365,31 @@ impl StencilCompiler<'_> {
     ) -> Result<(), StencilError> {
         let mut output_offset = output_offset;
         for width in widths {
-            self.copy_ops.push(CopyOp {
+            self.ops.push(StencilOp::Copy(CopyOp {
                 input_offset: self.input_offset,
                 output_offset,
                 width: *width,
-            });
+            }));
             self.input_offset = checked_offset(self.input_offset, width.bytes(), path)?;
             output_offset = checked_offset(output_offset, width.bytes(), path)?;
         }
+        Ok(())
+    }
+
+    // r[impl binette.scalar.bool]
+    fn emit_bool(&mut self, path: &str, output_offset: Option<usize>) -> Result<(), StencilError> {
+        let input_offset = self.input_offset;
+        let failure_index = self.failures.len();
+        self.failures.push(StencilFailure::InvalidBool {
+            path: path.to_owned(),
+            position: input_offset,
+        });
+        self.ops.push(StencilOp::Bool {
+            input_offset,
+            output_offset,
+            failure_index,
+        });
+        self.input_offset = checked_offset(self.input_offset, 1, path)?;
         Ok(())
     }
 
@@ -412,20 +505,45 @@ fn checked_offset(offset: usize, width: usize, path: &str) -> Result<usize, Sten
         })
 }
 
-fn generate_code(copy_ops: &[CopyOp]) -> Result<ExecutableMemory, StencilError> {
+const STENCIL_OK: u32 = 0;
+
+fn generate_code(
+    ops: &[StencilOp],
+    failure_count: usize,
+) -> Result<ExecutableMemory, StencilError> {
     #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
     {
-        let mut code = Vec::with_capacity(copy_ops.len() * 8 + 4);
-        for op in copy_ops {
-            emit_copy_op(&mut code, *op)?;
+        let mut code = Vec::with_capacity(ops.len() * 16 + (failure_count + 1) * 8);
+        let mut branches = Vec::new();
+        for op in ops {
+            emit_op(&mut code, *op, &mut branches)?;
         }
+        push_u32(&mut code, mov_w0_immediate(STENCIL_OK)?);
         push_u32(&mut code, AARCH64_RET);
+
+        let mut failure_offsets = Vec::with_capacity(failure_count);
+        for index in 0..failure_count {
+            failure_offsets.push(code.len());
+            push_u32(&mut code, mov_w0_immediate(status_for_failure(index)?)?);
+            push_u32(&mut code, AARCH64_RET);
+        }
+        for branch in branches {
+            let Some(target) = failure_offsets.get(branch.failure_index).copied() else {
+                return Err(StencilError::Unsupported {
+                    path: "$code".to_owned(),
+                    reason: "stencil branch references missing failure stub",
+                });
+            };
+            let word = patch_cond_branch_imm19(AARCH64_B_HI, branch.offset, target)?;
+            code[branch.offset..branch.offset + 4].copy_from_slice(&word.to_le_bytes());
+        }
         ExecutableMemory::new(&code)
     }
 
     #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
     {
-        let _ = copy_ops;
+        let _ = ops;
+        let _ = failure_count;
         Err(StencilError::Unsupported {
             path: "$".to_owned(),
             reason: "stencil backend currently requires little-endian AArch64",
@@ -435,6 +553,33 @@ fn generate_code(copy_ops: &[CopyOp]) -> Result<ExecutableMemory, StencilError> 
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_RET: u32 = 0xD65F_03C0;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_CMP_W9_1: u32 = 0x7100_053F;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_B_HI: u32 = 0x5400_0008;
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[derive(Debug, Clone, Copy)]
+struct BranchFixup {
+    offset: usize,
+    failure_index: usize,
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_op(
+    code: &mut Vec<u8>,
+    op: StencilOp,
+    branches: &mut Vec<BranchFixup>,
+) -> Result<(), StencilError> {
+    match op {
+        StencilOp::Copy(op) => emit_copy_op(code, op),
+        StencilOp::Bool {
+            input_offset,
+            output_offset,
+            failure_index,
+        } => emit_bool_op(code, input_offset, output_offset, failure_index, branches),
+    }
+}
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn emit_copy_op(code: &mut Vec<u8>, op: CopyOp) -> Result<(), StencilError> {
@@ -453,6 +598,39 @@ fn emit_copy_op(code: &mut Vec<u8>, op: CopyOp) -> Result<(), StencilError> {
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_bool_op(
+    code: &mut Vec<u8>,
+    input_offset: usize,
+    output_offset: Option<usize>,
+    failure_index: usize,
+    branches: &mut Vec<BranchFixup>,
+) -> Result<(), StencilError> {
+    push_u32(
+        code,
+        patch_ldur_stur_imm9(AARCH64_LDURB_W9_X0, input_offset, "$input")?,
+    );
+    push_u32(code, AARCH64_CMP_W9_1);
+    let branch_offset = code.len();
+    push_u32(code, 0);
+    branches.push(BranchFixup {
+        offset: branch_offset,
+        failure_index,
+    });
+    if let Some(output_offset) = output_offset {
+        push_u32(
+            code,
+            patch_ldur_stur_imm9(AARCH64_STURB_W9_X2, output_offset, "$output")?,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_LDURB_W9_X0: u32 = 0x3840_0009;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_STURB_W9_X2: u32 = 0x3800_0049;
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn patch_ldur_stur_imm9(base: u32, offset: usize, path: &str) -> Result<u32, StencilError> {
     let imm = i32::try_from(offset).map_err(|_| StencilError::Unsupported {
         path: path.to_owned(),
@@ -466,6 +644,64 @@ fn patch_ldur_stur_imm9(base: u32, offset: usize, path: &str) -> Result<u32, Ste
     }
     let imm9 = (imm as u32) & 0x1ff;
     Ok(base | (imm9 << 12))
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn patch_cond_branch_imm19(
+    base: u32,
+    branch_offset: usize,
+    target: usize,
+) -> Result<u32, StencilError> {
+    let branch_offset = isize::try_from(branch_offset).map_err(|_| StencilError::Unsupported {
+        path: "$code".to_owned(),
+        reason: "stencil branch offset exceeds isize",
+    })?;
+    let target = isize::try_from(target).map_err(|_| StencilError::Unsupported {
+        path: "$code".to_owned(),
+        reason: "stencil branch target exceeds isize",
+    })?;
+    let delta = target
+        .checked_sub(branch_offset)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil branch offset overflow",
+        })?;
+    if delta % 4 != 0 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil branch target is not instruction-aligned",
+        });
+    }
+    let imm = delta / 4;
+    if !(-(1 << 18)..=(1 << 18) - 1).contains(&imm) {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil branch target exceeds AArch64 imm19 range",
+        });
+    }
+    Ok(base | (((imm as u32) & 0x7ffff) << 5))
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn status_for_failure(index: usize) -> Result<u32, StencilError> {
+    u32::try_from(index)
+        .ok()
+        .and_then(|index| index.checked_add(1))
+        .ok_or_else(|| StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "too many stencil failure stubs",
+        })
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn mov_w0_immediate(value: u32) -> Result<u32, StencilError> {
+    if value > u16::MAX as u32 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil status exceeds mov immediate range",
+        });
+    }
+    Ok(0x5280_0000 | (value << 5))
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]

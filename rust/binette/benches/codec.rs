@@ -84,16 +84,20 @@ mod fixed_writer {
     #[derive(Facet)]
     pub struct Message {
         pub id: u64,
+        pub enabled: bool,
         pub code: u16,
         pub writer_only: u32,
+        pub writer_only_flag: bool,
         pub seq: u8,
     }
 
     pub fn sample() -> Message {
         Message {
             id: 0x0102_0304_0506_0708,
+            enabled: true,
             code: 0x1122,
             writer_only: 0xaabb_ccdd,
+            writer_only_flag: false,
             seq: 7,
         }
     }
@@ -105,6 +109,7 @@ mod fixed_reader {
     #[derive(Facet)]
     pub struct Message {
         pub seq: u8,
+        pub enabled: bool,
         pub id: u64,
         pub code: u16,
     }
