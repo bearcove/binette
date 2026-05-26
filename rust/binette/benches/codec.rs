@@ -221,6 +221,7 @@ mod aggregate {
     pub type Map = HashMap<u16, u8>;
     pub type OptionValue = Option<(u16, String)>;
     pub type Array = [u16; 4];
+    pub type NestedList = Vec<Vec<u16>>;
     pub type Dynamic = facet_value::Value;
 
     pub fn tuple_sample() -> Tuple {
@@ -249,6 +250,10 @@ mod aggregate {
 
     pub fn array_sample() -> Array {
         [5, 8, 13, 21]
+    }
+
+    pub fn nested_list_sample() -> NestedList {
+        vec![vec![1, 2, 3], vec![5, 8], vec![13, 21, 34]]
     }
 
     pub fn dynamic_sample() -> Dynamic {
@@ -649,6 +654,28 @@ fn list_encode_jit_fixture() -> EncodeStencilFixture<aggregate::List> {
     }
 }
 
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn tuple_encode_jit_fixture() -> EncodeStencilFixture<aggregate::Tuple> {
+    let writer_plan = writer_plan_for::<aggregate::Tuple>().unwrap();
+    let stencil = strict_stencil_encoder_from_plan::<aggregate::Tuple>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: aggregate::tuple_sample(),
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn nested_list_encode_jit_fixture() -> EncodeStencilFixture<aggregate::NestedList> {
+    let writer_plan = writer_plan_for::<aggregate::NestedList>().unwrap();
+    let stencil = strict_stencil_encoder_from_plan::<aggregate::NestedList>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: aggregate::nested_list_sample(),
+        stencil,
+    }
+}
+
 macro_rules! same_schema_encode_benches {
     ($module:ident, $ty:ty, $sample:expr) => {
         mod $module {
@@ -919,7 +946,53 @@ mod encode {
         }
     }
 
-    same_schema_encode_benches!(tuple, aggregate::Tuple, aggregate::tuple_sample());
+    mod tuple {
+        use super::*;
+
+        #[divan::bench]
+        pub fn interp(bencher: Bencher) {
+            let fixture = same_fixture::<aggregate::Tuple>(aggregate::tuple_sample());
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_plan(
+                        black_box(&fixture.sample),
+                        black_box(&fixture.writer_plan),
+                    )
+                    .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn hybrid(bencher: Bencher) {
+            let fixture = same_hybrid_fixture::<aggregate::Tuple>(aggregate::tuple_sample());
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(
+                        black_box(&fixture.fixture.sample),
+                        &fixture.encoder,
+                    )
+                    .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn jit(bencher: Bencher) {
+            let fixture = tuple_encode_jit_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
+    }
     mod list {
         use super::*;
 
@@ -969,6 +1042,54 @@ mod encode {
     }
     same_schema_encode_benches!(set, aggregate::Set, aggregate::set_sample());
     same_schema_encode_benches!(map, aggregate::Map, aggregate::map_sample());
+    mod nested_list {
+        use super::*;
+
+        #[divan::bench]
+        pub fn interp(bencher: Bencher) {
+            let fixture = same_fixture::<aggregate::NestedList>(aggregate::nested_list_sample());
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_plan(
+                        black_box(&fixture.sample),
+                        black_box(&fixture.writer_plan),
+                    )
+                    .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn hybrid(bencher: Bencher) {
+            let fixture =
+                same_hybrid_fixture::<aggregate::NestedList>(aggregate::nested_list_sample());
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(
+                        black_box(&fixture.fixture.sample),
+                        &fixture.encoder,
+                    )
+                    .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn jit(bencher: Bencher) {
+            let fixture = nested_list_encode_jit_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
+    }
     mod option {
         use super::*;
 
@@ -1105,6 +1226,11 @@ mod plan {
     same_schema_plan_bench!(map, aggregate::Map, aggregate::map_sample());
     same_schema_plan_bench!(option, aggregate::OptionValue, aggregate::option_sample());
     same_schema_plan_bench!(array, aggregate::Array, aggregate::array_sample());
+    same_schema_plan_bench!(
+        nested_list,
+        aggregate::NestedList,
+        aggregate::nested_list_sample()
+    );
     same_schema_plan_bench!(dynamic, aggregate::Dynamic, aggregate::dynamic_sample());
 }
 

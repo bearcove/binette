@@ -828,7 +828,7 @@ impl StencilEncodeCompiler {
         };
         compiler.compile_node(list.t(), element, 0, &format!("{path}[]"), &mut pending)?;
         compiler.flush_direct_segment(&mut pending);
-        if !compiler.helpers.is_empty() || encode_ops_contain_list(&compiler.ops) {
+        if !compiler.helpers.is_empty() {
             return Ok(false);
         }
 
@@ -1048,19 +1048,6 @@ impl StencilEncodeCompiler {
         );
         self.push_direct_segment(segment);
     }
-}
-
-fn encode_ops_contain_list(ops: &[EncodeStencilOp]) -> bool {
-    ops.iter().any(|op| match op {
-        EncodeStencilOp::List { .. } => true,
-        EncodeStencilOp::Enum { cases, .. } => {
-            cases.iter().any(|case| encode_ops_contain_list(&case.ops))
-        }
-        EncodeStencilOp::Option { some_ops, .. } => encode_ops_contain_list(some_ops),
-        EncodeStencilOp::Helper { .. }
-        | EncodeStencilOp::Direct { .. }
-        | EncodeStencilOp::Bytes { .. } => false,
-    })
 }
 
 impl FixedEncodeCompiler {

@@ -279,14 +279,21 @@ fn list_encode_stencil_compiles_helperless_elements_without_helpers() {
 }
 
 #[test]
-fn strict_encode_rejects_nested_list_stencils_for_now() {
+fn strict_encode_accepts_nested_list_stencils() {
     type Value = Vec<Vec<u16>>;
 
+    let value = vec![vec![1, 2, 3], vec![5, 8]];
     let plan = writer_plan_for::<Value>().unwrap();
-    assert!(matches!(
-        strict_stencil_encoder_from_plan::<Value>(&plan),
-        Err(StencilError::Unsupported { .. })
-    ));
+    let encoder = strict_stencil_encoder_from_plan::<Value>(&plan).unwrap();
+
+    match &encoder.entry {
+        EncodeStencilEntry::Direct { .. } => {}
+        EncodeStencilEntry::Helper { runtime, .. } => assert!(runtime.helpers.is_empty()),
+    }
+    assert_eq!(
+        encoder.encode_to_vec(&value).unwrap(),
+        encode_to_vec_with_plan(&value, &plan).unwrap()
+    );
 }
 
 #[derive(Facet)]
