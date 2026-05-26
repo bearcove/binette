@@ -4,7 +4,8 @@ use std::hash::{Hash, Hasher};
 use binette::{
     CompactError, DecodeError, EncodeError, Primitive, SchemaBundle, SchemaRegistry, StencilError,
     TypeRef, decode_from_slice, encode_to_vec, encode_to_vec_with_plan, encode_to_vec_with_stencil,
-    primitive_type_id, stencil_decoder_for, stencil_encoder_from_plan, writer_plan_for,
+    primitive_type_id, stencil_decoder_for, stencil_encoder_from_plan, strict_stencil_decoder_for,
+    strict_stencil_encoder_from_plan, writer_plan_for,
 };
 use facet::Facet;
 use facet_value::{VArray, VObject, Value as FacetValue};
@@ -685,6 +686,25 @@ fn stencil_handles_aggregate_roots_through_schema_plan() {
     items.push(FacetValue::NULL);
     object.insert("items", FacetValue::from(items));
     assert_stencil_matches_interpreter(FacetValue::from(object));
+}
+
+// r[verify binette.mode.compact]
+// r[verify binette.aggregate.array]
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[test]
+fn strict_stencil_handles_fixed_array_roots() {
+    let value = [5u16, 8, 13, 21];
+    let writer_plan = writer_plan_for::<[u16; 4]>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+
+    let decoder =
+        strict_stencil_decoder_for::<[u16; 4]>(writer_plan.root(), &writer_registry).unwrap();
+    assert_eq!(decoder.fixed_expected_len(), Some(bytes.len()));
+    assert_eq!(decoder.decode(&bytes).unwrap(), value);
+
+    let encoder = strict_stencil_encoder_from_plan::<[u16; 4]>(&writer_plan).unwrap();
+    assert_eq!(encode_to_vec_with_stencil(&value, &encoder).unwrap(), bytes);
 }
 
 // r[verify binette.aggregate.list]

@@ -4,7 +4,7 @@ use std::mem::MaybeUninit;
 use std::ptr::{NonNull, copy_nonoverlapping};
 use std::slice;
 
-use facet_core::{EnumRepr, EnumType, Facet, PtrConst, Shape, StructKind, Type, UserType};
+use facet_core::{Def, EnumRepr, EnumType, Facet, PtrConst, Shape, StructKind, Type, UserType};
 use facet_reflect::Peek;
 use thiserror::Error;
 
@@ -779,6 +779,10 @@ impl StencilCompiler<'_> {
             PlanNode::Tuple { elements } => {
                 self.compile_tuple_plan(reader_shape, elements, output_offset, path)
             }
+            PlanNode::Array {
+                dimensions,
+                element,
+            } => self.compile_array_plan(reader_shape, dimensions, element, output_offset, path),
             PlanNode::Enum { variants } if output_offset == 0 => self
                 .compile_enum_root(reader_shape, variants, path)
                 .map(|_| ()),
@@ -865,6 +869,30 @@ impl StencilCompiler<'_> {
                 reader_field.shape.get(),
                 field_offset,
                 &format!("{path}.{index}"),
+            )?;
+        }
+        Ok(())
+    }
+
+    // r[impl binette.aggregate.array]
+    fn compile_array_plan(
+        &mut self,
+        reader_shape: &'static Shape,
+        dimensions: &[u64],
+        element: &PlanNode,
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let (element_shape, count, stride) =
+            fixed_array_parts(reader_shape, dimensions, path, "reader array")?;
+        for index in 0..count {
+            let element_output_offset =
+                checked_offset(output_offset, checked_mul(index, stride, path)?, path)?;
+            self.compile_read_plan(
+                element,
+                element_shape,
+                element_output_offset,
+                &format!("{path}[{index}]"),
             )?;
         }
         Ok(())
@@ -1068,6 +1096,16 @@ impl StencilCompiler<'_> {
             SchemaKind::Tuple { elements } => {
                 for (index, element) in elements.iter().enumerate() {
                     self.compile_skip_type(element, &format!("{path}.{index}"))?;
+                }
+                Ok(())
+            }
+            SchemaKind::Array {
+                dimensions,
+                element,
+            } => {
+                let count = dimensions_element_count(dimensions, path)?;
+                for index in 0..count {
+                    self.compile_skip_type(element, &format!("{path}[{index}]"))?;
                 }
                 Ok(())
             }
@@ -1333,6 +1371,10 @@ impl StencilEncodeCompiler {
             WriterNode::Tuple { elements } => {
                 self.compile_tuple_root(shape, elements, input_offset, path, pending)
             }
+            WriterNode::Array {
+                dimensions,
+                element,
+            } => self.compile_array_root(shape, dimensions, element, input_offset, path, pending),
             WriterNode::Enum { variants } => {
                 self.flush_direct_segment(pending);
                 self.push_enum(shape, input_offset, variants, path)
@@ -1404,6 +1446,32 @@ impl StencilEncodeCompiler {
                 &element.node,
                 element_offset,
                 &element_path,
+                pending,
+            )?;
+        }
+        Ok(())
+    }
+
+    // r[impl binette.aggregate.array]
+    fn compile_array_root(
+        &mut self,
+        shape: &'static Shape,
+        dimensions: &[u64],
+        element: &WriterNode,
+        input_offset: usize,
+        path: &str,
+        pending: &mut FixedEncodeSegment,
+    ) -> Result<(), StencilError> {
+        let (element_shape, count, stride) =
+            fixed_array_parts(shape, dimensions, path, "writer array")?;
+        for index in 0..count {
+            let element_input_offset =
+                checked_offset(input_offset, checked_mul(index, stride, path)?, path)?;
+            self.compile_node(
+                element_shape,
+                element,
+                element_input_offset,
+                &format!("{path}[{index}]"),
                 pending,
             )?;
         }
@@ -1644,12 +1712,15 @@ impl FixedEncodeCompiler {
             WriterNode::Tuple { elements } => {
                 self.compile_tuple(shape, elements, input_offset, path)
             }
+            WriterNode::Array {
+                dimensions,
+                element,
+            } => self.compile_array(shape, dimensions, element, input_offset, path),
             WriterNode::External => Ok(()),
             WriterNode::Enum { .. }
             | WriterNode::List { .. }
             | WriterNode::Set { .. }
             | WriterNode::Map { .. }
-            | WriterNode::Array { .. }
             | WriterNode::Option { .. }
             | WriterNode::Dynamic => Err(StencilError::Unsupported {
                 path: path.to_owned(),
@@ -1715,6 +1786,30 @@ impl FixedEncodeCompiler {
                 &element.node,
                 field_offset,
                 &format!("{path}.{}", element.facet_index),
+            )?;
+        }
+        Ok(())
+    }
+
+    // r[impl binette.aggregate.array]
+    fn compile_array(
+        &mut self,
+        shape: &'static Shape,
+        dimensions: &[u64],
+        element: &WriterNode,
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let (element_shape, count, stride) =
+            fixed_array_parts(shape, dimensions, path, "writer array")?;
+        for index in 0..count {
+            let element_input_offset =
+                checked_offset(input_offset, checked_mul(index, stride, path)?, path)?;
+            self.compile_node(
+                element_shape,
+                element,
+                element_input_offset,
+                &format!("{path}[{index}]"),
             )?;
         }
         Ok(())
@@ -1895,6 +1990,51 @@ fn shape_enum_type(shape: &'static Shape, path: &str) -> Result<EnumType, Stenci
     Ok(enum_type)
 }
 
+fn fixed_array_parts(
+    shape: &'static Shape,
+    dimensions: &[u64],
+    path: &str,
+    context: &'static str,
+) -> Result<(&'static Shape, usize, usize), StencilError> {
+    let Def::Array(array) = shape.def else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "stencil array requires Facet array shape",
+        });
+    };
+    let expected = dimensions_element_count(dimensions, path)?;
+    if array.n != expected {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: match context {
+                "reader array" => "reader array length differs from schema dimensions",
+                "writer array" => "writer array length differs from schema dimensions",
+                _ => "array length differs from schema dimensions",
+            },
+        });
+    }
+    let stride = array
+        .t()
+        .layout
+        .sized_layout()
+        .map_err(|_| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "stencil array element shape is unsized",
+        })?
+        .size();
+    Ok((array.t(), expected, stride))
+}
+
+fn dimensions_element_count(dimensions: &[u64], path: &str) -> Result<usize, StencilError> {
+    dimensions.iter().try_fold(1usize, |count, dimension| {
+        let dimension = usize::try_from(*dimension).map_err(|_| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "array dimension exceeds usize",
+        })?;
+        checked_mul(count, dimension, path)
+    })
+}
+
 fn enum_discriminant_u8(variant: &facet_core::Variant, path: &str) -> Result<u8, StencilError> {
     let discriminant = variant
         .discriminant
@@ -1911,6 +2051,14 @@ fn enum_discriminant_u8(variant: &facet_core::Variant, path: &str) -> Result<u8,
 fn checked_offset(offset: usize, width: usize, path: &str) -> Result<usize, StencilError> {
     offset
         .checked_add(width)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "stencil offset overflow",
+        })
+}
+
+fn checked_mul(lhs: usize, rhs: usize, path: &str) -> Result<usize, StencilError> {
+    lhs.checked_mul(rhs)
         .ok_or_else(|| StencilError::Unsupported {
             path: path.to_owned(),
             reason: "stencil offset overflow",
