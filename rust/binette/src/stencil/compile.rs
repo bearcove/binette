@@ -723,23 +723,46 @@ impl CursorStencilCompiler<'_> {
                 reason: "reader list element shape is unsized",
             })?
             .size();
-        let (element_ops, element_input_len) = fixed_copy_ops(
-            self.writer_registry,
-            element,
-            element_shape,
-            0,
-            &format!("{path}[]"),
-        )?;
+        let element_ops = self.compile_list_element(element_shape, element, path)?;
         let failure_index = self.push_helper_failure(path)?;
         self.ops.push(HybridStencilOp::List {
             shape: reader_shape,
             output_offset,
             element_ops,
-            element_input_len,
             element_stride,
             failure_index,
         });
         Ok(())
+    }
+
+    fn compile_list_element(
+        &mut self,
+        element_shape: &'static Shape,
+        element: &PlanNode,
+        path: &str,
+    ) -> Result<Vec<HybridStencilOp>, StencilError> {
+        let root_ops = std::mem::take(&mut self.ops);
+        let helpers_len = self.helpers.len();
+        let failures_len = self.failures.len();
+        let element_result = self.compile_node(element_shape, element, 0, &format!("{path}[]"));
+        let element_ops = std::mem::replace(&mut self.ops, root_ops);
+        if let Err(err) = element_result {
+            self.helpers.truncate(helpers_len);
+            self.failures.truncate(failures_len);
+            return Err(err);
+        }
+        if element_ops
+            .iter()
+            .any(|op| matches!(op, HybridStencilOp::List { .. }))
+        {
+            self.helpers.truncate(helpers_len);
+            self.failures.truncate(failures_len);
+            return Err(StencilError::Unsupported {
+                path: format!("{path}[]"),
+                reason: "cursor list decode does not support nested native list loops yet",
+            });
+        }
+        Ok(element_ops)
     }
 
     fn push_fixed_copy(

@@ -273,8 +273,6 @@ const AARCH64_MOV_X1_X20: u32 = 0xAA14_03E1;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_MOV_X2_X21: u32 = 0xAA15_03E2;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-const AARCH64_MOV_X3_X22: u32 = 0xAA16_03E3;
-#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_MOV_X4_X23: u32 = 0xAA17_03E4;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_MOV_X23_X0: u32 = 0xAA00_03F7;
@@ -697,12 +695,22 @@ fn emit_hybrid_op(
     op: &HybridStencilOp,
     error_branches: &mut Vec<HybridBranchFixup>,
 ) -> Result<(), StencilError> {
+    emit_hybrid_op_with_output_base(code, op, error_branches, 22)
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_hybrid_op_with_output_base(
+    code: &mut Vec<u8>,
+    op: &HybridStencilOp,
+    error_branches: &mut Vec<HybridBranchFixup>,
+    output_base_register: u8,
+) -> Result<(), StencilError> {
     match op {
         HybridStencilOp::Helper { helper_index } => {
             push_u32(code, AARCH64_MOV_X0_X19);
             push_u32(code, AARCH64_MOV_X1_X20);
             push_u32(code, AARCH64_MOV_X2_X21);
-            push_u32(code, AARCH64_MOV_X3_X22);
+            push_u32(code, mov_x_register(3, output_base_register)?);
             push_u32(code, AARCH64_MOV_X4_X23);
             let helper_index =
                 u64::try_from(*helper_index).map_err(|_| StencilError::Unsupported {
@@ -724,12 +732,18 @@ fn emit_hybrid_op(
             ops,
             input_len,
             failure_index,
-        } => emit_hybrid_copy_op(code, ops, *input_len, *failure_index, error_branches)?,
+        } => emit_hybrid_copy_op(
+            code,
+            ops,
+            *input_len,
+            *failure_index,
+            error_branches,
+            output_base_register,
+        )?,
         HybridStencilOp::List {
             shape,
             output_offset,
             element_ops,
-            element_input_len,
             element_stride,
             failure_index,
         } => {
@@ -737,7 +751,6 @@ fn emit_hybrid_op(
                 shape,
                 output_offset: *output_offset,
                 element_ops,
-                element_input_len: *element_input_len,
                 element_stride: *element_stride,
                 failure_index: *failure_index,
             };
@@ -754,11 +767,12 @@ fn emit_hybrid_copy_op(
     input_len: usize,
     failure_index: usize,
     error_branches: &mut Vec<HybridBranchFixup>,
+    output_base_register: u8,
 ) -> Result<(), StencilError> {
     emit_hybrid_check_available(code, input_len, failure_index, error_branches)?;
     push_u32(code, add_x_register(24, 20, 23)?);
     for op in ops {
-        emit_copy_op_with_bases(code, *op, 24, 22)?;
+        emit_copy_op_with_bases(code, *op, 24, output_base_register)?;
     }
     if input_len != 0 {
         push_u32(code, add_x_immediate(23, 23, input_len, "$cursor")?);
@@ -770,8 +784,7 @@ fn emit_hybrid_copy_op(
 struct HybridListEmit<'a> {
     shape: &'static Shape,
     output_offset: usize,
-    element_ops: &'a [CopyOp],
-    element_input_len: usize,
+    element_ops: &'a [HybridStencilOp],
     element_stride: usize,
     failure_index: usize,
 }
@@ -819,21 +832,8 @@ fn emit_hybrid_list_op(
     let done_branch = code.len();
     push_u32(code, 0);
 
-    emit_hybrid_check_available(
-        code,
-        list.element_input_len,
-        list.failure_index,
-        error_branches,
-    )?;
-    push_u32(code, add_x_register(24, 20, 23)?);
     for op in list.element_ops {
-        emit_copy_op_with_bases(code, *op, 24, 27)?;
-    }
-    if list.element_input_len != 0 {
-        push_u32(
-            code,
-            add_x_immediate(23, 23, list.element_input_len, "$list")?,
-        );
+        emit_hybrid_op_with_output_base(code, op, error_branches, 27)?;
     }
     if list.element_stride != 0 {
         push_u32(code, add_x_immediate(27, 27, list.element_stride, "$list")?);

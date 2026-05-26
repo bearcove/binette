@@ -403,3 +403,66 @@ fn hybrid_decode_compiles_supported_siblings_around_subtree_helpers() {
     );
     assert_eq!(compiler.helpers.len(), 2);
 }
+
+#[test]
+fn hybrid_decode_compiles_list_element_siblings_around_subtree_helpers() {
+    mod writer {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        pub struct Message {
+            pub prefix: u16,
+            pub items: Vec<(u16, String, u32)>,
+            pub tail: u64,
+        }
+    }
+
+    mod reader {
+        use facet::Facet;
+
+        #[derive(Facet)]
+        pub struct Message {
+            pub prefix: u16,
+            pub items: Vec<(u16, String, u32)>,
+            pub tail: u64,
+        }
+    }
+
+    let writer_plan = writer_plan_for::<writer::Message>().unwrap();
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan =
+        reader_plan_for::<reader::Message>(writer_plan.root(), &writer_registry).unwrap();
+
+    let mut compiler = CursorStencilCompiler {
+        writer_registry: &writer_registry,
+        ops: Vec::new(),
+        helpers: Vec::new(),
+        failures: Vec::new(),
+        allow_helpers: true,
+    };
+    compiler
+        .compile_root::<reader::Message>(&reader_plan.root)
+        .unwrap();
+
+    assert_eq!(compiler.ops.len(), 3);
+    assert!(matches!(compiler.ops[0], HybridStencilOp::Copy { .. }));
+    let HybridStencilOp::List { element_ops, .. } = &compiler.ops[1] else {
+        panic!("expected a native list op");
+    };
+    assert!(matches!(compiler.ops[2], HybridStencilOp::Copy { .. }));
+
+    let element_kinds: Vec<&'static str> = element_ops
+        .iter()
+        .map(|op| match op {
+            HybridStencilOp::Copy { .. } => "copy",
+            HybridStencilOp::Helper { .. } => "helper",
+            HybridStencilOp::List { .. } => "list",
+        })
+        .collect();
+
+    assert_eq!(element_kinds, vec!["copy", "helper", "copy"]);
+    assert_eq!(compiler.helpers.len(), 1);
+}

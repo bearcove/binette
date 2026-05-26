@@ -70,8 +70,7 @@ pub(super) enum HybridStencilOp {
     List {
         shape: &'static Shape,
         output_offset: usize,
-        element_ops: Vec<CopyOp>,
-        element_input_len: usize,
+        element_ops: Vec<HybridStencilOp>,
         element_stride: usize,
         failure_index: usize,
     },
