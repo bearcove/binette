@@ -4,8 +4,8 @@ use binette::{
 };
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 use binette::{
-    StencilDecoder, StencilEncoder, encode_to_vec_with_stencil, stencil_decoder_for,
-    stencil_encoder_from_plan,
+    StencilDecoder, StencilEncoder, encode_to_vec_with_stencil, hybrid_stencil_decoder_for,
+    hybrid_stencil_encoder_from_plan, strict_stencil_decoder_for, strict_stencil_encoder_from_plan,
 };
 use divan::{Bencher, black_box};
 use facet::Facet;
@@ -375,104 +375,132 @@ fn same_fixture<T: Facet<'static>>(sample: T) -> SameFixture<T> {
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-struct FixedStencilFixture {
+struct DecodeStencilFixture<T> {
     bytes: Vec<u8>,
-    stencil: StencilDecoder<fixed_reader::Message>,
+    stencil: StencilDecoder<T>,
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-fn fixed_stencil_fixture() -> FixedStencilFixture {
+fn fixed_hybrid_decode_fixture() -> DecodeStencilFixture<fixed_reader::Message> {
     let fixture = fixed_fixture();
-    let stencil = stencil_decoder_for::<fixed_reader::Message>(
+    let stencil = hybrid_stencil_decoder_for::<fixed_reader::Message>(
         fixture.writer_plan.root(),
         &fixture.writer_registry,
     )
     .unwrap();
 
-    FixedStencilFixture {
+    DecodeStencilFixture {
         bytes: fixture.bytes,
         stencil,
     }
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-struct NestedStencilFixture {
-    bytes: Vec<u8>,
-    stencil: StencilDecoder<nested_reader::Message>,
+fn fixed_jit_decode_fixture() -> DecodeStencilFixture<fixed_reader::Message> {
+    let fixture = fixed_fixture();
+    let stencil = strict_stencil_decoder_for::<fixed_reader::Message>(
+        fixture.writer_plan.root(),
+        &fixture.writer_registry,
+    )
+    .unwrap();
+
+    DecodeStencilFixture {
+        bytes: fixture.bytes,
+        stencil,
+    }
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-fn nested_stencil_fixture() -> NestedStencilFixture {
+fn nested_hybrid_decode_fixture() -> DecodeStencilFixture<nested_reader::Message> {
     let fixture = nested_fixture();
-    let stencil = stencil_decoder_for::<nested_reader::Message>(
+    let stencil = hybrid_stencil_decoder_for::<nested_reader::Message>(
         fixture.writer_plan.root(),
         &fixture.writer_registry,
     )
     .unwrap();
 
-    NestedStencilFixture {
+    DecodeStencilFixture {
         bytes: fixture.bytes,
         stencil,
     }
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-struct EnumStencilFixture {
-    bytes: Vec<u8>,
-    stencil: StencilDecoder<enum_reader::Event>,
+fn nested_jit_decode_fixture() -> DecodeStencilFixture<nested_reader::Message> {
+    let fixture = nested_fixture();
+    let stencil = strict_stencil_decoder_for::<nested_reader::Message>(
+        fixture.writer_plan.root(),
+        &fixture.writer_registry,
+    )
+    .unwrap();
+
+    DecodeStencilFixture {
+        bytes: fixture.bytes,
+        stencil,
+    }
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-fn enum_stencil_fixture() -> EnumStencilFixture {
+fn enum_hybrid_decode_fixture() -> DecodeStencilFixture<enum_reader::Event> {
     let fixture = enum_fixture();
-    let stencil = stencil_decoder_for::<enum_reader::Event>(
+    let stencil = hybrid_stencil_decoder_for::<enum_reader::Event>(
         fixture.writer_plan.root(),
         &fixture.writer_registry,
     )
     .unwrap();
 
-    EnumStencilFixture {
+    DecodeStencilFixture {
         bytes: fixture.bytes,
         stencil,
     }
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-struct MixedStencilFixture {
-    bytes: Vec<u8>,
-    stencil: StencilDecoder<reader::Message>,
+fn enum_jit_decode_fixture() -> DecodeStencilFixture<enum_reader::Event> {
+    let fixture = enum_fixture();
+    let stencil = strict_stencil_decoder_for::<enum_reader::Event>(
+        fixture.writer_plan.root(),
+        &fixture.writer_registry,
+    )
+    .unwrap();
+
+    DecodeStencilFixture {
+        bytes: fixture.bytes,
+        stencil,
+    }
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-fn mixed_stencil_fixture() -> MixedStencilFixture {
+fn mixed_hybrid_decode_fixture() -> DecodeStencilFixture<reader::Message> {
     let fixture = fixture();
-    let stencil = stencil_decoder_for::<reader::Message>(
+    let stencil = hybrid_stencil_decoder_for::<reader::Message>(
         fixture.writer_plan.root(),
         &fixture.writer_registry,
     )
     .unwrap();
 
-    MixedStencilFixture {
+    DecodeStencilFixture {
         bytes: fixture.bytes,
         stencil,
     }
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-struct SameStencilFixture<T> {
+struct SameHybridFixture<T> {
     fixture: SameFixture<T>,
     decoder: StencilDecoder<T>,
     encoder: StencilEncoder<T>,
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-fn same_stencil_fixture<T: Facet<'static>>(sample: T) -> SameStencilFixture<T> {
+fn same_hybrid_fixture<T: Facet<'static>>(sample: T) -> SameHybridFixture<T> {
     let fixture = same_fixture(sample);
     let decoder =
-        stencil_decoder_for::<T>(fixture.writer_plan.root(), &fixture.writer_registry).unwrap();
-    let encoder = stencil_encoder_from_plan::<T>(&fixture.writer_plan).unwrap();
+        hybrid_stencil_decoder_for::<T>(fixture.writer_plan.root(), &fixture.writer_registry)
+            .unwrap();
+    let encoder = hybrid_stencil_encoder_from_plan::<T>(&fixture.writer_plan).unwrap();
 
-    SameStencilFixture {
+    SameHybridFixture {
         fixture,
         decoder,
         encoder,
@@ -480,15 +508,59 @@ fn same_stencil_fixture<T: Facet<'static>>(sample: T) -> SameStencilFixture<T> {
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-struct EncodeStencilFixture {
-    sample: writer::Message,
-    stencil: StencilEncoder<writer::Message>,
+struct EncodeStencilFixture<T> {
+    sample: T,
+    stencil: StencilEncoder<T>,
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-fn encode_stencil_fixture() -> EncodeStencilFixture {
+fn fixed_encode_hybrid_fixture() -> EncodeStencilFixture<fixed_writer::Message> {
+    let writer_plan = writer_plan_for::<fixed_writer::Message>().unwrap();
+    let stencil = hybrid_stencil_encoder_from_plan::<fixed_writer::Message>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: fixed_writer::sample(),
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn fixed_encode_jit_fixture() -> EncodeStencilFixture<fixed_writer::Message> {
+    let writer_plan = writer_plan_for::<fixed_writer::Message>().unwrap();
+    let stencil = strict_stencil_encoder_from_plan::<fixed_writer::Message>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: fixed_writer::sample(),
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn nested_encode_hybrid_fixture() -> EncodeStencilFixture<nested_writer::Message> {
+    let writer_plan = writer_plan_for::<nested_writer::Message>().unwrap();
+    let stencil = hybrid_stencil_encoder_from_plan::<nested_writer::Message>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: nested_writer::sample(),
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn nested_encode_jit_fixture() -> EncodeStencilFixture<nested_writer::Message> {
+    let writer_plan = writer_plan_for::<nested_writer::Message>().unwrap();
+    let stencil = strict_stencil_encoder_from_plan::<nested_writer::Message>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: nested_writer::sample(),
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn mixed_encode_hybrid_fixture() -> EncodeStencilFixture<writer::Message> {
     let writer_plan = writer_plan_for::<writer::Message>().unwrap();
-    let stencil = stencil_encoder_from_plan::<writer::Message>(&writer_plan).unwrap();
+    let stencil = hybrid_stencil_encoder_from_plan::<writer::Message>(&writer_plan).unwrap();
 
     EncodeStencilFixture {
         sample: writer::sample(),
@@ -497,17 +569,11 @@ fn encode_stencil_fixture() -> EncodeStencilFixture {
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-struct EncodeEnumStencilFixture {
-    sample: enum_writer::Event,
-    stencil: StencilEncoder<enum_writer::Event>,
-}
-
-#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-fn encode_enum_stencil_fixture() -> EncodeEnumStencilFixture {
+fn enum_encode_hybrid_fixture() -> EncodeStencilFixture<enum_writer::Event> {
     let writer_plan = writer_plan_for::<enum_writer::Event>().unwrap();
-    let stencil = stencil_encoder_from_plan::<enum_writer::Event>(&writer_plan).unwrap();
+    let stencil = hybrid_stencil_encoder_from_plan::<enum_writer::Event>(&writer_plan).unwrap();
 
-    EncodeEnumStencilFixture {
+    EncodeStencilFixture {
         sample: enum_writer::sample(),
         stencil,
     }
@@ -535,8 +601,8 @@ macro_rules! same_schema_encode_benches {
 
             #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
             #[divan::bench]
-            pub fn stencil(bencher: Bencher) {
-                let fixture = same_stencil_fixture::<$ty>($sample);
+            pub fn hybrid(bencher: Bencher) {
+                let fixture = same_hybrid_fixture::<$ty>($sample);
 
                 bencher.bench(|| {
                     black_box(
@@ -575,8 +641,8 @@ macro_rules! same_schema_decode_benches {
 
             #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
             #[divan::bench]
-            pub fn stencil(bencher: Bencher) {
-                let fixture = same_stencil_fixture::<$ty>($sample);
+            pub fn hybrid(bencher: Bencher) {
+                let fixture = same_hybrid_fixture::<$ty>($sample);
 
                 bencher.bench(|| {
                     black_box(
@@ -613,12 +679,89 @@ macro_rules! same_schema_plan_bench {
 mod encode {
     use super::*;
 
-    same_schema_encode_benches!(fixed_struct, fixed_writer::Message, fixed_writer::sample());
-    same_schema_encode_benches!(
-        nested_struct,
-        nested_writer::Message,
-        nested_writer::sample()
-    );
+    mod fixed_struct {
+        use super::*;
+
+        #[divan::bench]
+        pub fn interp(bencher: Bencher) {
+            let writer_plan = writer_plan_for::<fixed_writer::Message>().unwrap();
+            let sample = fixed_writer::sample();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_plan(black_box(&sample), black_box(&writer_plan)).unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn hybrid(bencher: Bencher) {
+            let fixture = fixed_encode_hybrid_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn jit(bencher: Bencher) {
+            let fixture = fixed_encode_jit_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
+    }
+
+    mod nested_struct {
+        use super::*;
+
+        #[divan::bench]
+        pub fn interp(bencher: Bencher) {
+            let writer_plan = writer_plan_for::<nested_writer::Message>().unwrap();
+            let sample = nested_writer::sample();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_plan(black_box(&sample), black_box(&writer_plan)).unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn hybrid(bencher: Bencher) {
+            let fixture = nested_encode_hybrid_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn jit(bencher: Bencher) {
+            let fixture = nested_encode_jit_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
+    }
 
     mod r#enum {
         use super::*;
@@ -638,8 +781,8 @@ mod encode {
 
         #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
         #[divan::bench]
-        pub fn stencil(bencher: Bencher) {
-            let fixture = encode_enum_stencil_fixture();
+        pub fn hybrid(bencher: Bencher) {
+            let fixture = enum_encode_hybrid_fixture();
 
             bencher.bench(|| {
                 black_box(
@@ -668,8 +811,8 @@ mod encode {
 
         #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
         #[divan::bench]
-        pub fn stencil(bencher: Bencher) {
-            let fixture = encode_stencil_fixture();
+        pub fn hybrid(bencher: Bencher) {
+            let fixture = mixed_encode_hybrid_fixture();
 
             bencher.bench(|| {
                 black_box(
@@ -752,8 +895,16 @@ mod fixed_struct {
 
     #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
     #[divan::bench]
-    pub fn stencil(bencher: Bencher) {
-        let fixture = fixed_stencil_fixture();
+    pub fn hybrid(bencher: Bencher) {
+        let fixture = fixed_hybrid_decode_fixture();
+
+        bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[divan::bench]
+    pub fn jit(bencher: Bencher) {
+        let fixture = fixed_jit_decode_fixture();
 
         bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
     }
@@ -780,8 +931,16 @@ mod nested_struct {
 
     #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
     #[divan::bench]
-    pub fn stencil(bencher: Bencher) {
-        let fixture = nested_stencil_fixture();
+    pub fn hybrid(bencher: Bencher) {
+        let fixture = nested_hybrid_decode_fixture();
+
+        bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[divan::bench]
+    pub fn jit(bencher: Bencher) {
+        let fixture = nested_jit_decode_fixture();
 
         bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
     }
@@ -808,8 +967,16 @@ mod r#enum {
 
     #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
     #[divan::bench]
-    pub fn stencil(bencher: Bencher) {
-        let fixture = enum_stencil_fixture();
+    pub fn hybrid(bencher: Bencher) {
+        let fixture = enum_hybrid_decode_fixture();
+
+        bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[divan::bench]
+    pub fn jit(bencher: Bencher) {
+        let fixture = enum_jit_decode_fixture();
 
         bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
     }
@@ -836,8 +1003,8 @@ mod mixed_struct {
 
     #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
     #[divan::bench]
-    pub fn stencil(bencher: Bencher) {
-        let fixture = mixed_stencil_fixture();
+    pub fn hybrid(bencher: Bencher) {
+        let fixture = mixed_hybrid_decode_fixture();
 
         bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
     }

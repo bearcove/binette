@@ -54,8 +54,11 @@ pub use schema_format::{
 };
 pub use stencil::{
     StencilDecoder, StencilEncoder, StencilError, decode_from_slice_with_stencil,
-    encode_to_vec_with_stencil, stencil_decoder_for, stencil_decoder_from_plan,
-    stencil_encoder_for, stencil_encoder_from_plan,
+    encode_to_vec_with_stencil, hybrid_stencil_decoder_for, hybrid_stencil_decoder_from_plan,
+    hybrid_stencil_encoder_for, hybrid_stencil_encoder_from_plan, stencil_decoder_for,
+    stencil_decoder_from_plan, stencil_encoder_for, stencil_encoder_from_plan,
+    strict_stencil_decoder_for, strict_stencil_decoder_from_plan, strict_stencil_encoder_for,
+    strict_stencil_encoder_from_plan,
 };
 pub use value::{
     ArrayValue, EnumValue, ExtensionValue, FieldValue, SelfDescribingError, Value,

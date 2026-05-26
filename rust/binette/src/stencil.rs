@@ -256,11 +256,31 @@ pub fn stencil_decoder_for<T: Facet<'static>>(
 
 // r[impl binette.compat.plan]
 // r[impl binette.mode.compact]
+pub fn strict_stencil_decoder_for<T: Facet<'static>>(
+    writer_root: &TypeRef,
+    writer_registry: &SchemaRegistry,
+) -> Result<StencilDecoder<T>, StencilError> {
+    let plan = reader_plan_for::<T>(writer_root, writer_registry)?;
+    strict_stencil_decoder_from_plan(&plan, writer_registry)
+}
+
+// r[impl binette.compat.plan]
+// r[impl binette.mode.compact]
+pub fn hybrid_stencil_decoder_for<T: Facet<'static>>(
+    writer_root: &TypeRef,
+    writer_registry: &SchemaRegistry,
+) -> Result<StencilDecoder<T>, StencilError> {
+    let plan = reader_plan_for::<T>(writer_root, writer_registry)?;
+    hybrid_stencil_decoder_from_plan(&plan, writer_registry)
+}
+
+// r[impl binette.compat.plan]
+// r[impl binette.mode.compact]
 pub fn stencil_decoder_from_plan<T: Facet<'static>>(
     plan: &ReaderPlan,
     writer_registry: &SchemaRegistry,
 ) -> Result<StencilDecoder<T>, StencilError> {
-    match fixed_stencil_decoder_from_plan(plan, writer_registry) {
+    match strict_stencil_decoder_from_plan(plan, writer_registry) {
         Ok(decoder) => Ok(decoder),
         Err(fixed_error) => {
             if matches!(&fixed_error, StencilError::Unsupported { .. })
@@ -273,6 +293,24 @@ pub fn stencil_decoder_from_plan<T: Facet<'static>>(
     }
 }
 
+// r[impl binette.compat.plan]
+// r[impl binette.mode.compact]
+pub fn strict_stencil_decoder_from_plan<T: Facet<'static>>(
+    plan: &ReaderPlan,
+    writer_registry: &SchemaRegistry,
+) -> Result<StencilDecoder<T>, StencilError> {
+    fixed_stencil_decoder_from_plan(plan, writer_registry)
+}
+
+// r[impl binette.compat.plan]
+// r[impl binette.mode.compact]
+pub fn hybrid_stencil_decoder_from_plan<T: Facet<'static>>(
+    plan: &ReaderPlan,
+    writer_registry: &SchemaRegistry,
+) -> Result<StencilDecoder<T>, StencilError> {
+    build_hybrid_stencil_decoder_from_plan(plan, writer_registry)
+}
+
 // r[impl binette.mode.compact]
 pub fn stencil_encoder_for<T: Facet<'static>>() -> Result<StencilEncoder<T>, StencilError> {
     let plan = writer_plan_for::<T>()?;
@@ -280,20 +318,46 @@ pub fn stencil_encoder_for<T: Facet<'static>>() -> Result<StencilEncoder<T>, Ste
 }
 
 // r[impl binette.mode.compact]
+pub fn strict_stencil_encoder_for<T: Facet<'static>>() -> Result<StencilEncoder<T>, StencilError> {
+    let plan = writer_plan_for::<T>()?;
+    strict_stencil_encoder_from_plan(&plan)
+}
+
+// r[impl binette.mode.compact]
+pub fn hybrid_stencil_encoder_for<T: Facet<'static>>() -> Result<StencilEncoder<T>, StencilError> {
+    let plan = writer_plan_for::<T>()?;
+    hybrid_stencil_encoder_from_plan(&plan)
+}
+
+// r[impl binette.mode.compact]
 pub fn stencil_encoder_from_plan<T: Facet<'static>>(
     plan: &WriterPlan,
 ) -> Result<StencilEncoder<T>, StencilError> {
-    match fixed_encode_stencil_encoder_from_plan(plan) {
+    match strict_stencil_encoder_from_plan(plan) {
         Ok(encoder) => Ok(encoder),
         Err(fixed_error) => {
             if matches!(&fixed_error, StencilError::Unsupported { .. })
-                && let Ok(encoder) = helper_encode_stencil_encoder_from_plan(plan)
+                && let Ok(encoder) = hybrid_stencil_encoder_from_plan(plan)
             {
                 return Ok(encoder);
             }
             Err(fixed_error)
         }
     }
+}
+
+// r[impl binette.mode.compact]
+pub fn strict_stencil_encoder_from_plan<T: Facet<'static>>(
+    plan: &WriterPlan,
+) -> Result<StencilEncoder<T>, StencilError> {
+    fixed_encode_stencil_encoder_from_plan(plan)
+}
+
+// r[impl binette.mode.compact]
+pub fn hybrid_stencil_encoder_from_plan<T: Facet<'static>>(
+    plan: &WriterPlan,
+) -> Result<StencilEncoder<T>, StencilError> {
+    build_hybrid_stencil_encoder_from_plan(plan)
 }
 
 fn fixed_encode_stencil_encoder_from_plan<T: Facet<'static>>(
@@ -314,7 +378,7 @@ fn fixed_encode_stencil_encoder_from_plan<T: Facet<'static>>(
     })
 }
 
-fn helper_encode_stencil_encoder_from_plan<T: Facet<'static>>(
+fn build_hybrid_stencil_encoder_from_plan<T: Facet<'static>>(
     plan: &WriterPlan,
 ) -> Result<StencilEncoder<T>, StencilError> {
     let mut compiler = StencilEncodeCompiler {
@@ -368,7 +432,7 @@ fn fixed_stencil_decoder_from_plan<T: Facet<'static>>(
     })
 }
 
-fn hybrid_stencil_decoder_from_plan<T: Facet<'static>>(
+fn build_hybrid_stencil_decoder_from_plan<T: Facet<'static>>(
     plan: &ReaderPlan,
     writer_registry: &SchemaRegistry,
 ) -> Result<StencilDecoder<T>, StencilError> {
@@ -517,6 +581,7 @@ struct StencilRuntime {
 #[derive(Debug, Clone)]
 enum EncodeStencilOp {
     Helper { helper_index: usize },
+    Direct { ops: Vec<CopyOp>, output_len: usize },
 }
 
 #[derive(Debug, Clone)]
@@ -529,6 +594,10 @@ enum StencilEncodeHelper {
         field: WriterFieldPlan,
         failure_index: usize,
     },
+    TupleElement {
+        element: WriterTupleElementPlan,
+        failure_index: usize,
+    },
 }
 
 struct StencilEncodeRuntime {
@@ -539,6 +608,11 @@ struct StencilEncodeRuntime {
 struct FixedEncodeCompiler {
     ops: Vec<CopyOp>,
     output_offset: usize,
+}
+
+struct FixedEncodeSegment {
+    ops: Vec<CopyOp>,
+    output_len: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1140,20 +1214,139 @@ struct StencilEncodeCompiler {
 impl StencilEncodeCompiler {
     fn compile_root<T: Facet<'static>>(&mut self, root: &WriterNode) -> Result<(), StencilError> {
         match root {
-            WriterNode::Struct { fields } => self.compile_struct_root::<T>(fields),
+            WriterNode::Struct { fields } => self.compile_struct_root(T::SHAPE, fields, 0, "$"),
+            WriterNode::Tuple { elements } => self.compile_tuple_root(T::SHAPE, elements, 0, "$"),
             _ => self.push_value_helper(root, "$"),
         }
     }
 
     // r[impl binette.aggregate.struct.compact]
-    fn compile_struct_root<T: Facet<'static>>(
+    fn compile_struct_root(
         &mut self,
+        shape: &'static Shape,
         fields: &[WriterFieldPlan],
+        input_offset: usize,
+        path: &str,
     ) -> Result<(), StencilError> {
-        let _ = shape_struct_fields(T::SHAPE, "$")?;
+        let facet_fields = shape_struct_fields(shape, path)?;
+        let mut pending = FixedEncodeSegment {
+            ops: Vec::new(),
+            output_len: 0,
+        };
         for field in fields {
-            self.push_field_helper(field)?;
+            let field_path = format!("{path}.{}", field.name);
+            let Some(facet_field) = facet_fields.get(field.facet_index) else {
+                self.flush_direct_segment(&mut pending);
+                self.push_field_helper(field)?;
+                continue;
+            };
+            let field_offset = checked_offset(input_offset, facet_field.offset, path)?;
+            match fixed_encode_segment(
+                facet_field.shape.get(),
+                &field.node,
+                field_offset,
+                pending.output_len,
+                &field_path,
+            ) {
+                Ok(segment) if copy_ops_fit_direct_code(&segment.ops) => {
+                    pending.ops.extend(segment.ops);
+                    pending.output_len =
+                        checked_offset(pending.output_len, segment.output_len, path)?;
+                }
+                Ok(_) => {
+                    self.flush_direct_segment(&mut pending);
+                    match fixed_encode_segment(
+                        facet_field.shape.get(),
+                        &field.node,
+                        field_offset,
+                        0,
+                        &field_path,
+                    ) {
+                        Ok(segment) if copy_ops_fit_direct_code(&segment.ops) => {
+                            self.push_direct_segment(segment);
+                        }
+                        Ok(_) => self.push_field_helper(field)?,
+                        Err(StencilError::Unsupported { .. }) => self.push_field_helper(field)?,
+                        Err(err) => return Err(err),
+                    }
+                }
+                Err(StencilError::Unsupported { .. }) => {
+                    self.flush_direct_segment(&mut pending);
+                    self.push_field_helper(field)?;
+                }
+                Err(err) => return Err(err),
+            }
         }
+        self.flush_direct_segment(&mut pending);
+        Ok(())
+    }
+
+    // r[impl binette.aggregate.tuple]
+    fn compile_tuple_root(
+        &mut self,
+        shape: &'static Shape,
+        elements: &[WriterTupleElementPlan],
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let facet_fields = shape_struct_fields(shape, path)?;
+        if facet_fields.len() != elements.len() {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "writer tuple arity differs from Facet shape",
+            });
+        }
+        let mut pending = FixedEncodeSegment {
+            ops: Vec::new(),
+            output_len: 0,
+        };
+        for element in elements {
+            let element_path = format!("{path}.{}", element.facet_index);
+            let Some(facet_field) = facet_fields.get(element.facet_index) else {
+                self.flush_direct_segment(&mut pending);
+                self.push_tuple_element_helper(element)?;
+                continue;
+            };
+            let element_offset = checked_offset(input_offset, facet_field.offset, path)?;
+            match fixed_encode_segment(
+                facet_field.shape.get(),
+                &element.node,
+                element_offset,
+                pending.output_len,
+                &element_path,
+            ) {
+                Ok(segment) if copy_ops_fit_direct_code(&segment.ops) => {
+                    pending.ops.extend(segment.ops);
+                    pending.output_len =
+                        checked_offset(pending.output_len, segment.output_len, path)?;
+                }
+                Ok(_) => {
+                    self.flush_direct_segment(&mut pending);
+                    match fixed_encode_segment(
+                        facet_field.shape.get(),
+                        &element.node,
+                        element_offset,
+                        0,
+                        &element_path,
+                    ) {
+                        Ok(segment) if copy_ops_fit_direct_code(&segment.ops) => {
+                            self.push_direct_segment(segment);
+                        }
+                        Ok(_) => self.push_tuple_element_helper(element)?,
+                        Err(StencilError::Unsupported { .. }) => {
+                            self.push_tuple_element_helper(element)?;
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+                Err(StencilError::Unsupported { .. }) => {
+                    self.flush_direct_segment(&mut pending);
+                    self.push_tuple_element_helper(element)?;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        self.flush_direct_segment(&mut pending);
         Ok(())
     }
 
@@ -1162,6 +1355,20 @@ impl StencilEncodeCompiler {
         let helper_index = self.helpers.len();
         self.helpers.push(StencilEncodeHelper::StructField {
             field: field.clone(),
+            failure_index,
+        });
+        self.ops.push(EncodeStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
+    fn push_tuple_element_helper(
+        &mut self,
+        element: &WriterTupleElementPlan,
+    ) -> Result<(), StencilError> {
+        let failure_index = self.push_helper_failure(&format!("$.{}", element.facet_index))?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilEncodeHelper::TupleElement {
+            element: element.clone(),
             failure_index,
         });
         self.ops.push(EncodeStencilOp::Helper { helper_index });
@@ -1186,6 +1393,31 @@ impl StencilEncodeCompiler {
             path: path.to_owned(),
         });
         Ok(failure_index)
+    }
+
+    fn push_direct_segment(&mut self, segment: FixedEncodeSegment) {
+        if segment.output_len == 0 {
+            return;
+        }
+        self.ops.push(EncodeStencilOp::Direct {
+            ops: segment.ops,
+            output_len: segment.output_len,
+        });
+    }
+
+    fn flush_direct_segment(&mut self, segment: &mut FixedEncodeSegment) {
+        if segment.output_len == 0 {
+            segment.ops.clear();
+            return;
+        }
+        let segment = std::mem::replace(
+            segment,
+            FixedEncodeSegment {
+                ops: Vec::new(),
+                output_len: 0,
+            },
+        );
+        self.push_direct_segment(segment);
     }
 }
 
@@ -1315,6 +1547,36 @@ impl FixedEncodeCompiler {
         }
         Ok(())
     }
+}
+
+fn fixed_encode_segment(
+    shape: &'static Shape,
+    node: &WriterNode,
+    input_offset: usize,
+    output_offset: usize,
+    path: &str,
+) -> Result<FixedEncodeSegment, StencilError> {
+    let mut compiler = FixedEncodeCompiler {
+        ops: Vec::new(),
+        output_offset,
+    };
+    compiler.compile_node(shape, node, input_offset, path)?;
+    let output_len = compiler
+        .output_offset
+        .checked_sub(output_offset)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "direct encode output offset underflow",
+        })?;
+    Ok(FixedEncodeSegment {
+        ops: compiler.ops,
+        output_len,
+    })
+}
+
+fn copy_ops_fit_direct_code(ops: &[CopyOp]) -> bool {
+    ops.iter()
+        .all(|op| op.input_offset <= 255 && op.output_offset <= 255)
 }
 
 impl CopyWidth {
@@ -1557,7 +1819,8 @@ unsafe extern "C" fn stencil_encode_helper(
 
     let status = match helper {
         StencilEncodeHelper::Value { failure_index, .. }
-        | StencilEncodeHelper::StructField { failure_index, .. } => {
+        | StencilEncodeHelper::StructField { failure_index, .. }
+        | StencilEncodeHelper::TupleElement { failure_index, .. } => {
             status_for_failure(*failure_index).unwrap_or(1)
         }
     };
@@ -1578,6 +1841,17 @@ unsafe extern "C" fn stencil_encode_helper(
                 return status;
             };
             if encode_node_with_writer_node(out, field_peek, &field.node).is_err() {
+                return status;
+            }
+        }
+        StencilEncodeHelper::TupleElement { element, .. } => {
+            let Ok(tuple_peek) = root.into_tuple() else {
+                return status;
+            };
+            let Some(element_peek) = tuple_peek.field(element.facet_index) else {
+                return status;
+            };
+            if encode_node_with_writer_node(out, element_peek, &element.node).is_err() {
                 return status;
             }
         }
@@ -1764,9 +2038,16 @@ fn generate_encode_code(ops: &[EncodeStencilOp]) -> Result<ExecutableMemory, Ste
         let epilogue_offset = code.len();
         emit_encode_epilogue(&mut code);
 
-        for branch_offset in error_branches {
-            let word = patch_cond_branch_imm19(AARCH64_B_NE, branch_offset, epilogue_offset)?;
-            code[branch_offset..branch_offset + 4].copy_from_slice(&word.to_le_bytes());
+        for branch in error_branches {
+            let word = match branch.kind {
+                EncodeBranchKind::CondNe => {
+                    patch_cond_branch_imm19(AARCH64_B_NE, branch.offset, epilogue_offset)?
+                }
+                EncodeBranchKind::Uncond => {
+                    patch_uncond_branch_imm26(AARCH64_B, branch.offset, epilogue_offset)?
+                }
+            };
+            code[branch.offset..branch.offset + 4].copy_from_slice(&word.to_le_bytes());
         }
 
         ExecutableMemory::new(&code)
@@ -1796,6 +2077,8 @@ const AARCH64_B_NE: u32 = 0x5400_0001;
 const AARCH64_B: u32 = 0x1400_0000;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_CBZ_X0: u32 = 0xB400_0000;
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+const AARCH64_CBNZ_X0: u32 = 0xB500_0000;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_CMP_W0_0: u32 = 0x7100_001F;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
@@ -1857,6 +2140,20 @@ struct BranchFixup {
 #[derive(Debug, Clone, Copy)]
 enum BranchKind {
     CondHi,
+    Uncond,
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[derive(Debug, Clone, Copy)]
+struct EncodeBranchFixup {
+    offset: usize,
+    kind: EncodeBranchKind,
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[derive(Debug, Clone, Copy)]
+enum EncodeBranchKind {
+    CondNe,
     Uncond,
 }
 
@@ -2139,7 +2436,7 @@ fn emit_direct_encode_epilogue(code: &mut Vec<u8>) {
 fn emit_encode_op(
     code: &mut Vec<u8>,
     op: &EncodeStencilOp,
-    error_branches: &mut Vec<usize>,
+    error_branches: &mut Vec<EncodeBranchFixup>,
 ) -> Result<(), StencilError> {
     match op {
         EncodeStencilOp::Helper { helper_index } => {
@@ -2157,7 +2454,50 @@ fn emit_encode_op(
             push_u32(code, AARCH64_CMP_W0_0);
             let branch_offset = code.len();
             push_u32(code, 0);
-            error_branches.push(branch_offset);
+            error_branches.push(EncodeBranchFixup {
+                offset: branch_offset,
+                kind: EncodeBranchKind::CondNe,
+            });
+        }
+        EncodeStencilOp::Direct { ops, output_len } => {
+            push_u32(code, mov_x_register(0, 21)?);
+            let output_len = u64::try_from(*output_len).map_err(|_| StencilError::Unsupported {
+                path: "$code".to_owned(),
+                reason: "direct encode output length exceeds u64",
+            })?;
+            emit_mov_x_immediate(code, 1, output_len)?;
+            emit_mov_x_immediate(
+                code,
+                16,
+                stencil_encode_reserve as *const () as usize as u64,
+            )?;
+            push_u32(code, AARCH64_BLR_X16);
+
+            let reserve_succeeded_branch = code.len();
+            push_u32(code, 0);
+
+            push_u32(code, mov_w0_immediate(1)?);
+            let reserve_failed_branch = code.len();
+            push_u32(code, 0);
+            error_branches.push(EncodeBranchFixup {
+                offset: reserve_failed_branch,
+                kind: EncodeBranchKind::Uncond,
+            });
+
+            let copy_start = code.len();
+            let branch_word = patch_compare_zero_branch_imm19(
+                AARCH64_CBNZ_X0,
+                reserve_succeeded_branch,
+                copy_start,
+            )?;
+            code[reserve_succeeded_branch..reserve_succeeded_branch + 4]
+                .copy_from_slice(&branch_word.to_le_bytes());
+
+            push_u32(code, mov_x_register(2, 0)?);
+            push_u32(code, mov_x_register(0, 20)?);
+            for op in ops {
+                emit_copy_op(code, *op)?;
+            }
         }
     }
     Ok(())
@@ -2514,6 +2854,65 @@ mod tests {
         let encoder = stencil_encoder_from_plan::<Fixed>(&plan).unwrap();
 
         assert!(matches!(encoder.entry, EncodeStencilEntry::Direct { .. }));
+        assert_eq!(
+            encoder.encode_to_vec(&value).unwrap(),
+            encode_to_vec_with_plan(&value, &plan).unwrap()
+        );
+    }
+
+    #[derive(Facet)]
+    struct MixedNested {
+        count: u32,
+        label: String,
+        enabled: bool,
+    }
+
+    #[derive(Facet)]
+    struct Mixed {
+        id: u64,
+        title: String,
+        active: bool,
+        nested: MixedNested,
+        code: u16,
+    }
+
+    #[test]
+    fn mixed_encode_stencil_compiles_fixed_runs_around_helpers() {
+        let value = Mixed {
+            id: 0x0102_0304_0506_0708,
+            title: "binette".to_owned(),
+            active: true,
+            nested: MixedNested {
+                count: 42,
+                label: "nested".to_owned(),
+                enabled: false,
+            },
+            code: 0x1122,
+        };
+        let plan = writer_plan_for::<Mixed>().unwrap();
+
+        let mut compiler = StencilEncodeCompiler {
+            ops: Vec::new(),
+            helpers: Vec::new(),
+            failures: Vec::new(),
+        };
+        compiler.compile_root::<Mixed>(plan.root_node()).unwrap();
+
+        let direct_segments = compiler
+            .ops
+            .iter()
+            .filter(|op| matches!(op, EncodeStencilOp::Direct { .. }))
+            .count();
+        let helper_segments = compiler
+            .ops
+            .iter()
+            .filter(|op| matches!(op, EncodeStencilOp::Helper { .. }))
+            .count();
+
+        assert!(direct_segments >= 2);
+        assert!(helper_segments >= 1);
+
+        let encoder = stencil_encoder_from_plan::<Mixed>(&plan).unwrap();
         assert_eq!(
             encoder.encode_to_vec(&value).unwrap(),
             encode_to_vec_with_plan(&value, &plan).unwrap()
