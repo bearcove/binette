@@ -579,6 +579,17 @@ fn enum_encode_hybrid_fixture() -> EncodeStencilFixture<enum_writer::Event> {
     }
 }
 
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn enum_encode_jit_fixture() -> EncodeStencilFixture<enum_writer::Event> {
+    let writer_plan = writer_plan_for::<enum_writer::Event>().unwrap();
+    let stencil = strict_stencil_encoder_from_plan::<enum_writer::Event>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: enum_writer::sample(),
+        stencil,
+    }
+}
+
 macro_rules! same_schema_encode_benches {
     ($module:ident, $ty:ty, $sample:expr) => {
         mod $module {
@@ -783,6 +794,19 @@ mod encode {
         #[divan::bench]
         pub fn hybrid(bencher: Bencher) {
             let fixture = enum_encode_hybrid_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn jit(bencher: Bencher) {
+            let fixture = enum_encode_jit_fixture();
 
             bencher.bench(|| {
                 black_box(
