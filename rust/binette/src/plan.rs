@@ -12,10 +12,20 @@ use crate::schema::{Field, Primitive, Schema, SchemaBundle, SchemaKind, TypeId, 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReaderPlan {
     pub root: PlanNode,
+    pub(crate) nodes: Vec<PlanNode>,
+}
+
+impl ReaderPlan {
+    pub(crate) fn nodes(&self) -> &[PlanNode] {
+        &self.nodes
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanNode {
+    Ref {
+        node_index: usize,
+    },
     Primitive {
         primitive: Primitive,
     },
@@ -137,6 +147,8 @@ pub fn reader_plan_for_shape(
     let mut builder = PlanBuilder {
         writer_registry,
         reader_registry: &reader_registry,
+        nodes: Vec::new(),
+        active: HashMap::new(),
     };
     let root = builder.plan_type(
         writer_root,
@@ -145,7 +157,10 @@ pub fn reader_plan_for_shape(
         &Env::default(),
         "$",
     )?;
-    Ok(ReaderPlan { root })
+    Ok(ReaderPlan {
+        root,
+        nodes: builder.nodes,
+    })
 }
 
 // r[impl binette.compat.plan]
@@ -158,6 +173,8 @@ pub fn reader_plan_for_bundle(
     let mut builder = PlanBuilder {
         writer_registry,
         reader_registry,
+        nodes: Vec::new(),
+        active: HashMap::new(),
     };
     let root = builder.plan_type(
         writer_root,
@@ -166,7 +183,10 @@ pub fn reader_plan_for_bundle(
         &Env::default(),
         "$",
     )?;
-    Ok(ReaderPlan { root })
+    Ok(ReaderPlan {
+        root,
+        nodes: builder.nodes,
+    })
 }
 
 // r[impl binette.compat.plan]
@@ -189,6 +209,8 @@ pub fn reader_plan_for_bundles(
 struct PlanBuilder<'a> {
     writer_registry: &'a SchemaRegistry,
     reader_registry: &'a SchemaRegistry,
+    nodes: Vec<PlanNode>,
+    active: HashMap<(TypeRef, TypeRef), usize>,
 }
 
 #[derive(Default)]
@@ -269,19 +291,34 @@ impl PlanBuilder<'_> {
                     schema: reader_schema,
                     env: reader_env,
                 },
-            ) => self.plan_schema_pair(
-                SchemaPlanInput {
-                    type_ref: writer_ref,
-                    schema: writer_schema,
-                    env: writer_env,
-                },
-                SchemaPlanInput {
-                    type_ref: reader_ref,
-                    schema: reader_schema,
-                    env: reader_env,
-                },
-                path,
-            ),
+            ) => {
+                let key = (writer_ref.clone(), reader_ref.clone());
+                if let Some(node_index) = self.active.get(&key) {
+                    return Ok(PlanNode::Ref {
+                        node_index: *node_index,
+                    });
+                }
+                let node_index = self.nodes.len();
+                self.nodes.push(PlanNode::Dynamic);
+                self.active.insert(key.clone(), node_index);
+                let node = self.plan_schema_pair(
+                    SchemaPlanInput {
+                        type_ref: writer_ref,
+                        schema: writer_schema,
+                        env: writer_env,
+                    },
+                    SchemaPlanInput {
+                        type_ref: reader_ref,
+                        schema: reader_schema,
+                        env: reader_env,
+                    },
+                    path,
+                );
+                self.active.remove(&key);
+                let node = node?;
+                self.nodes[node_index] = node.clone();
+                Ok(node)
+            }
             _ => Err(self.type_mismatch(path, writer_ref, reader_ref)),
         }
     }

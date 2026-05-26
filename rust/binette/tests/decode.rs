@@ -65,6 +65,39 @@ fn decodes_same_struct_into_facet_partial() {
     );
 }
 
+// r[verify binette.mode.compact]
+// r[verify binette.hash.recursive]
+// r[verify binette.schema.registry.recursive]
+#[test]
+fn compact_encode_handles_recursive_writer_schema() {
+    #[derive(Debug, Facet, PartialEq)]
+    #[repr(u8)]
+    enum LocalTypeRef {
+        Concrete {
+            type_id: u64,
+            args: Vec<LocalTypeRef>,
+        },
+        Var {
+            name: String,
+        },
+    }
+
+    let writer_plan = writer_plan_for::<LocalTypeRef>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let value = LocalTypeRef::Concrete {
+        type_id: 42,
+        args: vec![LocalTypeRef::Var {
+            name: "T".to_owned(),
+        }],
+    };
+
+    let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+    let decoded =
+        decode_from_slice::<LocalTypeRef>(&bytes, writer_plan.root(), &writer_registry).unwrap();
+
+    assert_eq!(decoded, value);
+}
+
 // r[verify binette.compat.field-matching]
 // r[verify binette.compat.skip-unknown]
 // r[verify binette.aggregate.schema-driven-skip]

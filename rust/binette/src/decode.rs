@@ -76,6 +76,7 @@ pub fn decode_from_slice_with_plan<T: Facet<'static>>(
     let mut executor = DecodeExecutor {
         reader: CompactReader::new(input),
         writer_registry,
+        plan_nodes: plan.nodes(),
     };
     let partial = Partial::alloc_owned::<T>()?;
     let partial = executor.decode_node(partial, &plan.root)?;
@@ -91,6 +92,7 @@ pub fn decode_from_slice_with_plan<T: Facet<'static>>(
 pub(crate) unsafe fn decode_plan_node_into_raw(
     input: &[u8],
     node: &PlanNode,
+    plan_nodes: &[PlanNode],
     writer_registry: &SchemaRegistry,
     reader_shape: &'static Shape,
     out: *mut u8,
@@ -98,6 +100,7 @@ pub(crate) unsafe fn decode_plan_node_into_raw(
     let mut executor = DecodeExecutor {
         reader: CompactReader::new(input),
         writer_registry,
+        plan_nodes,
     };
     let ptr = PtrUninit::new(out);
     let partial = unsafe { Partial::<'static, false>::from_raw_with_shape(ptr, reader_shape)? };
@@ -109,6 +112,7 @@ pub(crate) unsafe fn decode_plan_node_into_raw(
 struct DecodeExecutor<'input, 'registry> {
     reader: CompactReader<'input>,
     writer_registry: &'registry SchemaRegistry,
+    plan_nodes: &'registry [PlanNode],
 }
 
 impl DecodeExecutor<'_, '_> {
@@ -118,6 +122,16 @@ impl DecodeExecutor<'_, '_> {
         node: &PlanNode,
     ) -> Result<Partial<'static, false>, DecodeError> {
         match node {
+            PlanNode::Ref { node_index } => {
+                let node =
+                    self.plan_nodes
+                        .get(*node_index)
+                        .ok_or_else(|| DecodeError::Unsupported {
+                            position: self.reader.position(),
+                            reason: "recursive reader plan node reference is out of range",
+                        })?;
+                self.decode_node(partial, node)
+            }
             PlanNode::Primitive { primitive } => self.decode_primitive(partial, *primitive),
             // r[impl binette.compat.field-matching]
             // r[impl binette.compat.skip-unknown]
@@ -435,6 +449,16 @@ impl DecodeExecutor<'_, '_> {
         aggregate: &'static str,
     ) -> Result<(), DecodeError> {
         match node {
+            PlanNode::Ref { node_index } => {
+                let node =
+                    self.plan_nodes
+                        .get(*node_index)
+                        .ok_or_else(|| DecodeError::Unsupported {
+                            position: base + reader.position(),
+                            reason: "recursive reader plan node reference is out of range",
+                        })?;
+                self.scan_no_nan_plan(reader, node, base, aggregate)
+            }
             PlanNode::Primitive { primitive } => {
                 self.scan_no_nan_primitive(reader, *primitive, base, aggregate)
             }

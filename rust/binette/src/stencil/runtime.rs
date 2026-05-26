@@ -41,6 +41,7 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
     let consumed = match helper {
         StencilHelper::Decode {
             plan,
+            plan_nodes,
             reader_shape,
             output_offset,
             ..
@@ -50,6 +51,7 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
                 decode_plan_node_into_raw(
                     tail,
                     plan,
+                    plan_nodes,
                     &runtime.writer_registry,
                     reader_shape,
                     output,
@@ -119,7 +121,7 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
             let value = value.wrapping_add(*input_offset);
             let peek: Peek<'_, 'static> =
                 unsafe { Peek::unchecked_new(PtrConst::new(value), shape) };
-            if encode_node_with_writer_node(out, peek, node).is_err() {
+            if encode_node_with_writer_node(out, peek, node, &runtime.nodes).is_err() {
                 return status;
             }
         }

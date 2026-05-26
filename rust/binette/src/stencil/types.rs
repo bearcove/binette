@@ -80,6 +80,7 @@ pub(super) enum HybridStencilOp {
 pub(super) enum StencilHelper {
     Decode {
         plan: PlanNode,
+        plan_nodes: Vec<PlanNode>,
         reader_shape: &'static Shape,
         output_offset: usize,
         failure_index: usize,
@@ -178,6 +179,7 @@ pub(super) enum StencilEncodeHelper {
 
 pub(super) struct StencilEncodeRuntime {
     pub(super) helpers: Vec<StencilEncodeHelper>,
+    pub(super) nodes: Vec<WriterNode>,
 }
 
 pub(super) struct FixedEncodeCompiler {

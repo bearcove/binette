@@ -3,6 +3,7 @@ use crate::layout::{option_string_layout, vec_layout};
 
 pub(super) struct StencilCompiler<'registry> {
     pub(super) writer_registry: &'registry SchemaRegistry,
+    pub(super) plan_nodes: &'registry [PlanNode],
     pub(super) ops: Vec<StencilOp>,
     pub(super) failures: Vec<StencilFailure>,
     pub(super) input_offset: usize,
@@ -66,6 +67,7 @@ impl StencilCompiler<'_> {
 
         let mut element_compiler = StencilCompiler {
             writer_registry: self.writer_registry,
+            plan_nodes: self.plan_nodes,
             ops: Vec::new(),
             failures: Vec::new(),
             input_offset: 0,
@@ -112,6 +114,16 @@ impl StencilCompiler<'_> {
         path: &str,
     ) -> Result<(), StencilError> {
         match node {
+            PlanNode::Ref { node_index } => {
+                let node =
+                    self.plan_nodes
+                        .get(*node_index)
+                        .ok_or_else(|| StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "recursive reader plan node reference is out of range",
+                        })?;
+                self.compile_node(reader_shape, node, output_offset, path)
+            }
             PlanNode::Primitive { primitive } => {
                 self.compile_primitive_read(*primitive, output_offset, path)
             }
@@ -554,6 +566,7 @@ impl StencilCompiler<'_> {
 
 pub(super) struct CursorStencilCompiler<'registry> {
     pub(super) writer_registry: &'registry SchemaRegistry,
+    pub(super) plan_nodes: &'registry [PlanNode],
     pub(super) ops: Vec<HybridStencilOp>,
     pub(super) helpers: Vec<StencilHelper>,
     pub(super) failures: Vec<StencilFailure>,
@@ -616,6 +629,16 @@ impl CursorStencilCompiler<'_> {
         path: &str,
     ) -> Result<(), StencilError> {
         let result = match node {
+            PlanNode::Ref { node_index } => {
+                let node =
+                    self.plan_nodes
+                        .get(*node_index)
+                        .ok_or_else(|| StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "recursive reader plan node reference is out of range",
+                        })?;
+                self.compile_node(reader_shape, node, output_offset, path)
+            }
             PlanNode::List { element } => {
                 self.push_list(reader_shape, element, output_offset, path)
             }
@@ -775,6 +798,7 @@ impl CursorStencilCompiler<'_> {
     ) -> Result<(), StencilError> {
         let (ops, input_len) = fixed_copy_ops(
             self.writer_registry,
+            self.plan_nodes,
             node,
             reader_shape,
             output_offset,
@@ -823,6 +847,7 @@ impl CursorStencilCompiler<'_> {
         let helper_index = self.helpers.len();
         self.helpers.push(StencilHelper::Decode {
             plan: plan.clone(),
+            plan_nodes: self.plan_nodes.to_vec(),
             reader_shape,
             output_offset,
             failure_index,
@@ -906,6 +931,10 @@ impl StencilEncodeCompiler {
         }
 
         match node {
+            WriterNode::Ref { .. } => {
+                self.flush_direct_segment(pending);
+                self.push_node_helper(shape, node, input_offset, path)
+            }
             WriterNode::Primitive(Primitive::String) => {
                 self.flush_direct_segment(pending);
                 self.push_bytes(shape, input_offset, EncodeBytesKind::String);
@@ -1379,6 +1408,10 @@ impl FixedEncodeCompiler {
         path: &str,
     ) -> Result<(), StencilError> {
         match node {
+            WriterNode::Ref { .. } => Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "direct encode stencil does not support recursive writer refs",
+            }),
             WriterNode::Primitive(primitive) => {
                 self.compile_primitive(*primitive, input_offset, path)
             }
@@ -1744,6 +1777,7 @@ fn copy_ops_from_stencil_ops(ops: &[StencilOp]) -> Option<Vec<CopyOp>> {
 
 fn fixed_copy_ops(
     writer_registry: &SchemaRegistry,
+    plan_nodes: &[PlanNode],
     node: &PlanNode,
     reader_shape: &'static Shape,
     output_offset: usize,
@@ -1751,6 +1785,7 @@ fn fixed_copy_ops(
 ) -> Result<(Vec<CopyOp>, usize), StencilError> {
     let mut compiler = StencilCompiler {
         writer_registry,
+        plan_nodes,
         ops: Vec::new(),
         failures: Vec::new(),
         input_offset: 0,
@@ -1778,6 +1813,7 @@ fn fixed_skip_len(
 ) -> Result<usize, StencilError> {
     let mut compiler = StencilCompiler {
         writer_registry,
+        plan_nodes: &[],
         ops: Vec::new(),
         failures: Vec::new(),
         input_offset: 0,

@@ -59,11 +59,15 @@ pub enum EncodeError {
         shape: &'static Shape,
         reason: &'static str,
     },
+
+    #[error("invalid writer plan: {reason}")]
+    InvalidPlan { reason: &'static str },
 }
 
 pub struct WriterPlan {
     bundle: SchemaBundle,
     root: WriterNode,
+    nodes: Vec<WriterNode>,
 }
 
 impl WriterPlan {
@@ -77,6 +81,10 @@ impl WriterPlan {
 
     pub(crate) fn root_node(&self) -> &WriterNode {
         &self.root
+    }
+
+    pub(crate) fn nodes(&self) -> &[WriterNode] {
+        &self.nodes
     }
 }
 
@@ -93,12 +101,18 @@ pub fn writer_plan_for_shape(shape: &'static Shape) -> Result<WriterPlan, Encode
     let mut registry = SchemaRegistry::new();
     registry.install_bundle(&bundle)?;
 
-    let root = WriterPlanBuilder {
+    let mut builder = WriterPlanBuilder {
         registry: &registry,
-    }
-    .plan_type(&bundle.root, &Env::default(), shape)?;
+        nodes: Vec::new(),
+        active: HashMap::new(),
+    };
+    let root = builder.plan_type(&bundle.root, &Env::default(), shape)?;
 
-    Ok(WriterPlan { bundle, root })
+    Ok(WriterPlan {
+        bundle,
+        root,
+        nodes: builder.nodes,
+    })
 }
 
 // r[impl binette.mode.compact]
@@ -122,19 +136,27 @@ fn encode_with_plan(
     peek: Peek<'_, 'static>,
     plan: &WriterPlan,
 ) -> Result<(), EncodeError> {
-    WriterPlanExecutor { out }.encode_node(peek, &plan.root)
+    WriterPlanExecutor {
+        out,
+        nodes: &plan.nodes,
+    }
+    .encode_node(peek, &plan.root)
 }
 
 pub(crate) fn encode_node_with_writer_node(
     out: &mut Vec<u8>,
     peek: Peek<'_, 'static>,
     node: &WriterNode,
+    nodes: &[WriterNode],
 ) -> Result<(), EncodeError> {
-    WriterPlanExecutor { out }.encode_node(peek, node)
+    WriterPlanExecutor { out, nodes }.encode_node(peek, node)
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum WriterNode {
+    Ref {
+        node_index: usize,
+    },
     Primitive(Primitive),
     Struct {
         fields: Vec<WriterFieldPlan>,
@@ -196,11 +218,13 @@ pub(crate) enum WriterVariantPayloadPlan {
 
 struct WriterPlanBuilder<'a> {
     registry: &'a SchemaRegistry,
+    nodes: Vec<WriterNode>,
+    active: HashMap<TypeRef, usize>,
 }
 
 impl WriterPlanBuilder<'_> {
     fn plan_type(
-        &self,
+        &mut self,
         type_ref: &TypeRef,
         env: &Env,
         shape: &'static Shape,
@@ -218,12 +242,29 @@ impl WriterPlanBuilder<'_> {
                     return Ok(WriterNode::Primitive(primitive));
                 }
 
+                let resolved = TypeRef::Concrete {
+                    type_id,
+                    args: args.clone(),
+                };
+                if let Some(node_index) = self.active.get(&resolved) {
+                    return Ok(WriterNode::Ref {
+                        node_index: *node_index,
+                    });
+                }
+
                 let schema = self
                     .registry
                     .get(type_id)
                     .ok_or(EncodeError::UnknownWriterType { type_id })?;
                 let env = Env::bind(schema, &args);
-                self.plan_kind(&schema.kind, &env, shape)
+                let node_index = self.nodes.len();
+                self.nodes.push(WriterNode::Dynamic);
+                self.active.insert(resolved.clone(), node_index);
+                let node = self.plan_kind(&schema.kind, &env, shape);
+                self.active.remove(&resolved);
+                let node = node?;
+                self.nodes[node_index] = node.clone();
+                Ok(node)
             }
             TypeRef::Var { name } => Err(EncodeError::UnboundTypeParameter { name }),
         }
@@ -246,7 +287,7 @@ impl WriterPlanBuilder<'_> {
     }
 
     fn plan_kind(
-        &self,
+        &mut self,
         kind: &SchemaKind,
         env: &Env,
         shape: &'static Shape,
@@ -287,7 +328,7 @@ impl WriterPlanBuilder<'_> {
 
     // r[impl binette.aggregate.struct.compact]
     fn plan_struct(
-        &self,
+        &mut self,
         schema_fields: &[Field],
         env: &Env,
         shape: &'static Shape,
@@ -325,7 +366,7 @@ impl WriterPlanBuilder<'_> {
 
     // r[impl binette.aggregate.enum.compact]
     fn plan_enum(
-        &self,
+        &mut self,
         schema_variants: &[Variant],
         env: &Env,
         shape: &'static Shape,
@@ -364,7 +405,7 @@ impl WriterPlanBuilder<'_> {
     }
 
     fn plan_variant_payload(
-        &self,
+        &mut self,
         payload: &VariantPayload,
         env: &Env,
         owner_shape: &'static Shape,
@@ -391,7 +432,7 @@ impl WriterPlanBuilder<'_> {
     }
 
     fn plan_tuple(
-        &self,
+        &mut self,
         elements: &[TypeRef],
         env: &Env,
         shape: &'static Shape,
@@ -409,7 +450,7 @@ impl WriterPlanBuilder<'_> {
     }
 
     fn plan_tuple_elements(
-        &self,
+        &mut self,
         elements: &[TypeRef],
         env: &Env,
         owner_shape: &'static Shape,
@@ -436,7 +477,7 @@ impl WriterPlanBuilder<'_> {
     }
 
     fn plan_struct_fields(
-        &self,
+        &mut self,
         schema_fields: &[Field],
         env: &Env,
         owner_shape: &'static Shape,
@@ -465,6 +506,7 @@ impl WriterPlanBuilder<'_> {
 
 struct WriterPlanExecutor<'a> {
     out: &'a mut Vec<u8>,
+    nodes: &'a [WriterNode],
 }
 
 impl WriterPlanExecutor<'_> {
@@ -475,6 +517,15 @@ impl WriterPlanExecutor<'_> {
     ) -> Result<(), EncodeError> {
         let peek = peek.innermost_peek();
         match node {
+            WriterNode::Ref { node_index } => {
+                let node = self
+                    .nodes
+                    .get(*node_index)
+                    .ok_or(EncodeError::InvalidPlan {
+                        reason: "recursive writer node reference is out of range",
+                    })?;
+                self.encode_node(peek, node)
+            }
             WriterNode::Primitive(primitive) => self.encode_primitive(peek, *primitive),
             WriterNode::Struct { fields } => self.encode_struct(peek, fields),
             WriterNode::Enum { variants } => self.encode_enum(peek, variants),
@@ -604,8 +655,8 @@ impl WriterPlanExecutor<'_> {
         let set = peek.into_set()?;
         let mut elements = Vec::with_capacity(set.len());
         for item in set.iter() {
-            validate_canonical_key(item, element)?;
-            elements.push(encode_to_canonical_bytes(item, element)?);
+            validate_canonical_key(item, element, self.nodes)?;
+            elements.push(encode_to_canonical_bytes(item, element, self.nodes)?);
         }
 
         elements.sort();
@@ -630,10 +681,10 @@ impl WriterPlanExecutor<'_> {
         let map = peek.into_map()?;
         let mut entries = Vec::with_capacity(map.len());
         for (key, value) in map.iter() {
-            validate_canonical_key(key, key_node)?;
+            validate_canonical_key(key, key_node, self.nodes)?;
             entries.push((
-                encode_to_canonical_bytes(key, key_node)?,
-                encode_to_canonical_bytes(value, value_node)?,
+                encode_to_canonical_bytes(key, key_node, self.nodes)?,
+                encode_to_canonical_bytes(value, value_node, self.nodes)?,
             ));
         }
 
@@ -859,9 +910,14 @@ fn compact_bytes<'mem>(peek: Peek<'mem, 'static>) -> Result<Option<&'mem [u8]>, 
 fn encode_to_canonical_bytes(
     peek: Peek<'_, 'static>,
     node: &WriterNode,
+    nodes: &[WriterNode],
 ) -> Result<Vec<u8>, EncodeError> {
     let mut bytes = Vec::new();
-    WriterPlanExecutor { out: &mut bytes }.encode_node(peek, node)?;
+    WriterPlanExecutor {
+        out: &mut bytes,
+        nodes,
+    }
+    .encode_node(peek, node)?;
     Ok(bytes)
 }
 
@@ -883,9 +939,19 @@ fn reject_duplicate_canonical_keys<'a>(
     Ok(())
 }
 
-fn validate_canonical_key(peek: Peek<'_, 'static>, node: &WriterNode) -> Result<(), EncodeError> {
+fn validate_canonical_key(
+    peek: Peek<'_, 'static>,
+    node: &WriterNode,
+    nodes: &[WriterNode],
+) -> Result<(), EncodeError> {
     let peek = peek.innermost_peek();
     match node {
+        WriterNode::Ref { node_index } => {
+            let node = nodes.get(*node_index).ok_or(EncodeError::InvalidPlan {
+                reason: "recursive writer node reference is out of range",
+            })?;
+            validate_canonical_key(peek, node, nodes)?;
+        }
         WriterNode::Primitive(Primitive::F32) => {
             if peek.get::<f32>()?.is_nan() {
                 return Err(EncodeError::NanCanonicalKey {
@@ -909,6 +975,7 @@ fn validate_canonical_key(peek: Peek<'_, 'static>, node: &WriterNode) -> Result<
                         .field(field.facet_index)
                         .map_err(|source| field_error(peek.shape(), &field.name, source))?,
                     &field.node,
+                    nodes,
                 )?;
             }
         }
@@ -921,7 +988,7 @@ fn validate_canonical_key(peek: Peek<'_, 'static>, node: &WriterNode) -> Result<
                 .iter()
                 .find(|variant| variant.facet_index == facet_index)
             {
-                validate_variant_payload_key(peek, enum_peek, &variant.payload)?;
+                validate_variant_payload_key(peek, enum_peek, &variant.payload, nodes)?;
             }
         }
         WriterNode::Tuple { elements } => {
@@ -930,33 +997,33 @@ fn validate_canonical_key(peek: Peek<'_, 'static>, node: &WriterNode) -> Result<
                 let element_peek = tuple_peek
                     .field(element.facet_index)
                     .ok_or_else(|| unsupported_peek(peek, "tuple field is missing"))?;
-                validate_canonical_key(element_peek, &element.node)?;
+                validate_canonical_key(element_peek, &element.node, nodes)?;
             }
         }
         WriterNode::List { element } => {
             for item in peek.into_list_like()?.iter() {
-                validate_canonical_key(item, element)?;
+                validate_canonical_key(item, element, nodes)?;
             }
         }
         WriterNode::Set { element } => {
             for item in peek.into_set()?.iter() {
-                validate_canonical_key(item, element)?;
+                validate_canonical_key(item, element, nodes)?;
             }
         }
         WriterNode::Map { key, value } => {
             for (item_key, item_value) in peek.into_map()?.iter() {
-                validate_canonical_key(item_key, key)?;
-                validate_canonical_key(item_value, value)?;
+                validate_canonical_key(item_key, key, nodes)?;
+                validate_canonical_key(item_value, value, nodes)?;
             }
         }
         WriterNode::Array { element, .. } => {
             for item in peek.into_list_like()?.iter() {
-                validate_canonical_key(item, element)?;
+                validate_canonical_key(item, element, nodes)?;
             }
         }
         WriterNode::Option { element } => {
             if let Some(inner) = peek.into_option()?.value() {
-                validate_canonical_key(inner, element)?;
+                validate_canonical_key(inner, element, nodes)?;
             }
         }
     }
@@ -967,6 +1034,7 @@ fn validate_variant_payload_key(
     enum_shape: Peek<'_, 'static>,
     enum_peek: facet_reflect::PeekEnum<'_, 'static>,
     payload: &WriterVariantPayloadPlan,
+    nodes: &[WriterNode],
 ) -> Result<(), EncodeError> {
     match payload {
         WriterVariantPayloadPlan::Unit => Ok(()),
@@ -975,7 +1043,7 @@ fn validate_variant_payload_key(
                 .field(element.facet_index)
                 .map_err(|_| unsupported_peek(enum_shape, "enum payload field is not available"))?
                 .ok_or_else(|| unsupported_peek(enum_shape, "enum payload field is missing"))?;
-            validate_canonical_key(field, &element.node)
+            validate_canonical_key(field, &element.node, nodes)
         }
         WriterVariantPayloadPlan::Tuple(elements) => {
             for element in elements {
@@ -983,7 +1051,7 @@ fn validate_variant_payload_key(
                     .field(element.facet_index)
                     .map_err(|_| unsupported_peek(enum_shape, "enum tuple field is not available"))?
                     .ok_or_else(|| unsupported_peek(enum_shape, "enum tuple field is missing"))?;
-                validate_canonical_key(field, &element.node)?;
+                validate_canonical_key(field, &element.node, nodes)?;
             }
             Ok(())
         }
@@ -995,7 +1063,7 @@ fn validate_variant_payload_key(
                         unsupported_peek(enum_shape, "enum struct field is not available")
                     })?
                     .ok_or_else(|| unsupported_peek(enum_shape, "enum struct field is missing"))?;
-                validate_canonical_key(field_peek, &field.node)?;
+                validate_canonical_key(field_peek, &field.node, nodes)?;
             }
             Ok(())
         }

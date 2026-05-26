@@ -474,6 +474,7 @@ fn strict_encode_stencil_encoder_from_plan<T: Facet<'static>>(
             func,
             runtime: Box::new(StencilEncodeRuntime {
                 helpers: compiler.helpers,
+                nodes: plan.nodes().to_vec(),
             }),
         },
         report,
@@ -500,6 +501,7 @@ fn build_hybrid_stencil_encoder_from_plan<T: Facet<'static>>(
             func,
             runtime: Box::new(StencilEncodeRuntime {
                 helpers: compiler.helpers,
+                nodes: plan.nodes().to_vec(),
             }),
         },
         report,
@@ -642,6 +644,7 @@ fn fixed_stencil_decoder_from_plan<T: Facet<'static>>(
 ) -> Result<StencilDecoder<T>, StencilError> {
     let mut compiler = StencilCompiler {
         writer_registry,
+        plan_nodes: plan.nodes(),
         ops: Vec::new(),
         failures: Vec::new(),
         input_offset: 0,
@@ -673,6 +676,7 @@ fn cursor_stencil_decoder_from_plan<T: Facet<'static>>(
 ) -> Result<StencilDecoder<T>, StencilError> {
     let mut compiler = CursorStencilCompiler {
         writer_registry,
+        plan_nodes: plan.nodes(),
         ops: Vec::new(),
         helpers: Vec::new(),
         failures: Vec::new(),

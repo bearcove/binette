@@ -444,6 +444,7 @@ fn hybrid_decode_compiles_supported_siblings_around_subtree_helpers() {
 
     let mut compiler = CursorStencilCompiler {
         writer_registry: &writer_registry,
+        plan_nodes: reader_plan.nodes(),
         ops: Vec::new(),
         helpers: Vec::new(),
         failures: Vec::new(),
@@ -504,6 +505,7 @@ fn hybrid_decode_compiles_list_element_siblings_around_subtree_helpers() {
 
     let mut compiler = CursorStencilCompiler {
         writer_registry: &writer_registry,
+        plan_nodes: reader_plan.nodes(),
         ops: Vec::new(),
         helpers: Vec::new(),
         failures: Vec::new(),
