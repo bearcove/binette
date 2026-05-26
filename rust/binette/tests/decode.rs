@@ -618,6 +618,7 @@ fn stencil_encodes_enum_through_writer_plan() {
 // r[verify binette.aggregate.map]
 // r[verify binette.aggregate.option]
 // r[verify binette.aggregate.array]
+// r[verify binette.aggregate.dynamic-value]
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 #[test]
 fn stencil_handles_aggregate_roots_through_schema_plan() {
@@ -644,6 +645,15 @@ fn stencil_handles_aggregate_roots_through_schema_plan() {
     assert_stencil_matches_interpreter(HashMap::from([(2u16, 20u8), (1, 10), (3, 30)]));
     assert_stencil_matches_interpreter(Some((9u16, "nine".to_owned())));
     assert_stencil_matches_interpreter([5u16, 8, 13, 21]);
+
+    let mut object = VObject::new();
+    object.insert("name", FacetValue::from("binette"));
+    object.insert("count", FacetValue::from(3u64));
+    let mut items = VArray::new();
+    items.push(FacetValue::from(true));
+    items.push(FacetValue::NULL);
+    object.insert("items", FacetValue::from(items));
+    assert_stencil_matches_interpreter(FacetValue::from(object));
 }
 
 // r[verify binette.aggregate.list]

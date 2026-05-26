@@ -221,6 +221,7 @@ mod aggregate {
     pub type Map = HashMap<u16, u8>;
     pub type OptionValue = Option<(u16, String)>;
     pub type Array = [u16; 4];
+    pub type Dynamic = facet_value::Value;
 
     pub fn tuple_sample() -> Tuple {
         (7, "seven".to_owned(), vec![1, 2, 3, 5, 8], Some(true))
@@ -248,6 +249,17 @@ mod aggregate {
 
     pub fn array_sample() -> Array {
         [5, 8, 13, 21]
+    }
+
+    pub fn dynamic_sample() -> Dynamic {
+        let mut object = facet_value::VObject::new();
+        object.insert("name", facet_value::Value::from("binette"));
+        object.insert("count", facet_value::Value::from(3u64));
+        let mut items = facet_value::VArray::new();
+        items.push(facet_value::Value::from(true));
+        items.push(facet_value::Value::NULL);
+        object.insert("items", facet_value::Value::from(items));
+        facet_value::Value::from(object)
     }
 }
 
@@ -667,6 +679,7 @@ mod encode {
     same_schema_encode_benches!(map, aggregate::Map, aggregate::map_sample());
     same_schema_encode_benches!(option, aggregate::OptionValue, aggregate::option_sample());
     same_schema_encode_benches!(array, aggregate::Array, aggregate::array_sample());
+    same_schema_encode_benches!(dynamic, aggregate::Dynamic, aggregate::dynamic_sample());
 }
 
 mod plan {
@@ -708,6 +721,7 @@ mod plan {
     same_schema_plan_bench!(map, aggregate::Map, aggregate::map_sample());
     same_schema_plan_bench!(option, aggregate::OptionValue, aggregate::option_sample());
     same_schema_plan_bench!(array, aggregate::Array, aggregate::array_sample());
+    same_schema_plan_bench!(dynamic, aggregate::Dynamic, aggregate::dynamic_sample());
 }
 
 mod fixed_struct {
@@ -828,3 +842,4 @@ same_schema_decode_benches!(set, aggregate::Set, aggregate::set_sample());
 same_schema_decode_benches!(map, aggregate::Map, aggregate::map_sample());
 same_schema_decode_benches!(option, aggregate::OptionValue, aggregate::option_sample());
 same_schema_decode_benches!(array, aggregate::Array, aggregate::array_sample());
+same_schema_decode_benches!(dynamic, aggregate::Dynamic, aggregate::dynamic_sample());
