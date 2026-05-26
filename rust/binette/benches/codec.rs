@@ -584,6 +584,17 @@ fn mixed_encode_hybrid_fixture() -> EncodeStencilFixture<writer::Message> {
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn mixed_encode_jit_fixture() -> EncodeStencilFixture<writer::Message> {
+    let writer_plan = writer_plan_for::<writer::Message>().unwrap();
+    let stencil = strict_stencil_encoder_from_plan::<writer::Message>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: writer::sample(),
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn enum_encode_hybrid_fixture() -> EncodeStencilFixture<enum_writer::Event> {
     let writer_plan = writer_plan_for::<enum_writer::Event>().unwrap();
     let stencil = hybrid_stencil_encoder_from_plan::<enum_writer::Event>(&writer_plan).unwrap();
@@ -612,6 +623,28 @@ fn array_encode_jit_fixture() -> EncodeStencilFixture<aggregate::Array> {
 
     EncodeStencilFixture {
         sample: aggregate::array_sample(),
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn option_encode_jit_fixture() -> EncodeStencilFixture<aggregate::OptionValue> {
+    let writer_plan = writer_plan_for::<aggregate::OptionValue>().unwrap();
+    let stencil = strict_stencil_encoder_from_plan::<aggregate::OptionValue>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: aggregate::option_sample(),
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn list_encode_jit_fixture() -> EncodeStencilFixture<aggregate::List> {
+    let writer_plan = writer_plan_for::<aggregate::List>().unwrap();
+    let stencil = strict_stencil_encoder_from_plan::<aggregate::List>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: aggregate::list_sample(),
         stencil,
     }
 }
@@ -871,13 +904,118 @@ mod encode {
                 )
             });
         }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn jit(bencher: Bencher) {
+            let fixture = mixed_encode_jit_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
     }
 
     same_schema_encode_benches!(tuple, aggregate::Tuple, aggregate::tuple_sample());
-    same_schema_encode_benches!(list, aggregate::List, aggregate::list_sample());
+    mod list {
+        use super::*;
+
+        #[divan::bench]
+        pub fn interp(bencher: Bencher) {
+            let fixture = same_fixture::<aggregate::List>(aggregate::list_sample());
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_plan(
+                        black_box(&fixture.sample),
+                        black_box(&fixture.writer_plan),
+                    )
+                    .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn hybrid(bencher: Bencher) {
+            let fixture = same_hybrid_fixture::<aggregate::List>(aggregate::list_sample());
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(
+                        black_box(&fixture.fixture.sample),
+                        &fixture.encoder,
+                    )
+                    .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn jit(bencher: Bencher) {
+            let fixture = list_encode_jit_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
+    }
     same_schema_encode_benches!(set, aggregate::Set, aggregate::set_sample());
     same_schema_encode_benches!(map, aggregate::Map, aggregate::map_sample());
-    same_schema_encode_benches!(option, aggregate::OptionValue, aggregate::option_sample());
+    mod option {
+        use super::*;
+
+        #[divan::bench]
+        pub fn interp(bencher: Bencher) {
+            let fixture = same_fixture::<aggregate::OptionValue>(aggregate::option_sample());
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_plan(
+                        black_box(&fixture.sample),
+                        black_box(&fixture.writer_plan),
+                    )
+                    .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn hybrid(bencher: Bencher) {
+            let fixture = same_hybrid_fixture::<aggregate::OptionValue>(aggregate::option_sample());
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(
+                        black_box(&fixture.fixture.sample),
+                        &fixture.encoder,
+                    )
+                    .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn jit(bencher: Bencher) {
+            let fixture = option_encode_jit_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
+    }
     mod array {
         use super::*;
 
