@@ -1,7 +1,7 @@
 use binette::{
     Field, Primitive, Schema, SchemaBundle, SchemaError, SchemaKind, SchemaRegistry, TypeId,
-    TypeRef, VariantPayload, primitive_type_id, recursive_schema_type_ids, schema_bundle_for,
-    schema_type_id,
+    TypeRef, VariantPayload, decode_schema_bundle_from_slice, encode_schema_bundle_to_vec,
+    primitive_type_id, recursive_schema_type_ids, schema_bundle_for, schema_type_id,
 };
 use facet::Facet;
 
@@ -312,6 +312,57 @@ fn facet_generic_shape_extracts_declaration_schema_and_root_args() {
         SchemaKind::Struct { fields, .. }
             if fields[0].type_ref == TypeRef::Var { name: "T".to_owned() }
     ));
+}
+
+// r[verify binette.schema.model]
+// r[verify binette.hash.recursive]
+// r[verify binette.schema.registry.recursive]
+#[test]
+fn facet_extracts_recursive_enum_schema_bundle() {
+    #[derive(Facet)]
+    #[allow(dead_code)]
+    #[repr(u8)]
+    enum LocalTypeRef {
+        Concrete {
+            type_id: u64,
+            args: Vec<LocalTypeRef>,
+        },
+        Var {
+            name: String,
+        },
+    }
+
+    let bundle = schema_bundle_for::<LocalTypeRef>().unwrap();
+    let root_id = concrete_id(&bundle.root);
+    let root = schema(&bundle, root_id);
+
+    let SchemaKind::Enum { variants, .. } = &root.kind else {
+        panic!("expected recursive enum root, got {root:#?}");
+    };
+    let concrete = variants
+        .iter()
+        .find(|variant| variant.name == "Concrete")
+        .expect("Concrete variant");
+    let VariantPayload::Struct { fields } = &concrete.payload else {
+        panic!("expected struct payload, got {concrete:#?}");
+    };
+    let args = fields
+        .iter()
+        .find(|field| field.name == "args")
+        .expect("args field");
+    let args_schema = schema(&bundle, concrete_id(&args.type_ref));
+    let SchemaKind::List { element } = &args_schema.kind else {
+        panic!("expected args list schema, got {args_schema:#?}");
+    };
+    assert_eq!(*element, TypeRef::concrete(root_id));
+
+    let mut registry = SchemaRegistry::new();
+    registry.install_bundle(&bundle).unwrap();
+
+    let encoded = encode_schema_bundle_to_vec(&bundle).unwrap();
+    let decoded = decode_schema_bundle_from_slice(&encoded).unwrap();
+    assert_eq!(decoded, bundle);
+    SchemaRegistry::new().install_bundle(&decoded).unwrap();
 }
 
 // r[verify binette.type-id.context-free]

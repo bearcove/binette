@@ -2,6 +2,7 @@ use thiserror::Error;
 
 use crate::error::SchemaError;
 use crate::hash::schema_type_id;
+use crate::registry::SchemaRegistry;
 use crate::schema::{
     AttachmentDeclaration, Field, Primitive, Schema, SchemaBundle, SchemaKind, TypeId, TypeRef,
     Variant, VariantPayload,
@@ -80,13 +81,7 @@ pub fn schema_to_value(schema: &Schema) -> Result<Value, SchemaFormatError> {
 // r[impl binette.schema.encoding.self-describing]
 // r[impl binette.schema.format+2]
 pub fn schema_from_value(value: &Value) -> Result<Schema, SchemaFormatError> {
-    let fields = expect_struct(value, "schema", &["id", "type_params", "kind"])?;
-    let schema = Schema {
-        id: TypeId(expect_u64(fields[0], "schema.id")?),
-        type_params: expect_string_list(fields[1], "schema.type_params")?,
-        kind: schema_kind_from_value(fields[2])?,
-    };
-
+    let schema = schema_from_value_unchecked(value)?;
     let computed = schema_type_id(&schema)?;
     if computed != schema.id {
         return Err(SchemaError::SchemaIdMismatch {
@@ -97,6 +92,15 @@ pub fn schema_from_value(value: &Value) -> Result<Schema, SchemaFormatError> {
     }
 
     Ok(schema)
+}
+
+fn schema_from_value_unchecked(value: &Value) -> Result<Schema, SchemaFormatError> {
+    let fields = expect_struct(value, "schema", &["id", "type_params", "kind"])?;
+    Ok(Schema {
+        id: TypeId(expect_u64(fields[0], "schema.id")?),
+        type_params: expect_string_list(fields[1], "schema.type_params")?,
+        kind: schema_kind_from_value(fields[2])?,
+    })
 }
 
 pub fn encode_schema_to_vec(schema: &Schema) -> Result<Vec<u8>, SchemaFormatError> {
@@ -137,17 +141,19 @@ pub fn schema_bundle_to_value(bundle: &SchemaBundle) -> Result<Value, SchemaForm
 // r[impl binette.bundle.format]
 pub fn schema_bundle_from_value(value: &Value) -> Result<SchemaBundle, SchemaFormatError> {
     let fields = expect_struct(value, "schema bundle", &["schemas", "root", "attachments"])?;
-    Ok(SchemaBundle {
+    let bundle = SchemaBundle {
         schemas: expect_list(fields[0], "schema bundle.schemas")?
             .iter()
-            .map(schema_from_value)
+            .map(schema_from_value_unchecked)
             .collect::<Result<Vec<_>, _>>()?,
         root: type_ref_from_value(fields[1])?,
         attachments: expect_list(fields[2], "schema bundle.attachments")?
             .iter()
             .map(attachment_from_value)
             .collect::<Result<Vec<_>, _>>()?,
-    })
+    };
+    SchemaRegistry::new().validate_self_contained_bundle(&bundle)?;
+    Ok(bundle)
 }
 
 pub fn encode_schema_bundle_to_vec(bundle: &SchemaBundle) -> Result<Vec<u8>, SchemaFormatError> {
