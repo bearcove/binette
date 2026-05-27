@@ -2106,13 +2106,13 @@ impl StencilEncodeCompiler {
         let descriptor_fields = local_struct_fields(descriptor, path)?;
         for field in fields {
             let field_path = format!("{path}.{}", field.name);
-            let Some(facet_field) = facet_fields.get(field.facet_index) else {
+            let Some(facet_field) = facet_fields.get(field.local_index) else {
                 return Err(StencilError::Unsupported {
                     path: field_path,
                     reason: "writer field index is out of range",
                 });
             };
-            let field_descriptor = descriptor_fields.get(field.facet_index).ok_or_else(|| {
+            let field_descriptor = descriptor_fields.get(field.local_index).ok_or_else(|| {
                 StencilError::Unsupported {
                     path: field_path.clone(),
                     reason: "writer descriptor field index is out of range",
@@ -2154,15 +2154,15 @@ impl StencilEncodeCompiler {
             });
         }
         for element in elements {
-            let element_path = format!("{path}.{}", element.facet_index);
-            let Some(facet_field) = facet_fields.get(element.facet_index) else {
+            let element_path = format!("{path}.{}", element.local_index);
+            let Some(facet_field) = facet_fields.get(element.local_index) else {
                 return Err(StencilError::Unsupported {
                     path: element_path,
                     reason: "writer tuple field index is out of range",
                 });
             };
             let element_descriptor =
-                descriptor_fields.get(element.facet_index).ok_or_else(|| {
+                descriptor_fields.get(element.local_index).ok_or_else(|| {
                     StencilError::Unsupported {
                         path: path.to_owned(),
                         reason: "writer tuple descriptor field index is out of range",
@@ -2384,14 +2384,14 @@ impl StencilEncodeCompiler {
 
         let mut cases = Vec::with_capacity(variants.len());
         for variant in variants {
-            let Some(facet_variant) = enum_type.variants.get(variant.facet_index) else {
+            let Some(facet_variant) = enum_type.variants.get(variant.local_index) else {
                 return Err(StencilError::Unsupported {
                     path: path.to_owned(),
                     reason: "writer enum variant index is out of range",
                 });
             };
             let variant_path = format!("{path}.{}", facet_variant.effective_name());
-            let local_variant = local_enum_variant(descriptor, variant.facet_index, path)?;
+            let local_variant = local_enum_variant(descriptor, variant.local_index, path)?;
             let ops = self.compile_variant_payload_ops(
                 &variant.payload,
                 facet_variant.data,
@@ -2400,7 +2400,7 @@ impl StencilEncodeCompiler {
                 &variant_path,
             )?;
             cases.push(EncodeEnumCase {
-                local_index: u32::try_from(variant.facet_index).map_err(|_| {
+                local_index: u32::try_from(variant.local_index).map_err(|_| {
                     StencilError::Unsupported {
                         path: path.to_owned(),
                         reason: "writer enum facet index does not fit u32",
@@ -2463,7 +2463,7 @@ impl StencilEncodeCompiler {
                     )?;
                     for element in elements {
                         let field_descriptor = descriptor_fields
-                            .get(element.facet_index)
+                            .get(element.local_index)
                             .ok_or_else(|| StencilError::Unsupported {
                                 path: path.to_owned(),
                                 reason: "writer enum tuple descriptor field index is out of range",
@@ -2517,8 +2517,8 @@ impl StencilEncodeCompiler {
         path: &str,
         pending: &mut FixedEncodeSegment,
     ) -> Result<(), StencilError> {
-        let element_path = format!("{path}.{}", element.facet_index);
-        let Some(facet_field) = facet_fields.get(element.facet_index) else {
+        let element_path = format!("{path}.{}", element.local_index);
+        let Some(facet_field) = facet_fields.get(element.local_index) else {
             return Err(StencilError::Unsupported {
                 path: element_path,
                 reason: "writer enum tuple field index is out of range",
@@ -2552,7 +2552,7 @@ impl StencilEncodeCompiler {
         pending: &mut FixedEncodeSegment,
     ) -> Result<(), StencilError> {
         let field_path = format!("{path}.{}", field.name);
-        let Some(facet_field) = facet_fields.get(field.facet_index) else {
+        let Some(facet_field) = facet_fields.get(field.local_index) else {
             return Err(StencilError::Unsupported {
                 path: field_path,
                 reason: "writer enum struct field index is out of range",
@@ -2560,7 +2560,7 @@ impl StencilEncodeCompiler {
         };
         let field_descriptor =
             descriptor_fields
-                .get(field.facet_index)
+                .get(field.local_index)
                 .ok_or_else(|| StencilError::Unsupported {
                     path: field_path.clone(),
                     reason: "writer enum struct descriptor field index is out of range",
@@ -2751,7 +2751,7 @@ impl LocalEncodeStencilCompiler<'_> {
         let descriptor_fields = local_struct_fields(descriptor, path)?;
         for field in fields {
             let field_path = format!("{path}.{}", field.name);
-            let field_descriptor = descriptor_fields.get(field.facet_index).ok_or_else(|| {
+            let field_descriptor = descriptor_fields.get(field.local_index).ok_or_else(|| {
                 StencilError::Unsupported {
                     path: field_path.clone(),
                     reason: "writer descriptor field index is out of range",
@@ -2789,9 +2789,9 @@ impl LocalEncodeStencilCompiler<'_> {
             });
         }
         for element in elements {
-            let element_path = format!("{path}.{}", element.facet_index);
+            let element_path = format!("{path}.{}", element.local_index);
             let element_descriptor =
-                descriptor_fields.get(element.facet_index).ok_or_else(|| {
+                descriptor_fields.get(element.local_index).ok_or_else(|| {
                     StencilError::Unsupported {
                         path: element_path.clone(),
                         reason: "writer tuple descriptor field index is out of range",
@@ -3027,7 +3027,7 @@ impl LocalEncodeStencilCompiler<'_> {
         let (tag_offset, local_variants) = local_enum_direct_tag_variants(descriptor, path)?;
         let mut cases = Vec::with_capacity(variants.len());
         for variant in variants {
-            let local_variant = local_variants.get(variant.facet_index).ok_or_else(|| {
+            let local_variant = local_variants.get(variant.local_index).ok_or_else(|| {
                 StencilError::Unsupported {
                     path: path.to_owned(),
                     reason: "writer enum variant index is out of range",
@@ -3102,7 +3102,7 @@ impl LocalEncodeStencilCompiler<'_> {
                     )?;
                     for element in elements {
                         let field_descriptor = descriptor_fields
-                            .get(element.facet_index)
+                            .get(element.local_index)
                             .ok_or_else(|| StencilError::Unsupported {
                                 path: path.to_owned(),
                                 reason: "writer enum tuple descriptor field index is out of range",
@@ -3116,7 +3116,7 @@ impl LocalEncodeStencilCompiler<'_> {
                             &field_descriptor.descriptor,
                             &element.node,
                             field_offset,
-                            &format!("{path}.{}", element.facet_index),
+                            &format!("{path}.{}", element.local_index),
                             &mut pending,
                         )?;
                     }
@@ -3134,7 +3134,7 @@ impl LocalEncodeStencilCompiler<'_> {
                     for field in fields {
                         let field_path = format!("{path}.{}", field.name);
                         let field_descriptor = descriptor_fields
-                            .get(field.facet_index)
+                            .get(field.local_index)
                             .ok_or_else(|| StencilError::Unsupported {
                                 path: field_path.clone(),
                                 reason: "writer enum struct descriptor field index is out of range",
@@ -3171,7 +3171,7 @@ impl LocalEncodeStencilCompiler<'_> {
         let (tag_thunks, local_variants) = local_enum_tag_thunks(descriptor, self.thunks, path)?;
         let mut cases = Vec::with_capacity(variants.len());
         for variant in variants {
-            let local_variant = local_variants.get(variant.facet_index).ok_or_else(|| {
+            let local_variant = local_variants.get(variant.local_index).ok_or_else(|| {
                 StencilError::Unsupported {
                     path: path.to_owned(),
                     reason: "writer enum variant index is out of range",
@@ -3418,7 +3418,7 @@ impl FixedEncodeCompiler {
     ) -> Result<(), StencilError> {
         let descriptor_fields = local_struct_fields(descriptor, path)?;
         for field in fields {
-            let field_descriptor = descriptor_fields.get(field.facet_index).ok_or_else(|| {
+            let field_descriptor = descriptor_fields.get(field.local_index).ok_or_else(|| {
                 StencilError::Unsupported {
                     path: format!("{path}.{}", field.name),
                     reason: "writer descriptor field index is out of range",
@@ -3455,7 +3455,7 @@ impl FixedEncodeCompiler {
         }
         for element in elements {
             let element_descriptor =
-                descriptor_fields.get(element.facet_index).ok_or_else(|| {
+                descriptor_fields.get(element.local_index).ok_or_else(|| {
                     StencilError::Unsupported {
                         path: path.to_owned(),
                         reason: "writer tuple descriptor field index is out of range",
@@ -3470,7 +3470,7 @@ impl FixedEncodeCompiler {
                 &element_descriptor.descriptor,
                 &element.node,
                 field_offset,
-                &format!("{path}.{}", element.facet_index),
+                &format!("{path}.{}", element.local_index),
             )?;
         }
         Ok(())
@@ -3523,12 +3523,12 @@ impl FixedEncodeCompiler {
         for field in fields {
             let facet_field =
                 facet_fields
-                    .get(field.facet_index)
+                    .get(field.local_index)
                     .ok_or_else(|| StencilError::Unsupported {
                         path: format!("{path}.{}", field.name),
                         reason: "writer field index is out of range",
                     })?;
-            let field_descriptor = descriptor_fields.get(field.facet_index).ok_or_else(|| {
+            let field_descriptor = descriptor_fields.get(field.local_index).ok_or_else(|| {
                 StencilError::Unsupported {
                     path: format!("{path}.{}", field.name),
                     reason: "writer descriptor field index is out of range",
@@ -3570,13 +3570,13 @@ impl FixedEncodeCompiler {
         for element in elements {
             let facet_field =
                 facet_fields
-                    .get(element.facet_index)
+                    .get(element.local_index)
                     .ok_or_else(|| StencilError::Unsupported {
                         path: path.to_owned(),
                         reason: "writer tuple field index is out of range",
                     })?;
             let element_descriptor =
-                descriptor_fields.get(element.facet_index).ok_or_else(|| {
+                descriptor_fields.get(element.local_index).ok_or_else(|| {
                     StencilError::Unsupported {
                         path: path.to_owned(),
                         reason: "writer tuple descriptor field index is out of range",
@@ -3592,7 +3592,7 @@ impl FixedEncodeCompiler {
                 &element_descriptor.descriptor,
                 &element.node,
                 field_offset,
-                &format!("{path}.{}", element.facet_index),
+                &format!("{path}.{}", element.local_index),
             )?;
         }
         Ok(())

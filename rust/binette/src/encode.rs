@@ -207,20 +207,20 @@ pub(crate) enum WriterNode {
 
 #[derive(Debug, Clone)]
 pub(crate) struct WriterFieldPlan {
-    pub(crate) facet_index: usize,
+    pub(crate) local_index: usize,
     pub(crate) name: String,
     pub(crate) node: WriterNode,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct WriterTupleElementPlan {
-    pub(crate) facet_index: usize,
+    pub(crate) local_index: usize,
     pub(crate) node: WriterNode,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct WriterVariantPlan {
-    pub(crate) facet_index: usize,
+    pub(crate) local_index: usize,
     pub(crate) wire_index: u32,
     pub(crate) payload: WriterVariantPayloadPlan,
 }
@@ -362,7 +362,7 @@ impl WriterPlanBuilder<'_> {
 
         let mut fields = Vec::with_capacity(schema_fields.len());
         for field in schema_fields {
-            let (facet_index, facet_field) = struct_type
+            let (local_index, facet_field) = struct_type
                 .fields
                 .iter()
                 .enumerate()
@@ -375,7 +375,7 @@ impl WriterPlanBuilder<'_> {
                     field: field.name.clone(),
                 })?;
             fields.push(WriterFieldPlan {
-                facet_index,
+                local_index,
                 name: field.name.clone(),
                 node: self.plan_type(&field.type_ref, env, facet_field.shape())?,
             });
@@ -400,7 +400,7 @@ impl WriterPlanBuilder<'_> {
 
         let mut variants = Vec::with_capacity(schema_variants.len());
         for schema_variant in schema_variants {
-            let (facet_index, facet_variant) = enum_type
+            let (local_index, facet_variant) = enum_type
                 .variants
                 .iter()
                 .enumerate()
@@ -410,7 +410,7 @@ impl WriterPlanBuilder<'_> {
                     variant: schema_variant.name.clone(),
                 })?;
             variants.push(WriterVariantPlan {
-                facet_index,
+                local_index,
                 wire_index: schema_variant.index,
                 payload: self.plan_variant_payload(
                     &schema_variant.payload,
@@ -438,7 +438,7 @@ impl WriterPlanBuilder<'_> {
                     unsupported_shape(owner_shape, "newtype variant has no Facet payload field")
                 })?;
                 Ok(WriterVariantPayloadPlan::Newtype(WriterTupleElementPlan {
-                    facet_index: 0,
+                    local_index: 0,
                     node: self.plan_type(type_ref, env, field.shape())?,
                 }))
             }
@@ -530,9 +530,9 @@ impl WriterPlanBuilder<'_> {
             .iter()
             .zip(struct_type.fields)
             .enumerate()
-            .map(|(facet_index, (element, field))| {
+            .map(|(local_index, (element, field))| {
                 Ok(WriterTupleElementPlan {
-                    facet_index,
+                    local_index,
                     node: self.plan_type(element, env, field.shape())?,
                 })
             })
@@ -548,7 +548,7 @@ impl WriterPlanBuilder<'_> {
     ) -> Result<Vec<WriterFieldPlan>, EncodeError> {
         let mut fields = Vec::with_capacity(schema_fields.len());
         for field in schema_fields {
-            let (facet_index, facet_field) = struct_type
+            let (local_index, facet_field) = struct_type
                 .fields
                 .iter()
                 .enumerate()
@@ -558,7 +558,7 @@ impl WriterPlanBuilder<'_> {
                     field: field.name.clone(),
                 })?;
             fields.push(WriterFieldPlan {
-                facet_index,
+                local_index,
                 name: field.name.clone(),
                 node: self.plan_type(&field.type_ref, env, facet_field.shape())?,
             });
@@ -636,7 +636,7 @@ impl WriterPlanExecutor<'_> {
         let struct_peek = peek.into_struct()?;
         for field in fields {
             let field_peek = struct_peek
-                .field(field.facet_index)
+                .field(field.local_index)
                 .map_err(|source| field_error(peek.shape(), &field.name, source))?;
             self.encode_node(field_peek, &field.node)?;
         }
@@ -650,12 +650,12 @@ impl WriterPlanExecutor<'_> {
         variants: &[WriterVariantPlan],
     ) -> Result<(), EncodeError> {
         let enum_peek = peek.into_enum()?;
-        let facet_index = enum_peek
+        let local_index = enum_peek
             .variant_index()
             .map_err(|_| unsupported_peek(peek, "enum variant index is not available"))?;
         let variant = variants
             .iter()
-            .find(|variant| variant.facet_index == facet_index)
+            .find(|variant| variant.local_index == local_index)
             .ok_or_else(|| unsupported_peek(peek, "active enum variant is not in writer plan"))?;
 
         write_u32(self.out, variant.wire_index as usize)?;
@@ -663,7 +663,7 @@ impl WriterPlanExecutor<'_> {
             WriterVariantPayloadPlan::Unit => Ok(()),
             WriterVariantPayloadPlan::Newtype(element) => {
                 let field = enum_peek
-                    .field(element.facet_index)
+                    .field(element.local_index)
                     .map_err(|_| unsupported_peek(peek, "enum payload field is not available"))?
                     .ok_or_else(|| unsupported_peek(peek, "enum payload field is missing"))?;
                 self.encode_node(field, &element.node)
@@ -671,7 +671,7 @@ impl WriterPlanExecutor<'_> {
             WriterVariantPayloadPlan::Tuple(elements) => {
                 for element in elements {
                     let field = enum_peek
-                        .field(element.facet_index)
+                        .field(element.local_index)
                         .map_err(|_| unsupported_peek(peek, "enum tuple field is not available"))?
                         .ok_or_else(|| unsupported_peek(peek, "enum tuple field is missing"))?;
                     self.encode_node(field, &element.node)?;
@@ -681,7 +681,7 @@ impl WriterPlanExecutor<'_> {
             WriterVariantPayloadPlan::Struct(fields) => {
                 for field in fields {
                     let field_peek = enum_peek
-                        .field(field.facet_index)
+                        .field(field.local_index)
                         .map_err(|_| unsupported_peek(peek, "enum struct field is not available"))?
                         .ok_or_else(|| unsupported_peek(peek, "enum struct field is missing"))?;
                     self.encode_node(field_peek, &field.node)?;
@@ -736,7 +736,7 @@ impl WriterPlanExecutor<'_> {
         let tuple_peek = peek.into_tuple()?;
         for element in elements {
             let element_peek = tuple_peek
-                .field(element.facet_index)
+                .field(element.local_index)
                 .ok_or_else(|| unsupported_peek(peek, "tuple field is missing"))?;
             self.encode_node(element_peek, &element.node)?;
         }
@@ -1139,7 +1139,7 @@ fn validate_canonical_key(
             for field in fields {
                 validate_canonical_key(
                     struct_peek
-                        .field(field.facet_index)
+                        .field(field.local_index)
                         .map_err(|source| field_error(peek.shape(), &field.name, source))?,
                     &field.node,
                     nodes,
@@ -1148,12 +1148,12 @@ fn validate_canonical_key(
         }
         WriterNode::Enum { variants } => {
             let enum_peek = peek.into_enum()?;
-            let facet_index = enum_peek
+            let local_index = enum_peek
                 .variant_index()
                 .map_err(|_| unsupported_peek(peek, "enum variant index is not available"))?;
             if let Some(variant) = variants
                 .iter()
-                .find(|variant| variant.facet_index == facet_index)
+                .find(|variant| variant.local_index == local_index)
             {
                 validate_variant_payload_key(peek, enum_peek, &variant.payload, nodes)?;
             }
@@ -1162,7 +1162,7 @@ fn validate_canonical_key(
             let tuple_peek = peek.into_tuple()?;
             for element in elements {
                 let element_peek = tuple_peek
-                    .field(element.facet_index)
+                    .field(element.local_index)
                     .ok_or_else(|| unsupported_peek(peek, "tuple field is missing"))?;
                 validate_canonical_key(element_peek, &element.node, nodes)?;
             }
@@ -1207,7 +1207,7 @@ fn validate_variant_payload_key(
         WriterVariantPayloadPlan::Unit => Ok(()),
         WriterVariantPayloadPlan::Newtype(element) => {
             let field = enum_peek
-                .field(element.facet_index)
+                .field(element.local_index)
                 .map_err(|_| unsupported_peek(enum_shape, "enum payload field is not available"))?
                 .ok_or_else(|| unsupported_peek(enum_shape, "enum payload field is missing"))?;
             validate_canonical_key(field, &element.node, nodes)
@@ -1215,7 +1215,7 @@ fn validate_variant_payload_key(
         WriterVariantPayloadPlan::Tuple(elements) => {
             for element in elements {
                 let field = enum_peek
-                    .field(element.facet_index)
+                    .field(element.local_index)
                     .map_err(|_| unsupported_peek(enum_shape, "enum tuple field is not available"))?
                     .ok_or_else(|| unsupported_peek(enum_shape, "enum tuple field is missing"))?;
                 validate_canonical_key(field, &element.node, nodes)?;
@@ -1225,7 +1225,7 @@ fn validate_variant_payload_key(
         WriterVariantPayloadPlan::Struct(fields) => {
             for field in fields {
                 let field_peek = enum_peek
-                    .field(field.facet_index)
+                    .field(field.local_index)
                     .map_err(|_| {
                         unsupported_peek(enum_shape, "enum struct field is not available")
                     })?
