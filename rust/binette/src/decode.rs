@@ -1,6 +1,6 @@
 use std::{borrow::Cow, collections::HashMap};
 
-use facet_core::{Facet, PtrUninit, ScalarType, Shape};
+use facet_core::{Facet, OpaqueDeserialize, PtrUninit, ScalarType, Shape};
 use facet_reflect::{AllocError, Partial, ReflectError, ShapeMismatchError};
 use thiserror::Error;
 
@@ -312,6 +312,10 @@ impl DecodeExecutor<'_, '_> {
         mut partial: Partial<'static, false>,
         variants: &[EnumVariantPlan],
     ) -> Result<Partial<'static, false>, DecodeError> {
+        if matches!(partial.shape().def, facet_core::Def::Result(_)) {
+            return self.decode_result_plan(partial, variants);
+        }
+
         let position = self.reader.position();
         let variant_index = self.reader.read_u32()?;
         let variant = variants
@@ -339,6 +343,69 @@ impl DecodeExecutor<'_, '_> {
                 variant_index,
                 variant: name.clone(),
             }),
+        }
+    }
+
+    fn decode_result_plan(
+        &mut self,
+        partial: Partial<'static, false>,
+        variants: &[EnumVariantPlan],
+    ) -> Result<Partial<'static, false>, DecodeError> {
+        let position = self.reader.position();
+        let variant_index = self.reader.read_u32()?;
+        let variant = variants
+            .iter()
+            .find(|variant| match variant {
+                EnumVariantPlan::Read { writer_index, .. }
+                | EnumVariantPlan::Reject { writer_index, .. } => *writer_index == variant_index,
+            })
+            .ok_or(CompactError::UnknownVariantIndex {
+                position,
+                variant_index,
+            })?;
+
+        match variant {
+            EnumVariantPlan::Read {
+                reader_index,
+                payload,
+                ..
+            } => {
+                let partial = match *reader_index {
+                    0 => partial.begin_ok()?,
+                    1 => partial.begin_err()?,
+                    _ => {
+                        return Err(DecodeError::Unsupported {
+                            position,
+                            reason: "Result reader variant index must be 0 or 1",
+                        });
+                    }
+                };
+                let partial = self.decode_result_payload_plan(partial, payload, position)?;
+                Ok(partial.end()?)
+            }
+            EnumVariantPlan::Reject { name, .. } => Err(DecodeError::UnreadableWriterVariant {
+                position,
+                variant_index,
+                variant: name.clone(),
+            }),
+        }
+    }
+
+    fn decode_result_payload_plan(
+        &mut self,
+        partial: Partial<'static, false>,
+        payload: &EnumPayloadPlan,
+        position: usize,
+    ) -> Result<Partial<'static, false>, DecodeError> {
+        match payload {
+            EnumPayloadPlan::Unit => Ok(partial),
+            EnumPayloadPlan::Newtype(element) => self.decode_node(partial, element),
+            EnumPayloadPlan::Tuple(_) | EnumPayloadPlan::Struct(_) => {
+                Err(DecodeError::Unsupported {
+                    position,
+                    reason: "Result variants must be unit or newtype payloads",
+                })
+            }
         }
     }
 
@@ -419,8 +486,34 @@ impl DecodeExecutor<'_, '_> {
                     Ok(partial.set(value)?)
                 }
             }
-            Primitive::Bytes | Primitive::Payload => Ok(partial.set(self.reader.read_byte_vec()?)?),
+            Primitive::Bytes => Ok(partial.set(self.reader.read_byte_vec()?)?),
+            Primitive::Payload => self.decode_payload(partial),
         }
+    }
+
+    fn decode_payload(
+        &mut self,
+        partial: Partial<'static, false>,
+    ) -> Result<Partial<'static, false>, DecodeError> {
+        let len = self.reader.read_u32()? as usize;
+        let bytes = self.reader.read_bytes(len)?;
+        let Some(adapter) = partial.shape().opaque_adapter else {
+            return Ok(partial.set(bytes.to_vec())?);
+        };
+
+        let input = OpaqueDeserialize::Borrowed(bytes);
+        let deserialize = adapter.deserialize;
+        Ok(unsafe {
+            partial.set_from_function(move |target_ptr| {
+                deserialize(input, target_ptr).map(|_| ()).map_err(|error| {
+                    facet_reflect::ReflectErrorKind::InvariantViolation {
+                        invariant: Box::leak(
+                            format!("opaque adapter deserialize failed: {error}").into_boxed_str(),
+                        ),
+                    }
+                })
+            })?
+        })
     }
 
     fn validate_canonical_key_bytes(

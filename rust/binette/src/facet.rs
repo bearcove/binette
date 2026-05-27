@@ -7,6 +7,7 @@ use crate::hash::{primitive_type_id, recursive_type_id_map, type_id_for_kind};
 use crate::schema::{
     Field, Primitive, Schema, SchemaBundle, SchemaKind, TypeId, TypeRef, Variant, VariantPayload,
 };
+use crate::value::Value;
 
 // r[impl binette.schema.model]
 // r[impl binette.bundle.model]
@@ -49,6 +50,10 @@ impl ExtractCtx {
             return self.extract(pointee);
         }
 
+        if shape.opaque_adapter.is_some() {
+            return Ok(TypeRef::concrete(primitive_type_id(Primitive::Payload)));
+        }
+
         if let Some(primitive) = primitive_for_scalar(shape)? {
             return Ok(TypeRef::concrete(primitive_type_id(primitive)));
         }
@@ -88,6 +93,25 @@ impl ExtractCtx {
                 let element = self.extract(option.t())?;
                 self.emit_anonymous(SchemaKind::Option { element })
             }
+            Def::Result(result) => {
+                let ok = self.extract(result.t())?;
+                let err = self.extract(result.e())?;
+                self.emit_anonymous(SchemaKind::Enum {
+                    name: "Result".to_owned(),
+                    variants: vec![
+                        Variant {
+                            name: "ok".to_owned(),
+                            index: 0,
+                            payload: VariantPayload::Newtype { type_ref: ok },
+                        },
+                        Variant {
+                            name: "err".to_owned(),
+                            index: 1,
+                            payload: VariantPayload::Newtype { type_ref: err },
+                        },
+                    ],
+                })
+            }
             Def::DynamicValue(_) => self.emit_anonymous(SchemaKind::Dynamic),
             _ => self.extract_user(shape),
         }
@@ -120,12 +144,10 @@ impl ExtractCtx {
                         reason: "unions are not compact-capable binette schemas",
                     });
                 }
-                UserType::Opaque => {
-                    return Err(SchemaError::UnsupportedShape {
-                        type_name: shape.type_identifier,
-                        reason: "opaque user types are not compact-capable binette schemas",
-                    });
-                }
+                UserType::Opaque => SchemaKind::External {
+                    kind: schema_name(shape),
+                    metadata: Value::Unit,
+                },
             };
 
             self.schemas.push(Schema {

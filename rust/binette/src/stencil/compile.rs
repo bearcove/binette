@@ -1425,6 +1425,7 @@ impl FixedEncodeCompiler {
             } => self.compile_array(shape, dimensions, element, input_offset, path),
             WriterNode::External => Ok(()),
             WriterNode::Enum { .. }
+            | WriterNode::Result { .. }
             | WriterNode::List { .. }
             | WriterNode::Set { .. }
             | WriterNode::Map { .. }

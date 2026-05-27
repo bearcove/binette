@@ -126,14 +126,22 @@ pub fn encode_to_vec_with_plan<T: Facet<'static>>(
     value: &T,
     plan: &WriterPlan,
 ) -> Result<Vec<u8>, EncodeError> {
+    encode_peek_to_vec_with_plan(Peek::new(value), plan)
+}
+
+// r[impl binette.mode.compact]
+pub fn encode_peek_to_vec_with_plan(
+    peek: Peek<'_, '_>,
+    plan: &WriterPlan,
+) -> Result<Vec<u8>, EncodeError> {
     let mut out = Vec::new();
-    encode_with_plan(&mut out, Peek::new(value), plan)?;
+    encode_peek_with_plan(&mut out, peek, plan)?;
     Ok(out)
 }
 
-fn encode_with_plan(
+pub fn encode_peek_with_plan(
     out: &mut Vec<u8>,
-    peek: Peek<'_, 'static>,
+    peek: Peek<'_, '_>,
     plan: &WriterPlan,
 ) -> Result<(), EncodeError> {
     WriterPlanExecutor {
@@ -145,7 +153,7 @@ fn encode_with_plan(
 
 pub(crate) fn encode_node_with_writer_node(
     out: &mut Vec<u8>,
-    peek: Peek<'_, 'static>,
+    peek: Peek<'_, '_>,
     node: &WriterNode,
     nodes: &[WriterNode],
 ) -> Result<(), EncodeError> {
@@ -180,6 +188,12 @@ pub(crate) enum WriterNode {
     Array {
         dimensions: Vec<u64>,
         element: Box<WriterNode>,
+    },
+    Result {
+        ok_wire_index: u32,
+        ok: Box<WriterNode>,
+        err_wire_index: u32,
+        err: Box<WriterNode>,
     },
     Option {
         element: Box<WriterNode>,
@@ -296,7 +310,10 @@ impl WriterPlanBuilder<'_> {
         match kind {
             SchemaKind::Primitive(primitive) => Ok(WriterNode::Primitive(*primitive)),
             SchemaKind::Struct { fields, .. } => self.plan_struct(fields, env, shape),
-            SchemaKind::Enum { variants, .. } => self.plan_enum(variants, env, shape),
+            SchemaKind::Enum { variants, .. } => match shape.def {
+                Def::Result(result) => self.plan_result(variants, env, shape, result),
+                _ => self.plan_enum(variants, env, shape),
+            },
             SchemaKind::Tuple { elements } => self.plan_tuple(elements, env, shape),
             SchemaKind::List { element } => Ok(WriterNode::List {
                 element: Box::new(self.plan_type(element, env, list_element_shape(shape)?)?),
@@ -431,6 +448,49 @@ impl WriterPlanBuilder<'_> {
         }
     }
 
+    fn plan_result(
+        &mut self,
+        schema_variants: &[Variant],
+        env: &Env,
+        shape: &'static Shape,
+        result: facet_core::ResultDef,
+    ) -> Result<WriterNode, EncodeError> {
+        let ok_variant = schema_variants
+            .iter()
+            .find(|variant| variant.name == "ok")
+            .ok_or_else(|| EncodeError::MissingVariant {
+                shape,
+                variant: "ok".to_owned(),
+            })?;
+        let err_variant = schema_variants
+            .iter()
+            .find(|variant| variant.name == "err")
+            .ok_or_else(|| EncodeError::MissingVariant {
+                shape,
+                variant: "err".to_owned(),
+            })?;
+
+        let VariantPayload::Newtype { type_ref: ok_ref } = &ok_variant.payload else {
+            return Err(unsupported_shape(
+                shape,
+                "Result ok variant must be newtype",
+            ));
+        };
+        let VariantPayload::Newtype { type_ref: err_ref } = &err_variant.payload else {
+            return Err(unsupported_shape(
+                shape,
+                "Result err variant must be newtype",
+            ));
+        };
+
+        Ok(WriterNode::Result {
+            ok_wire_index: ok_variant.index,
+            ok: Box::new(self.plan_type(ok_ref, env, result.t())?),
+            err_wire_index: err_variant.index,
+            err: Box::new(self.plan_type(err_ref, env, result.e())?),
+        })
+    }
+
     fn plan_tuple(
         &mut self,
         elements: &[TypeRef],
@@ -510,11 +570,7 @@ struct WriterPlanExecutor<'a> {
 }
 
 impl WriterPlanExecutor<'_> {
-    fn encode_node(
-        &mut self,
-        peek: Peek<'_, 'static>,
-        node: &WriterNode,
-    ) -> Result<(), EncodeError> {
+    fn encode_node(&mut self, peek: Peek<'_, '_>, node: &WriterNode) -> Result<(), EncodeError> {
         let peek = peek.innermost_peek();
         match node {
             WriterNode::Ref { node_index } => {
@@ -537,13 +593,19 @@ impl WriterPlanExecutor<'_> {
                 dimensions,
                 element,
             } => self.encode_array(peek, dimensions, element),
+            WriterNode::Result {
+                ok_wire_index,
+                ok,
+                err_wire_index,
+                err,
+            } => self.encode_result(peek, *ok_wire_index, ok, *err_wire_index, err),
             WriterNode::Option { element } => self.encode_option(peek, element),
             WriterNode::Dynamic => self.encode_dynamic(peek),
             WriterNode::External => self.encode_primitive(peek, Primitive::Unit),
         }
     }
 
-    fn encode_dynamic(&mut self, peek: Peek<'_, 'static>) -> Result<(), EncodeError> {
+    fn encode_dynamic(&mut self, peek: Peek<'_, '_>) -> Result<(), EncodeError> {
         let value = value_from_dynamic_peek(peek)?;
         self.out
             .extend_from_slice(&encode_dynamic_value_to_vec(&value)?);
@@ -553,7 +615,7 @@ impl WriterPlanExecutor<'_> {
     // r[impl binette.aggregate.struct.compact]
     fn encode_struct(
         &mut self,
-        peek: Peek<'_, 'static>,
+        peek: Peek<'_, '_>,
         fields: &[WriterFieldPlan],
     ) -> Result<(), EncodeError> {
         let struct_peek = peek.into_struct()?;
@@ -569,7 +631,7 @@ impl WriterPlanExecutor<'_> {
     // r[impl binette.aggregate.enum.compact]
     fn encode_enum(
         &mut self,
-        peek: Peek<'_, 'static>,
+        peek: Peek<'_, '_>,
         variants: &[WriterVariantPlan],
     ) -> Result<(), EncodeError> {
         let enum_peek = peek.into_enum()?;
@@ -614,10 +676,46 @@ impl WriterPlanExecutor<'_> {
         }
     }
 
+    fn encode_result(
+        &mut self,
+        peek: Peek<'_, '_>,
+        ok_wire_index: u32,
+        ok: &WriterNode,
+        err_wire_index: u32,
+        err: &WriterNode,
+    ) -> Result<(), EncodeError> {
+        let Def::Result(result) = peek.shape().def else {
+            return Err(unsupported_peek(
+                peek,
+                "schema Result requires Facet Result shape",
+            ));
+        };
+
+        if unsafe { (result.vtable.is_ok)(peek.data()) } {
+            write_u32(self.out, ok_wire_index as usize)?;
+            let ptr = unsafe { (result.vtable.get_ok)(peek.data()) };
+            if ptr.is_null() {
+                return Err(unsupported_peek(peek, "Result ok payload is unavailable"));
+            }
+            let ok_peek =
+                unsafe { Peek::unchecked_new(facet_core::PtrConst::new_sized(ptr), result.t()) };
+            self.encode_node(ok_peek, ok)
+        } else {
+            write_u32(self.out, err_wire_index as usize)?;
+            let ptr = unsafe { (result.vtable.get_err)(peek.data()) };
+            if ptr.is_null() {
+                return Err(unsupported_peek(peek, "Result err payload is unavailable"));
+            }
+            let err_peek =
+                unsafe { Peek::unchecked_new(facet_core::PtrConst::new_sized(ptr), result.e()) };
+            self.encode_node(err_peek, err)
+        }
+    }
+
     // r[impl binette.aggregate.tuple]
     fn encode_tuple(
         &mut self,
-        peek: Peek<'_, 'static>,
+        peek: Peek<'_, '_>,
         elements: &[WriterTupleElementPlan],
     ) -> Result<(), EncodeError> {
         let tuple_peek = peek.into_tuple()?;
@@ -631,11 +729,7 @@ impl WriterPlanExecutor<'_> {
     }
 
     // r[impl binette.aggregate.list]
-    fn encode_list(
-        &mut self,
-        peek: Peek<'_, 'static>,
-        element: &WriterNode,
-    ) -> Result<(), EncodeError> {
+    fn encode_list(&mut self, peek: Peek<'_, '_>, element: &WriterNode) -> Result<(), EncodeError> {
         let list = peek.into_list_like()?;
         write_u32(self.out, list.len())?;
         for item in list.iter() {
@@ -647,11 +741,7 @@ impl WriterPlanExecutor<'_> {
     // r[impl binette.aggregate.set]
     // r[impl binette.aggregate.set-map.canonical]
     // r[impl binette.aggregate.set-map.float-keys]
-    fn encode_set(
-        &mut self,
-        peek: Peek<'_, 'static>,
-        element: &WriterNode,
-    ) -> Result<(), EncodeError> {
+    fn encode_set(&mut self, peek: Peek<'_, '_>, element: &WriterNode) -> Result<(), EncodeError> {
         let set = peek.into_set()?;
         let mut elements = Vec::with_capacity(set.len());
         for item in set.iter() {
@@ -674,7 +764,7 @@ impl WriterPlanExecutor<'_> {
     // r[impl binette.aggregate.set-map.float-keys]
     fn encode_map(
         &mut self,
-        peek: Peek<'_, 'static>,
+        peek: Peek<'_, '_>,
         key_node: &WriterNode,
         value_node: &WriterNode,
     ) -> Result<(), EncodeError> {
@@ -706,7 +796,7 @@ impl WriterPlanExecutor<'_> {
     // r[impl binette.aggregate.array]
     fn encode_array(
         &mut self,
-        peek: Peek<'_, 'static>,
+        peek: Peek<'_, '_>,
         dimensions: &[u64],
         element: &WriterNode,
     ) -> Result<(), EncodeError> {
@@ -732,7 +822,7 @@ impl WriterPlanExecutor<'_> {
     // r[impl binette.aggregate.option]
     fn encode_option(
         &mut self,
-        peek: Peek<'_, 'static>,
+        peek: Peek<'_, '_>,
         element: &WriterNode,
     ) -> Result<(), EncodeError> {
         let option = peek.into_option()?;
@@ -750,7 +840,7 @@ impl WriterPlanExecutor<'_> {
 
     fn encode_primitive(
         &mut self,
-        peek: Peek<'_, 'static>,
+        peek: Peek<'_, '_>,
         primitive: Primitive,
     ) -> Result<(), EncodeError> {
         // r[impl binette.scalar.unit]
@@ -793,12 +883,36 @@ impl WriterPlanExecutor<'_> {
                     })?
                     .as_bytes(),
             ),
-            Primitive::Bytes | Primitive::Payload => {
+            Primitive::Bytes => {
                 let bytes = compact_bytes(peek)?
                     .ok_or_else(|| unsupported_peek(peek, "schema bytes requires u8 sequence"))?;
                 encode_bytes(self.out, bytes)
             }
+            Primitive::Payload => self.encode_payload(peek),
         }
+    }
+
+    fn encode_payload(&mut self, peek: Peek<'_, '_>) -> Result<(), EncodeError> {
+        if let Some(bytes) = compact_bytes(peek)? {
+            return encode_bytes(self.out, bytes);
+        }
+
+        let Some(adapter) = peek.shape().opaque_adapter else {
+            return Err(unsupported_peek(
+                peek,
+                "schema payload requires bytes or an opaque adapter",
+            ));
+        };
+
+        let mapped = unsafe { (adapter.serialize)(peek.data()) };
+        let mapped_peek = unsafe { Peek::unchecked_new(mapped.ptr, mapped.shape) };
+        if let Some(bytes) = compact_bytes(mapped_peek)? {
+            return encode_bytes(self.out, bytes);
+        }
+
+        let plan = writer_plan_for_shape(mapped.shape)?;
+        let payload = encode_peek_to_vec_with_plan(mapped_peek, &plan)?;
+        encode_bytes(self.out, &payload)
     }
 
     fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), EncodeError> {
@@ -900,7 +1014,8 @@ fn option_element_shape(shape: &'static Shape) -> Result<&'static Shape, EncodeE
     }
 }
 
-fn compact_bytes<'mem>(peek: Peek<'mem, 'static>) -> Result<Option<&'mem [u8]>, EncodeError> {
+fn compact_bytes<'mem>(peek: Peek<'mem, '_>) -> Result<Option<&'mem [u8]>, EncodeError> {
+    let peek = peek.innermost_peek();
     match peek.shape().def {
         Def::List(_) | Def::Slice(_) => Ok(peek.into_list_like()?.as_bytes()),
         _ => Ok(None),
@@ -908,7 +1023,7 @@ fn compact_bytes<'mem>(peek: Peek<'mem, 'static>) -> Result<Option<&'mem [u8]>, 
 }
 
 fn encode_to_canonical_bytes(
-    peek: Peek<'_, 'static>,
+    peek: Peek<'_, '_>,
     node: &WriterNode,
     nodes: &[WriterNode],
 ) -> Result<Vec<u8>, EncodeError> {
@@ -922,7 +1037,7 @@ fn encode_to_canonical_bytes(
 }
 
 fn reject_duplicate_canonical_keys<'a>(
-    peek: Peek<'_, 'static>,
+    peek: Peek<'_, '_>,
     aggregate: &'static str,
     keys: impl Iterator<Item = &'a [u8]>,
 ) -> Result<(), EncodeError> {
@@ -940,7 +1055,7 @@ fn reject_duplicate_canonical_keys<'a>(
 }
 
 fn validate_canonical_key(
-    peek: Peek<'_, 'static>,
+    peek: Peek<'_, '_>,
     node: &WriterNode,
     nodes: &[WriterNode],
 ) -> Result<(), EncodeError> {
@@ -967,6 +1082,33 @@ fn validate_canonical_key(
             }
         }
         WriterNode::Primitive(_) | WriterNode::Dynamic | WriterNode::External => {}
+        WriterNode::Result { ok, err, .. } => {
+            let Def::Result(result) = peek.shape().def else {
+                return Err(unsupported_peek(
+                    peek,
+                    "schema Result requires Facet Result shape",
+                ));
+            };
+            if unsafe { (result.vtable.is_ok)(peek.data()) } {
+                let ptr = unsafe { (result.vtable.get_ok)(peek.data()) };
+                if ptr.is_null() {
+                    return Err(unsupported_peek(peek, "Result ok payload is unavailable"));
+                }
+                let ok_peek = unsafe {
+                    Peek::unchecked_new(facet_core::PtrConst::new_sized(ptr), result.t())
+                };
+                validate_canonical_key(ok_peek, ok, nodes)?;
+            } else {
+                let ptr = unsafe { (result.vtable.get_err)(peek.data()) };
+                if ptr.is_null() {
+                    return Err(unsupported_peek(peek, "Result err payload is unavailable"));
+                }
+                let err_peek = unsafe {
+                    Peek::unchecked_new(facet_core::PtrConst::new_sized(ptr), result.e())
+                };
+                validate_canonical_key(err_peek, err, nodes)?;
+            }
+        }
         WriterNode::Struct { fields } => {
             let struct_peek = peek.into_struct()?;
             for field in fields {
@@ -1031,8 +1173,8 @@ fn validate_canonical_key(
 }
 
 fn validate_variant_payload_key(
-    enum_shape: Peek<'_, 'static>,
-    enum_peek: facet_reflect::PeekEnum<'_, 'static>,
+    enum_shape: Peek<'_, '_>,
+    enum_peek: facet_reflect::PeekEnum<'_, '_>,
     payload: &WriterVariantPayloadPlan,
     nodes: &[WriterNode],
 ) -> Result<(), EncodeError> {
@@ -1101,15 +1243,15 @@ fn unsupported_shape(shape: &'static Shape, reason: &'static str) -> EncodeError
     EncodeError::Unsupported { shape, reason }
 }
 
-fn unsupported_peek(peek: Peek<'_, 'static>, reason: &'static str) -> EncodeError {
+fn unsupported_peek(peek: Peek<'_, '_>, reason: &'static str) -> EncodeError {
     unsupported_shape(peek.shape(), reason)
 }
 
-fn value_from_dynamic_peek(peek: Peek<'_, 'static>) -> Result<Value, EncodeError> {
+fn value_from_dynamic_peek(peek: Peek<'_, '_>) -> Result<Value, EncodeError> {
     value_from_dynamic(peek.into_dynamic_value()?)
 }
 
-fn value_from_dynamic(dynamic: PeekDynamicValue<'_, 'static>) -> Result<Value, EncodeError> {
+fn value_from_dynamic(dynamic: PeekDynamicValue<'_, '_>) -> Result<Value, EncodeError> {
     match dynamic.kind() {
         DynValueKind::Null => Ok(Value::Unit),
         DynValueKind::Bool => dynamic

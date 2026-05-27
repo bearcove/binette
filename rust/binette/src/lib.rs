@@ -31,8 +31,8 @@ pub use dump::{
     schema_dump_to_value, schema_snapshot_from_value, schema_snapshot_to_value,
 };
 pub use encode::{
-    EncodeError, WriterPlan, encode_to_vec, encode_to_vec_with_plan, writer_plan_for,
-    writer_plan_for_shape,
+    EncodeError, WriterPlan, encode_peek_to_vec_with_plan, encode_peek_with_plan, encode_to_vec,
+    encode_to_vec_with_plan, writer_plan_for, writer_plan_for_shape,
 };
 pub use error::SchemaError;
 pub use facet::{schema_bundle_for, schema_bundle_for_shape};

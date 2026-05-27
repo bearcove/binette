@@ -144,6 +144,104 @@ fn compact_decode_handles_cow_str_reader_fields() {
     assert_eq!(decoded, value);
 }
 
+// r[verify binette.tags.scalar-payload]
+// r[verify binette.mode.compact]
+#[test]
+fn compact_payload_uses_facet_opaque_adapter() {
+    use std::marker::PhantomData;
+
+    use facet::{FacetOpaqueAdapter, OpaqueDeserialize, OpaqueSerialize, PtrConst, Shape};
+
+    #[derive(Debug, Facet)]
+    #[repr(u8)]
+    #[facet(opaque = TestPayloadAdapter, traits(Debug))]
+    enum TestPayload<'a> {
+        Value {
+            ptr: PtrConst,
+            shape: &'static Shape,
+            _lt: PhantomData<&'a ()>,
+        },
+        Bytes(&'a [u8]),
+    }
+
+    impl<'a> TestPayload<'a> {
+        unsafe fn outgoing<T: Facet<'static>>(value: &T) -> TestPayload<'static> {
+            TestPayload::Value {
+                ptr: PtrConst::new((value as *const T).cast::<u8>()),
+                shape: T::SHAPE,
+                _lt: PhantomData,
+            }
+        }
+    }
+
+    struct TestPayloadAdapter;
+
+    impl FacetOpaqueAdapter for TestPayloadAdapter {
+        type Error = String;
+        type SendValue<'a> = TestPayload<'a>;
+        type RecvValue<'de> = TestPayload<'de>;
+
+        fn serialize_map(value: &Self::SendValue<'_>) -> OpaqueSerialize {
+            match value {
+                TestPayload::Value { ptr, shape, .. } => OpaqueSerialize { ptr: *ptr, shape },
+                TestPayload::Bytes(bytes) => OpaqueSerialize {
+                    ptr: PtrConst::new((bytes as *const &[u8]).cast::<u8>()),
+                    shape: <&[u8] as Facet>::SHAPE,
+                },
+            }
+        }
+
+        fn deserialize_build<'de>(
+            input: OpaqueDeserialize<'de>,
+        ) -> Result<Self::RecvValue<'de>, Self::Error> {
+            match input {
+                OpaqueDeserialize::Borrowed(bytes) => Ok(TestPayload::Bytes(bytes)),
+                OpaqueDeserialize::Owned(_) => Err("payload must be borrowed".to_owned()),
+            }
+        }
+    }
+
+    let value = 42_u32;
+    let payload = unsafe { TestPayload::outgoing(&value) };
+    let plan = writer_plan_for::<TestPayload<'static>>().unwrap();
+    let registry = registry_for(plan.schema_bundle());
+
+    let bytes = encode_to_vec_with_plan(&payload, &plan).unwrap();
+    assert_eq!(bytes, [4, 0, 0, 0, 42, 0, 0, 0]);
+
+    let decoded =
+        decode_from_slice::<TestPayload<'static>>(&bytes, plan.root(), &registry).unwrap();
+    let TestPayload::Bytes(decoded_bytes) = decoded else {
+        panic!("decoded payload should borrow compact payload bytes");
+    };
+    assert_eq!(decoded_bytes, [42, 0, 0, 0]);
+
+    let already_encoded = TestPayload::Bytes(&[1, 2, 3]);
+    let bytes = encode_to_vec_with_plan(&already_encoded, &plan).unwrap();
+    assert_eq!(bytes, [3, 0, 0, 0, 1, 2, 3]);
+}
+
+// r[verify binette.compat.enum]
+// r[verify binette.compat.enum.payload]
+#[test]
+fn compact_round_trips_result_def() {
+    let plan = writer_plan_for::<Result<u32, String>>().unwrap();
+    let registry = registry_for(plan.schema_bundle());
+
+    let ok = Ok::<u32, String>(42);
+    let ok_bytes = encode_to_vec_with_plan(&ok, &plan).unwrap();
+    assert_eq!(ok_bytes, [0, 0, 0, 0, 42, 0, 0, 0]);
+    let decoded_ok =
+        decode_from_slice::<Result<u32, String>>(&ok_bytes, plan.root(), &registry).unwrap();
+    assert_eq!(decoded_ok, ok);
+
+    let err = Err::<u32, String>("nope".to_owned());
+    let err_bytes = encode_to_vec_with_plan(&err, &plan).unwrap();
+    let decoded_err =
+        decode_from_slice::<Result<u32, String>>(&err_bytes, plan.root(), &registry).unwrap();
+    assert_eq!(decoded_err, err);
+}
+
 // r[verify binette.compat.field-matching]
 // r[verify binette.compat.skip-unknown]
 // r[verify binette.aggregate.schema-driven-skip]
