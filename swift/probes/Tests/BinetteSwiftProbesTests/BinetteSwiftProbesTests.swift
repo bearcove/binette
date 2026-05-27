@@ -1,4 +1,5 @@
 import BinetteSwiftProbes
+import Foundation
 import XCTest
 
 final class BinetteSwiftProbesTests: XCTestCase {
@@ -7,6 +8,29 @@ final class BinetteSwiftProbesTests: XCTestCase {
 
         XCTAssertTrue(validateProbeDescriptors(descriptors))
         XCTAssertTrue(descriptors.allSatisfy { $0.backend == .swiftProbe })
+    }
+
+    func testProbeDescriptorsExportAsCodableHandoff() throws {
+        let exports = exportProbeDescriptors()
+        let data = try JSONEncoder().encode(exports)
+        let decoded = try JSONDecoder().decode([BinetteDescriptorExport].self, from: data)
+
+        XCTAssertEqual(decoded, exports)
+        XCTAssertTrue(exports.allSatisfy { $0.backend == "swift-probe" })
+
+        let nested = try XCTUnwrap(exports.first { $0.schemaName == "ProbeNested" })
+        XCTAssertEqual(nested.kind.tag, "struct")
+        XCTAssertEqual(nested.kind.fields?.map(\.access.tag), ["direct", "direct", "direct"])
+
+        let enumDescriptor = try XCTUnwrap(exports.first { $0.schemaName == "ProbeEnum" })
+        XCTAssertEqual(enumDescriptor.kind.tag, "enum")
+        XCTAssertEqual(enumDescriptor.kind.variants?.map(\.name), ["empty", "titled", "nested"])
+        XCTAssertEqual(enumDescriptor.kind.variants?[1].payload?.schemaName, "string")
+
+        let string = try XCTUnwrap(exports.first { $0.schemaName == "string" })
+        XCTAssertEqual(string.kind.storage?.tag, "thunk")
+        XCTAssertEqual(string.kind.storage?.count, "Swift.String.utf8.count")
+        XCTAssertEqual(string.kind.storage?.write, "Swift.String.init.utf8")
     }
 
     func testStoredStructFieldsUseDirectOffsets() throws {

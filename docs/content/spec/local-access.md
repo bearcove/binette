@@ -141,4 +141,7 @@ inside the current process.
 > access descriptor: schema reference, local layout, stored-field offsets where
 > available, enum variant projectors, sequence/optional access, and explicit
 > thunk names for cases that require Swift-owned accessors. The handoff is
-> rejected if Swift descriptor nodes contain thunks from another backend.
+> rejected if Swift descriptor nodes contain thunks from another backend. A
+> Swift backend may export this handoff as a tagged descriptor tree; that export
+> is metadata for binette engines, not encoded binette data and not a Swift
+> codec.
