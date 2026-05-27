@@ -10,6 +10,10 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertTrue(descriptors.allSatisfy { $0.backend == .swiftProbe })
     }
 
+    func testProbeDescriptorsValidateAgainstLiveRuntimeValues() {
+        XCTAssertTrue(validateProbeRuntimeFacts())
+    }
+
     func testProbeDescriptorsExportAsCodableHandoff() throws {
         let exports = exportProbeDescriptors()
         let data = try JSONEncoder().encode(exports)

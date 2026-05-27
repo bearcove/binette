@@ -284,6 +284,130 @@ public func validateProbeDescriptors(_ descriptors: [BinetteLocalDescriptor]) ->
     ].allSatisfy(names.contains)
 }
 
+public func validateProbeRuntimeFacts() -> Bool {
+    let descriptors = makeProbeDescriptors()
+    guard
+        let leaf = descriptors.first(where: { $0.schemaName == "ProbeLeaf" }),
+        let nested = descriptors.first(where: { $0.schemaName == "ProbeNested" }),
+        let taggedOptional = descriptors.first(where: { $0.schemaName == "tagged-option<u16>" })
+    else {
+        return false
+    }
+
+    let leafValue = ProbeLeaf(count: -12_345, flag: true)
+    guard
+        loadStructField(leaf, "count", from: leafValue, as: Int32.self) == leafValue.count,
+        loadStructField(leaf, "flag", from: leafValue, as: Bool.self) == leafValue.flag
+    else {
+        return false
+    }
+
+    let nestedValue = ProbeNested(
+        title: "runtime facts",
+        leaf: ProbeLeaf(count: 67_890, flag: false),
+        values: [1, 2, 3]
+    )
+    guard
+        loadNestedLeafField(nested, "count", from: nestedValue, as: Int32.self) == nestedValue.leaf.count,
+        loadNestedLeafField(nested, "flag", from: nestedValue, as: Bool.self) == nestedValue.leaf.flag
+    else {
+        return false
+    }
+
+    let taggedValue = ProbeTaggedMaybeU16(tag: 1, value: 0xCAFE)
+    guard
+        let tagValues = directOptionalTagValues(taggedOptional),
+        tagValues.none == 0,
+        tagValues.some == 1
+    else {
+        return false
+    }
+    return loadDirectOptionalTag(taggedOptional, from: taggedValue) == taggedValue.tag
+        && loadDirectOptionalPayload(taggedOptional, from: taggedValue, as: UInt16.self) == taggedValue.value
+}
+
+private func loadStructField<Root, Field>(
+    _ descriptor: BinetteLocalDescriptor,
+    _ fieldName: String,
+    from value: Root,
+    as _: Field.Type
+) -> Field? {
+    guard
+        case let .storedStruct(fields) = descriptor.kind,
+        let field = fields.first(where: { $0.name == fieldName }),
+        case let .direct(offset) = field.access
+    else {
+        return nil
+    }
+    return loadValue(from: value, offset: offset, as: Field.self)
+}
+
+private func loadNestedLeafField<Field>(
+    _ descriptor: BinetteLocalDescriptor,
+    _ fieldName: String,
+    from value: ProbeNested,
+    as _: Field.Type
+) -> Field? {
+    guard
+        case let .storedStruct(fields) = descriptor.kind,
+        let leafField = fields.first(where: { $0.name == "leaf" }),
+        case let .direct(leafOffset) = leafField.access,
+        case let .storedStruct(leafFields) = leafField.descriptor.kind,
+        let field = leafFields.first(where: { $0.name == fieldName }),
+        case let .direct(fieldOffset) = field.access
+    else {
+        return nil
+    }
+    return loadValue(from: value, offset: leafOffset + fieldOffset, as: Field.self)
+}
+
+private func loadDirectOptionalTag(
+    _ descriptor: BinetteLocalDescriptor,
+    from value: ProbeTaggedMaybeU16
+) -> UInt8? {
+    guard
+        case let .optional(_, storage) = descriptor.kind,
+        case let .directTag(offset, width, _, _, _) = storage,
+        width == MemoryLayout<UInt8>.size
+    else {
+        return nil
+    }
+    return loadValue(from: value, offset: offset, as: UInt8.self)
+}
+
+private func loadDirectOptionalPayload<Field>(
+    _ descriptor: BinetteLocalDescriptor,
+    from value: ProbeTaggedMaybeU16,
+    as _: Field.Type
+) -> Field? {
+    guard
+        case let .optional(_, storage) = descriptor.kind,
+        case let .directTag(_, _, _, _, someOffset) = storage
+    else {
+        return nil
+    }
+    return loadValue(from: value, offset: someOffset, as: Field.self)
+}
+
+private func directOptionalTagValues(
+    _ descriptor: BinetteLocalDescriptor
+) -> (none: UInt, some: UInt)? {
+    guard
+        case let .optional(_, storage) = descriptor.kind,
+        case let .directTag(_, _, noneValue, someValue, _) = storage
+    else {
+        return nil
+    }
+    return (none: noneValue, some: someValue)
+}
+
+private func loadValue<Root, Field>(from value: Root, offset: Int, as _: Field.Type) -> Field {
+    var value = value
+    return withUnsafeBytes(of: &value) { bytes in
+        bytes.baseAddress!.advanced(by: offset).load(as: Field.self)
+    }
+}
+
 private extension BinetteLocalDescriptor {
     var export: BinetteDescriptorExport {
         BinetteDescriptorExport(
