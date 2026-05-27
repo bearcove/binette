@@ -74,6 +74,10 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertEqual(tag, .thunk("ProbeEnum.discriminant"))
         XCTAssertEqual(variants.map(\.name), ["empty", "titled", "nested"])
         XCTAssertEqual(variants.map(\.index), [0, 1, 2])
+        XCTAssertEqual(
+            variants.map(\.construct),
+            ["ProbeEnum.init.empty", "ProbeEnum.init.titled.utf8", "ProbeEnum.init.nested"]
+        )
         XCTAssertNil(variants[0].payload)
         XCTAssertEqual(variants[1].payload?.schemaName, "string")
         XCTAssertEqual(variants[2].payload?.schemaName, "ProbeLeaf")

@@ -9,7 +9,7 @@ use crate::local_access::{
     LocalOptionSequenceDecodeThunks, LocalScalarAccess, LocalSequenceDecodeThunks,
     LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks,
     LocalSequenceStorage, LocalThunk, LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout,
-    LocalVariantProjectThunks,
+    LocalVariantConstructThunks, LocalVariantProjectThunks,
 };
 use crate::reader_plan_for_bundle;
 
@@ -438,6 +438,73 @@ fn hybrid_local_encode_stencil_uses_bound_backend_thunks_for_enum_subtree() {
     }
 }
 
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn hybrid_local_decode_stencil_uses_bound_backend_thunks_for_enum_subtree() {
+    let values = [
+        SwiftEventEnvelope {
+            id: 0x0102_0304_0506_0708,
+            event: SwiftProbeEvent::Empty,
+            code: 0x1122,
+        },
+        SwiftEventEnvelope {
+            id: 0x1112_1314_1516_1718,
+            event: SwiftProbeEvent::Titled("payload".to_owned()),
+            code: 0x3344,
+        },
+        SwiftEventEnvelope {
+            id: 0x2122_2324_2526_2728,
+            event: SwiftProbeEvent::Nested(SwiftLeaf {
+                count: -42,
+                flag: true,
+            }),
+            code: 0x5566,
+        },
+    ];
+    let writer_plan = writer_plan_for::<SwiftEventEnvelope>().unwrap();
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        writer_plan.root(),
+        &writer_registry,
+    )
+    .unwrap();
+    let descriptor = swift_event_envelope_descriptor(reader_plan.reader_root());
+
+    let strict_error =
+        match strict_local_stencil_decoder_from_plan(&reader_plan, &writer_registry, &descriptor) {
+            Ok(_) => panic!("strict local decode must reject thunk-backed enum fields"),
+            Err(err) => err,
+        };
+    assert!(matches!(strict_error, StencilError::Unsupported { .. }));
+
+    let thunks = swift_string_thunk_bindings();
+    let decoder = hybrid_local_stencil_decoder_from_plan(
+        &reader_plan,
+        &writer_registry,
+        &descriptor,
+        &thunks,
+    )
+    .unwrap();
+
+    assert_eq!(decoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(decoder.report().helper_count, 1);
+    assert_eq!(decoder.report().helper_paths, vec!["$.event".to_owned()]);
+
+    for value in values {
+        let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+        let mut decoded = std::mem::MaybeUninit::<SwiftEventEnvelope>::uninit();
+        unsafe { decoder.decode_raw_into(&bytes, decoded.as_mut_ptr().cast()) }.unwrap();
+        let decoded = unsafe { decoded.assume_init() };
+        assert_eq!(decoded, value);
+    }
+}
+
 fn swift_fixed_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
     LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
         root.clone(),
@@ -662,18 +729,21 @@ fn swift_probe_event_import(owner: &TypeRef) -> LocalDescriptorImport {
                     name: "Empty".to_owned(),
                     index: 0,
                     access: LocalAccess::Thunk(swift_event_project_empty_thunk()),
+                    construct: Some(swift_event_construct_empty_thunk()),
                     payload: None,
                 },
                 crate::local_access::LocalVariantImport {
                     name: "Titled".to_owned(),
                     index: 1,
                     access: LocalAccess::Thunk(swift_event_project_titled_thunk()),
+                    construct: Some(swift_event_construct_titled_thunk()),
                     payload: Some(swift_thunk_string_import()),
                 },
                 crate::local_access::LocalVariantImport {
                     name: "Nested".to_owned(),
                     index: 2,
                     access: LocalAccess::Thunk(swift_event_project_nested_thunk()),
+                    construct: Some(swift_event_construct_nested_thunk()),
                     payload: Some(swift_leaf_import(owner)),
                 },
             ],
@@ -778,6 +848,27 @@ fn swift_string_thunk_bindings() -> LocalThunkBindings {
                 context: 0,
             },
         )
+        .with_variant_construct(
+            swift_event_construct_empty_thunk(),
+            LocalVariantConstructThunks {
+                construct: test_swift_event_construct_empty,
+                context: 0,
+            },
+        )
+        .with_variant_construct(
+            swift_event_construct_titled_thunk(),
+            LocalVariantConstructThunks {
+                construct: test_swift_event_construct_titled,
+                context: 0,
+            },
+        )
+        .with_variant_construct(
+            swift_event_construct_nested_thunk(),
+            LocalVariantConstructThunks {
+                construct: test_swift_event_construct_nested,
+                context: 0,
+            },
+        )
         .with_option(
             swift_option_is_some_thunk(),
             swift_option_some_thunk(),
@@ -836,6 +927,18 @@ fn swift_event_project_titled_thunk() -> LocalThunk {
 
 fn swift_event_project_nested_thunk() -> LocalThunk {
     LocalThunk::new(LocalBackend::SwiftProbe, "ProbeEnum.project.nested")
+}
+
+fn swift_event_construct_empty_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "ProbeEnum.init.empty")
+}
+
+fn swift_event_construct_titled_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "ProbeEnum.init.titled.utf8")
+}
+
+fn swift_event_construct_nested_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "ProbeEnum.init.nested")
 }
 
 fn swift_option_is_some_thunk() -> LocalThunk {
@@ -949,6 +1052,67 @@ unsafe extern "C" fn test_swift_event_project_nested(
         SwiftProbeEvent::Nested(leaf) => leaf as *const SwiftLeaf as *const u8,
         _ => std::ptr::null(),
     }
+}
+
+unsafe extern "C" fn test_swift_event_construct_empty(
+    value: *mut u8,
+    _payload: *const u8,
+    payload_len: usize,
+    _context: *mut std::ffi::c_void,
+) -> bool {
+    if payload_len != 0 {
+        return false;
+    }
+    unsafe {
+        value
+            .cast::<SwiftProbeEvent>()
+            .write(SwiftProbeEvent::Empty)
+    };
+    true
+}
+
+unsafe extern "C" fn test_swift_event_construct_titled(
+    value: *mut u8,
+    payload: *const u8,
+    payload_len: usize,
+    _context: *mut std::ffi::c_void,
+) -> bool {
+    let bytes = unsafe { std::slice::from_raw_parts(payload, payload_len) };
+    let Ok(title) = String::from_utf8(bytes.to_vec()) else {
+        return false;
+    };
+    unsafe {
+        value
+            .cast::<SwiftProbeEvent>()
+            .write(SwiftProbeEvent::Titled(title))
+    };
+    true
+}
+
+unsafe extern "C" fn test_swift_event_construct_nested(
+    value: *mut u8,
+    payload: *const u8,
+    payload_len: usize,
+    _context: *mut std::ffi::c_void,
+) -> bool {
+    if payload_len != std::mem::size_of::<SwiftLeaf>() {
+        return false;
+    }
+    let mut leaf = std::mem::MaybeUninit::<SwiftLeaf>::uninit();
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            payload,
+            leaf.as_mut_ptr().cast::<u8>(),
+            std::mem::size_of::<SwiftLeaf>(),
+        )
+    };
+    let leaf = unsafe { leaf.assume_init() };
+    unsafe {
+        value
+            .cast::<SwiftProbeEvent>()
+            .write(SwiftProbeEvent::Nested(leaf))
+    };
+    true
 }
 
 unsafe extern "C" fn test_swift_option_is_some(

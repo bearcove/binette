@@ -173,6 +173,119 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
                 _ => return hybrid_error_for_helper(helper),
             }
         }
+        StencilHelper::LocalEnum {
+            output_offset,
+            cases,
+            ..
+        } => {
+            if tail.len() < 4 {
+                return hybrid_error_for_helper(helper);
+            }
+            let wire_index = u32::from_le_bytes(tail[..4].try_into().unwrap());
+            let Some(case) = cases.iter().find(|case| case.wire_index == wire_index) else {
+                return hybrid_error_for_helper(helper);
+            };
+            let output = unsafe { out.add(*output_offset) };
+            let context = case.construct_thunks.context as *mut std::ffi::c_void;
+            match &case.payload {
+                LocalEnumDecodePayload::Unit => {
+                    if !unsafe {
+                        (case.construct_thunks.construct)(output, std::ptr::null(), 0, context)
+                    } {
+                        return hybrid_error_for_helper(helper);
+                    }
+                    4
+                }
+                LocalEnumDecodePayload::Fixed {
+                    ops,
+                    input_len,
+                    local_size,
+                } => {
+                    let Some(end) = 4usize.checked_add(*input_len) else {
+                        return hybrid_error_for_helper(helper);
+                    };
+                    let Some(input_payload) = tail.get(4..end) else {
+                        return hybrid_error_for_helper(helper);
+                    };
+                    let mut payload = vec![0u8; *local_size];
+                    for op in ops {
+                        match op {
+                            StencilOp::Copy(op) => {
+                                let source_offset = op.input_offset;
+                                let output_offset = op.output_offset;
+                                let width = op.width.bytes();
+                                let Some(source) =
+                                    input_payload.get(source_offset..source_offset + width)
+                                else {
+                                    return hybrid_error_for_helper(helper);
+                                };
+                                let Some(output) =
+                                    payload.get_mut(output_offset..output_offset + width)
+                                else {
+                                    return hybrid_error_for_helper(helper);
+                                };
+                                output.copy_from_slice(source);
+                            }
+                            StencilOp::Bool {
+                                input_offset,
+                                output_offset,
+                                ..
+                            } => {
+                                let Some(value) = input_payload.get(*input_offset).copied() else {
+                                    return hybrid_error_for_helper(helper);
+                                };
+                                if value > 1 {
+                                    return hybrid_error_for_helper(helper);
+                                }
+                                if let Some(output_offset) = output_offset {
+                                    let Some(output) = payload.get_mut(*output_offset) else {
+                                        return hybrid_error_for_helper(helper);
+                                    };
+                                    *output = value;
+                                }
+                            }
+                            StencilOp::RootEnum { .. } | StencilOp::RootList { .. } => {
+                                return hybrid_error_for_helper(helper);
+                            }
+                        }
+                    }
+                    if !unsafe {
+                        (case.construct_thunks.construct)(
+                            output,
+                            payload.as_ptr(),
+                            payload.len(),
+                            context,
+                        )
+                    } {
+                        return hybrid_error_for_helper(helper);
+                    }
+                    end
+                }
+                LocalEnumDecodePayload::SequenceBytes => {
+                    if tail.len() < 8 {
+                        return hybrid_error_for_helper(helper);
+                    }
+                    let len = u32::from_le_bytes(tail[4..8].try_into().unwrap()) as usize;
+                    let Some(end) = 8usize.checked_add(len) else {
+                        return hybrid_error_for_helper(helper);
+                    };
+                    let Some(bytes) = tail.get(8..end) else {
+                        return hybrid_error_for_helper(helper);
+                    };
+                    if !unsafe {
+                        (case.construct_thunks.construct)(
+                            output,
+                            bytes.as_ptr(),
+                            bytes.len(),
+                            context,
+                        )
+                    } {
+                        return hybrid_error_for_helper(helper);
+                    }
+                    end
+                }
+            }
+        }
         StencilHelper::Skip { writer_type, .. } => {
             let mut reader = CompactReader::new(tail);
             if reader
@@ -196,6 +309,7 @@ fn hybrid_error_for_helper(helper: &StencilHelper) -> usize {
         | StencilHelper::LocalSequenceBytes { failure_index, .. }
         | StencilHelper::LocalSequenceFixedElements { failure_index, .. }
         | StencilHelper::LocalOptionSequenceBytes { failure_index, .. }
+        | StencilHelper::LocalEnum { failure_index, .. }
         | StencilHelper::Skip { failure_index, .. } => hybrid_error_for_failure(*failure_index),
     }
 }

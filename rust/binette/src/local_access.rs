@@ -82,6 +82,7 @@ pub struct LocalVariantDescriptor {
     pub name: String,
     pub index: u32,
     pub access: LocalAccess,
+    pub construct: Option<LocalThunk>,
     pub payload: Option<Box<LocalTypeDescriptor>>,
 }
 
@@ -123,6 +124,12 @@ pub type LocalOptionWriteSomeBytesThunk =
 pub type LocalEnumTagThunk = unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> u32;
 pub type LocalVariantProjectThunk =
     unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> *const u8;
+pub type LocalVariantConstructThunk = unsafe extern "C" fn(
+    value: *mut u8,
+    payload: *const u8,
+    payload_len: usize,
+    context: *mut c_void,
+) -> bool;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LocalSequenceEncodeThunks {
@@ -173,6 +180,12 @@ pub struct LocalEnumTagThunks {
 #[derive(Debug, Clone, Copy)]
 pub struct LocalVariantProjectThunks {
     pub project: LocalVariantProjectThunk,
+    pub context: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LocalVariantConstructThunks {
+    pub construct: LocalVariantConstructThunk,
     pub context: usize,
 }
 
@@ -228,6 +241,12 @@ pub struct LocalVariantProjectThunkBinding {
     pub thunks: LocalVariantProjectThunks,
 }
 
+#[derive(Debug, Clone)]
+pub struct LocalVariantConstructThunkBinding {
+    pub construct: LocalThunk,
+    pub thunks: LocalVariantConstructThunks,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct LocalThunkBindings {
     sequence_u8: Vec<LocalSequenceThunkBinding>,
@@ -238,6 +257,7 @@ pub struct LocalThunkBindings {
     option_sequence_decode: Vec<LocalOptionSequenceDecodeThunkBinding>,
     enum_tag: Vec<LocalEnumTagThunkBinding>,
     variant_project: Vec<LocalVariantProjectThunkBinding>,
+    variant_construct: Vec<LocalVariantConstructThunkBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -430,6 +450,16 @@ impl LocalThunkBindings {
         self
     }
 
+    pub fn with_variant_construct(
+        mut self,
+        construct: LocalThunk,
+        thunks: LocalVariantConstructThunks,
+    ) -> Self {
+        self.variant_construct
+            .push(LocalVariantConstructThunkBinding { construct, thunks });
+        self
+    }
+
     pub fn sequence_u8(
         &self,
         len: &LocalThunk,
@@ -504,6 +534,13 @@ impl LocalThunkBindings {
         self.variant_project
             .iter()
             .find(|binding| &binding.project == project)
+            .map(|binding| binding.thunks)
+    }
+
+    pub fn variant_construct(&self, construct: &LocalThunk) -> Option<LocalVariantConstructThunks> {
+        self.variant_construct
+            .iter()
+            .find(|binding| &binding.construct == construct)
             .map(|binding| binding.thunks)
     }
 }
@@ -786,6 +823,7 @@ mod rust_layout {
                                     LocalBackend::RustFacet,
                                     format!("Facet.Enum.{}", schema_variant.name),
                                 )),
+                                construct: None,
                                 payload,
                             })
                         })
@@ -1360,6 +1398,10 @@ mod tests {
                             LocalBackend::SwiftProbe,
                             "ProbeEnum.project.empty",
                         )),
+                        construct: Some(LocalThunk::new(
+                            LocalBackend::SwiftProbe,
+                            "ProbeEnum.init.empty",
+                        )),
                         payload: None,
                     },
                     LocalVariantImport {
@@ -1369,6 +1411,10 @@ mod tests {
                             LocalBackend::SwiftProbe,
                             "ProbeEnum.project.titled",
                         )),
+                        construct: Some(LocalThunk::new(
+                            LocalBackend::SwiftProbe,
+                            "ProbeEnum.init.titled.utf8",
+                        )),
                         payload: Some(string_descriptor),
                     },
                     LocalVariantImport {
@@ -1377,6 +1423,10 @@ mod tests {
                         access: LocalAccess::Thunk(LocalThunk::new(
                             LocalBackend::SwiftProbe,
                             "ProbeEnum.project.nested",
+                        )),
+                        construct: Some(LocalThunk::new(
+                            LocalBackend::SwiftProbe,
+                            "ProbeEnum.init.nested",
                         )),
                         payload: Some(leaf_descriptor),
                     },

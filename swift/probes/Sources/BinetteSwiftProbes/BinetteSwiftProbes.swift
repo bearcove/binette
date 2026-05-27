@@ -40,6 +40,7 @@ public struct BinetteLocalVariant: Equatable {
     public var name: String
     public var index: UInt32
     public var access: BinetteLocalAccess
+    public var construct: String?
     public var payload: BinetteLocalDescriptor?
 }
 
@@ -257,18 +258,21 @@ private func enumDescriptor() -> BinetteLocalDescriptor {
                     name: "empty",
                     index: 0,
                     access: .thunk("ProbeEnum.project.empty"),
+                    construct: "ProbeEnum.init.empty",
                     payload: nil
                 ),
                 BinetteLocalVariant(
                     name: "titled",
                     index: 1,
                     access: .thunk("ProbeEnum.project.titled"),
+                    construct: "ProbeEnum.init.titled.utf8",
                     payload: string
                 ),
                 BinetteLocalVariant(
                     name: "nested",
                     index: 2,
                     access: .thunk("ProbeEnum.project.nested"),
+                    construct: "ProbeEnum.init.nested",
                     payload: leaf
                 ),
             ]

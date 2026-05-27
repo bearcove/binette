@@ -86,6 +86,9 @@ inside the current process.
 > For an enum subtree, a backend may provide a tag thunk plus per-variant
 > payload projectors; hybrid execution writes the binette variant index and
 > encodes the projected payload using the variant payload descriptor.
+> Decode may use per-variant constructor thunks at the same enum subtree
+> boundary, after binette has identified the writer variant and prepared the
+> payload representation expected by that backend constructor.
 
 > r[binette.local-access.runtime-facts]
 >

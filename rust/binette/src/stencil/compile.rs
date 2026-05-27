@@ -5,7 +5,8 @@ use crate::local_access::{
     LocalOptionRepresentation, LocalOptionSequenceDecodeThunks, LocalScalarAccess, LocalSchemaRef,
     LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks,
     LocalSequenceFixedDecodeThunks, LocalSequenceStorage, LocalThunkBindings, LocalTypeDescriptor,
-    LocalTypeKind, LocalVariantProjectThunks, rust_facet_descriptor_for_shape,
+    LocalTypeKind, LocalVariantConstructThunks, LocalVariantProjectThunks,
+    rust_facet_descriptor_for_shape,
 };
 use crate::schema::TypeRef;
 
@@ -994,12 +995,14 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
             }
             PlanNode::Set { .. }
             | PlanNode::Map { .. }
-            | PlanNode::Enum { .. }
             | PlanNode::Primitive { .. }
             | PlanNode::Dynamic => Err(StencilError::Unsupported {
                 path: path.to_owned(),
                 reason: "local hybrid decode has no backend thunk for this subtree",
             }),
+            PlanNode::Enum { variants } => {
+                self.push_constructed_enum(reader, variants, output_offset, path)
+            }
         }
     }
 
@@ -1169,6 +1172,103 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
             });
         self.ops.push(HybridStencilOp::Helper { helper_index });
         Ok(())
+    }
+
+    fn push_constructed_enum(
+        &mut self,
+        reader: &LocalTypeDescriptor,
+        variants: &[EnumVariantPlan],
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let local_variants = local_enum_construct_variants(reader, path)?;
+        let mut cases = Vec::with_capacity(variants.len());
+        for variant in variants {
+            let EnumVariantPlan::Read {
+                writer_index,
+                reader_index,
+                name,
+                payload,
+            } = variant
+            else {
+                continue;
+            };
+            let local_variant =
+                local_variants
+                    .get(*reader_index)
+                    .ok_or_else(|| StencilError::Unsupported {
+                        path: format!("{path}.{name}"),
+                        reason: "reader enum variant index is out of range",
+                    })?;
+            let construct_thunks = local_variant_construct_thunks(
+                local_variant,
+                self.thunks,
+                &format!("{path}.{name}"),
+            )?;
+            let payload = self.compile_constructed_enum_payload(
+                local_variant.payload.as_deref(),
+                payload,
+                &format!("{path}.{name}"),
+            )?;
+            cases.push(LocalEnumDecodeCase {
+                wire_index: *writer_index,
+                construct_thunks,
+                payload,
+            });
+        }
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilHelper::LocalEnum {
+            output_offset,
+            cases,
+            failure_index,
+        });
+        self.ops.push(HybridStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
+    fn compile_constructed_enum_payload(
+        &self,
+        local_payload: Option<&LocalTypeDescriptor>,
+        payload: &EnumPayloadPlan,
+        path: &str,
+    ) -> Result<LocalEnumDecodePayload, StencilError> {
+        match payload {
+            EnumPayloadPlan::Unit => Ok(LocalEnumDecodePayload::Unit),
+            EnumPayloadPlan::Newtype(element) => {
+                if matches!(
+                    &**element,
+                    PlanNode::Primitive {
+                        primitive: Primitive::String | Primitive::Bytes | Primitive::Payload
+                    }
+                ) {
+                    return Ok(LocalEnumDecodePayload::SequenceBytes);
+                }
+                let local_payload = local_payload.ok_or_else(|| StencilError::Unsupported {
+                    path: path.to_owned(),
+                    reason: "reader enum payload is missing local descriptor",
+                })?;
+                let (ops, input_len) = fixed_local_decode_ops(
+                    self.writer_registry,
+                    self.plan_nodes,
+                    element,
+                    local_payload,
+                    0,
+                    path,
+                )?;
+                Ok(LocalEnumDecodePayload::Fixed {
+                    ops,
+                    input_len,
+                    local_size: local_payload.layout.size,
+                })
+            }
+            EnumPayloadPlan::Tuple(_) | EnumPayloadPlan::Struct(_) => {
+                Err(StencilError::Unsupported {
+                    path: path.to_owned(),
+                    reason: "local constructed enum helper currently supports unit and newtype payloads",
+                })
+            }
+        }
     }
 
     fn push_fixed_skip(&mut self, writer_type: &TypeRef, path: &str) -> Result<(), StencilError> {
@@ -3514,6 +3614,19 @@ fn local_enum_tag_thunks<'a>(
     Ok((tag_thunks, variants))
 }
 
+fn local_enum_construct_variants<'a>(
+    descriptor: &'a LocalTypeDescriptor,
+    path: &str,
+) -> Result<&'a [crate::local_access::LocalVariantDescriptor], StencilError> {
+    let LocalTypeKind::Enum { variants, .. } = &descriptor.kind else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor is not an enum layout",
+        });
+    };
+    Ok(variants)
+}
+
 fn local_variant_project_thunks(
     access: &LocalAccess,
     bindings: &LocalThunkBindings,
@@ -3530,6 +3643,26 @@ fn local_variant_project_thunks(
         .ok_or_else(|| StencilError::Unsupported {
             path: path.to_owned(),
             reason: "local enum variant projector thunk is not bound",
+        })
+}
+
+fn local_variant_construct_thunks(
+    variant: &crate::local_access::LocalVariantDescriptor,
+    bindings: &LocalThunkBindings,
+    path: &str,
+) -> Result<LocalVariantConstructThunks, StencilError> {
+    let construct = variant
+        .construct
+        .as_ref()
+        .ok_or_else(|| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local enum variant descriptor has no backend constructor thunk",
+        })?;
+    bindings
+        .variant_construct(construct)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local enum variant constructor thunk is not bound",
         })
 }
 
@@ -3726,6 +3859,35 @@ fn fixed_local_copy_ops(
         });
     };
     Ok((ops, compiler.input_offset))
+}
+
+fn fixed_local_decode_ops(
+    writer_registry: &SchemaRegistry,
+    plan_nodes: &[PlanNode],
+    node: &PlanNode,
+    reader_descriptor: &LocalTypeDescriptor,
+    output_offset: usize,
+    path: &str,
+) -> Result<(Vec<StencilOp>, usize), StencilError> {
+    let mut compiler = LocalDecodeStencilCompiler {
+        writer_registry,
+        plan_nodes,
+        ops: Vec::new(),
+        failures: Vec::new(),
+        input_offset: 0,
+    };
+    compiler.compile_node(reader_descriptor, node, output_offset, path)?;
+    if compiler
+        .ops
+        .iter()
+        .any(|op| matches!(op, StencilOp::RootEnum { .. } | StencilOp::RootList { .. }))
+    {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local enum decode helper supports only fixed payload stencils",
+        });
+    }
+    Ok((compiler.ops, compiler.input_offset))
 }
 
 fn fixed_skip_len(

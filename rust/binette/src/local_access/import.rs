@@ -50,6 +50,7 @@ pub struct LocalVariantImport {
     pub name: String,
     pub index: u32,
     pub access: LocalAccess,
+    pub construct: Option<LocalThunk>,
     pub payload: Option<LocalDescriptorImport>,
 }
 
@@ -175,10 +176,14 @@ impl LocalVariantImport {
     ) -> Result<LocalVariantDescriptor, LocalDescriptorImportError> {
         let path = format!("{parent_path}::{}", self.name);
         self.access.validate_backend(backend, &path)?;
+        if let Some(construct) = &self.construct {
+            construct.validate_backend(backend, &path)?;
+        }
         Ok(LocalVariantDescriptor {
             name: self.name,
             index: self.index,
             access: self.access,
+            construct: self.construct,
             payload: self
                 .payload
                 .map(|payload| payload.into_descriptor(&path).map(Box::new))

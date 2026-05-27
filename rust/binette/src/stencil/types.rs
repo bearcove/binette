@@ -114,10 +114,33 @@ pub(super) enum StencilHelper {
         thunks: LocalOptionSequenceDecodeThunks,
         failure_index: usize,
     },
+    LocalEnum {
+        output_offset: usize,
+        cases: Vec<LocalEnumDecodeCase>,
+        failure_index: usize,
+    },
     Skip {
         writer_type: TypeRef,
         failure_index: usize,
     },
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct LocalEnumDecodeCase {
+    pub(super) wire_index: u32,
+    pub(super) construct_thunks: LocalVariantConstructThunks,
+    pub(super) payload: LocalEnumDecodePayload,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum LocalEnumDecodePayload {
+    Unit,
+    Fixed {
+        ops: Vec<StencilOp>,
+        input_len: usize,
+        local_size: usize,
+    },
+    SequenceBytes,
 }
 
 pub(super) struct StencilRuntime {
