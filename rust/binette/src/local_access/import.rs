@@ -162,6 +162,7 @@ impl LocalTypeDescriptor {
         import.into_descriptor("$")
     }
 
+    // r[impl binette.local-access.swift-probes]
     pub fn from_export<F>(
         export: LocalDescriptorExport,
         resolve_schema: F,
@@ -175,6 +176,7 @@ impl LocalTypeDescriptor {
 }
 
 impl LocalDescriptorImport {
+    // r[impl binette.local-access.swift-probes]
     pub fn swift_probe(
         schema: impl Into<LocalSchemaRef>,
         layout: LocalValueLayout,
@@ -205,6 +207,7 @@ impl LocalDescriptorImport {
 }
 
 impl LocalDescriptorImport {
+    // r[impl binette.local-access.swift-probes]
     pub fn from_export<F>(
         export: LocalDescriptorExport,
         mut resolve_schema: F,

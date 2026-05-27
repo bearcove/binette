@@ -563,6 +563,7 @@ pub fn hybrid_stencil_encoder_from_plan<T: Facet<'static>>(
     }
 }
 
+// r[impl binette.local-access.boundary]
 // r[impl binette.local-access.descriptor]
 // r[impl binette.local-access.strict-hybrid]
 // r[impl binette.mode.compact]
@@ -640,6 +641,7 @@ pub fn strict_local_stencil_encoder_from_plan(
     })
 }
 
+// r[impl binette.local-access.boundary]
 // r[impl binette.local-access.descriptor]
 // r[impl binette.local-access.strict-hybrid]
 // r[impl binette.mode.compact]
@@ -686,6 +688,7 @@ pub fn hybrid_local_stencil_encoder_from_plan(
     })
 }
 
+// r[impl binette.local-access.boundary]
 // r[impl binette.local-access.descriptor]
 // r[impl binette.local-access.strict-hybrid]
 // r[impl binette.mode.compact]
@@ -728,6 +731,7 @@ pub fn strict_local_stencil_decoder_from_plan(
     })
 }
 
+// r[impl binette.local-access.boundary]
 // r[impl binette.local-access.descriptor]
 // r[impl binette.local-access.strict-hybrid]
 // r[impl binette.mode.compact]
