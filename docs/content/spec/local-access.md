@@ -64,6 +64,11 @@ inside the current process.
 > observed or proven for this process. Accessor thunks are explicit calls owned
 > by the backend; an engine may use them in interpreted or hybrid execution but
 > not in strict JIT execution.
+>
+> A descriptor names required thunks, but executable hybrid code also requires
+> the embedding backend to bind those names to callable process-local function
+> pointers before compilation succeeds. An unbound thunk is not a valid implicit
+> fallback.
 
 > r[binette.local-access.runtime-facts]
 >
@@ -90,7 +95,8 @@ inside the current process.
 > compile each node or subtree normally. If a subtree cannot be compiled from
 > direct descriptor facts, the engine may emit one explicit backend-provided
 > fallback for that unsupported subtree, then continue compiling supported
-> siblings and children.
+> siblings and children. The fallback boundary is the unsupported subtree itself;
+> supported siblings before and after that subtree remain native code.
 >
 > A hybrid report distinguishes native subtrees from fallback subtrees so
 > benchmark results can show which work is still capable of becoming faster.

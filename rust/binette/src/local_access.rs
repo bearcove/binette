@@ -1,3 +1,4 @@
+use std::ffi::c_void;
 use std::mem::{align_of, size_of};
 
 use crate::schema::TypeRef;
@@ -8,7 +9,7 @@ pub use import::{
     LocalVariantImport,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LocalBackend {
     RustFacet,
     SwiftProbe,
@@ -90,10 +91,34 @@ pub enum LocalAccess {
     Thunk(LocalThunk),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LocalThunk {
     pub backend: LocalBackend,
     pub name: String,
+}
+
+pub type LocalSequenceLenThunk =
+    unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> usize;
+pub type LocalSequenceU8Thunk =
+    unsafe extern "C" fn(value: *const u8, index: usize, context: *mut c_void) -> u8;
+
+#[derive(Debug, Clone, Copy)]
+pub struct LocalSequenceEncodeThunks {
+    pub len: LocalSequenceLenThunk,
+    pub element_u8: LocalSequenceU8Thunk,
+    pub context: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalSequenceThunkBinding {
+    pub len: LocalThunk,
+    pub element: LocalThunk,
+    pub thunks: LocalSequenceEncodeThunks,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct LocalThunkBindings {
+    sequence_u8: Vec<LocalSequenceThunkBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +207,37 @@ impl LocalThunk {
             backend,
             name: name.into(),
         }
+    }
+}
+
+impl LocalThunkBindings {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_sequence_u8(
+        mut self,
+        len: LocalThunk,
+        element: LocalThunk,
+        thunks: LocalSequenceEncodeThunks,
+    ) -> Self {
+        self.sequence_u8.push(LocalSequenceThunkBinding {
+            len,
+            element,
+            thunks,
+        });
+        self
+    }
+
+    pub fn sequence_u8(
+        &self,
+        len: &LocalThunk,
+        element: &LocalThunk,
+    ) -> Option<LocalSequenceEncodeThunks> {
+        self.sequence_u8
+            .iter()
+            .find(|binding| &binding.len == len && &binding.element == element)
+            .map(|binding| binding.thunks)
     }
 }
 

@@ -15,7 +15,7 @@ use crate::encode::{
     WriterVariantPayloadPlan, WriterVariantPlan, encode_node_with_writer_node, writer_plan_for,
 };
 use crate::hash::primitive_for_type_id;
-use crate::local_access::LocalTypeDescriptor;
+use crate::local_access::{LocalSequenceEncodeThunks, LocalThunkBindings, LocalTypeDescriptor};
 use crate::plan::{
     EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, ReaderPlan, StructFieldPlan,
     reader_plan_for,
@@ -36,7 +36,8 @@ use self::aarch64::{
     status_for_failure,
 };
 use self::compile::{
-    CursorStencilCompiler, LocalDecodeStencilCompiler, StencilCompiler, StencilEncodeCompiler,
+    CursorStencilCompiler, LocalDecodeStencilCompiler, LocalEncodeStencilCompiler, StencilCompiler,
+    StencilEncodeCompiler,
 };
 use self::memory::ExecutableMemory;
 use self::runtime::{
@@ -84,7 +85,7 @@ pub struct StencilEncoder<T> {
 
 pub struct LocalStencilEncoder {
     code: ExecutableMemory,
-    func: DirectEncodeStencilFn,
+    entry: LocalEncodeStencilEntry,
     report: StencilReport,
 }
 
@@ -123,6 +124,16 @@ enum StencilEntry {
 }
 
 enum EncodeStencilEntry {
+    Direct {
+        func: DirectEncodeStencilFn,
+    },
+    Helper {
+        func: EncodeStencilFn,
+        runtime: Box<StencilEncodeRuntime>,
+    },
+}
+
+enum LocalEncodeStencilEntry {
     Direct {
         func: DirectEncodeStencilFn,
     },
@@ -275,9 +286,18 @@ impl LocalStencilEncoder {
     /// remain valid for the duration of the call.
     pub unsafe fn encode_raw_to_vec(&self, value: *const u8) -> Result<Vec<u8>, StencilError> {
         let mut out = Vec::new();
-        // SAFETY: the caller promises that `value` points to a live local value
-        // matching the descriptor used to compile this encoder.
-        let status = unsafe { (self.func)(value, &mut out) };
+        let status = match &self.entry {
+            LocalEncodeStencilEntry::Direct { func } => {
+                // SAFETY: the caller promises that `value` points to a live
+                // local value matching the descriptor used to compile this encoder.
+                unsafe { func(value, &mut out) }
+            }
+            LocalEncodeStencilEntry::Helper { func, runtime } => {
+                // SAFETY: the caller promises that `value` points to a live
+                // local value matching the descriptor used to compile this encoder.
+                unsafe { func(runtime.as_ref(), value, &mut out) }
+            }
+        };
         if status == STENCIL_OK {
             Ok(out)
         } else {
@@ -493,7 +513,57 @@ pub fn strict_local_stencil_encoder_from_plan(
         helper_paths: Vec::new(),
     };
     let func = code.as_direct_encode_fn();
-    Ok(LocalStencilEncoder { code, func, report })
+    Ok(LocalStencilEncoder {
+        code,
+        entry: LocalEncodeStencilEntry::Direct { func },
+        report,
+    })
+}
+
+// r[impl binette.local-access.descriptor]
+// r[impl binette.local-access.strict-hybrid]
+// r[impl binette.mode.compact]
+pub fn hybrid_local_stencil_encoder_from_plan(
+    plan: &WriterPlan,
+    descriptor: &LocalTypeDescriptor,
+    thunks: &LocalThunkBindings,
+) -> Result<LocalStencilEncoder, StencilError> {
+    match strict_local_stencil_encoder_from_plan(plan, descriptor) {
+        Ok(encoder) => return Ok(encoder),
+        Err(err) if !matches!(&err, StencilError::Unsupported { .. }) => return Err(err),
+        Err(_) => {}
+    }
+
+    if !matches!(&descriptor.schema, crate::local_access::LocalSchemaRef::Type(type_ref) if type_ref == plan.root())
+    {
+        return Err(StencilError::Unsupported {
+            path: "$".to_owned(),
+            reason: "local descriptor root schema differs from writer plan root",
+        });
+    }
+
+    let mut compiler = LocalEncodeStencilCompiler {
+        ops: Vec::new(),
+        helpers: Vec::new(),
+        failures: Vec::new(),
+        thunks,
+    };
+    compiler.compile_root(descriptor, plan.root_node())?;
+
+    let code = generate_encode_code(&compiler.ops)?;
+    let report = encode_report(&code, &compiler.ops, &compiler.helpers, &compiler.failures);
+    let func = code.as_encode_fn();
+    Ok(LocalStencilEncoder {
+        code,
+        entry: LocalEncodeStencilEntry::Helper {
+            func,
+            runtime: Box::new(StencilEncodeRuntime {
+                helpers: compiler.helpers,
+                nodes: plan.nodes().to_vec(),
+            }),
+        },
+        report,
+    })
 }
 
 // r[impl binette.local-access.descriptor]
@@ -688,7 +758,8 @@ fn encode_helper_paths(
     helpers
         .iter()
         .filter_map(|helper| match helper {
-            StencilEncodeHelper::Node { failure_index, .. } => {
+            StencilEncodeHelper::Node { failure_index, .. }
+            | StencilEncodeHelper::LocalSequenceBytes { failure_index, .. } => {
                 helper_path(failures, *failure_index)
             }
         })

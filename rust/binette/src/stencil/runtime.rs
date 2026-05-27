@@ -103,7 +103,8 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
     };
 
     let status = match helper {
-        StencilEncodeHelper::Node { failure_index, .. } => {
+        StencilEncodeHelper::Node { failure_index, .. }
+        | StencilEncodeHelper::LocalSequenceBytes { failure_index, .. } => {
             status_for_failure(*failure_index).unwrap_or(1)
         }
     };
@@ -123,6 +124,26 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
                 unsafe { Peek::unchecked_new(PtrConst::new(value), shape) };
             if encode_node_with_writer_node(out, peek, node, &runtime.nodes).is_err() {
                 return status;
+            }
+        }
+        StencilEncodeHelper::LocalSequenceBytes {
+            input_offset,
+            thunks,
+            ..
+        } => {
+            if value.is_null() {
+                return status;
+            }
+            let value = value.wrapping_add(*input_offset);
+            let context = thunks.context as *mut std::ffi::c_void;
+            let len = unsafe { (thunks.len)(value, context) };
+            let Ok(len_u32) = u32::try_from(len) else {
+                return status;
+            };
+            out.extend_from_slice(&len_u32.to_le_bytes());
+            out.reserve(len);
+            for index in 0..len {
+                out.push(unsafe { (thunks.element_u8)(value, index, context) });
             }
         }
     }

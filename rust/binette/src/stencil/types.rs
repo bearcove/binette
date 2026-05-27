@@ -175,6 +175,11 @@ pub(super) enum StencilEncodeHelper {
         input_offset: usize,
         failure_index: usize,
     },
+    LocalSequenceBytes {
+        input_offset: usize,
+        thunks: LocalSequenceEncodeThunks,
+        failure_index: usize,
+    },
 }
 
 pub(super) struct StencilEncodeRuntime {

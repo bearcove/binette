@@ -2,8 +2,8 @@ use super::*;
 use crate::hash::primitive_type_id;
 use crate::local_access::{
     LocalAccess, LocalFieldDescriptor, LocalOptionRepresentation, LocalScalarAccess,
-    LocalSchemaRef, LocalSequenceStorage, LocalTypeDescriptor, LocalTypeKind,
-    rust_facet_descriptor_for_shape,
+    LocalSchemaRef, LocalSequenceEncodeThunks, LocalSequenceStorage, LocalThunkBindings,
+    LocalTypeDescriptor, LocalTypeKind, rust_facet_descriptor_for_shape,
 };
 use crate::schema::TypeRef;
 
@@ -1932,6 +1932,263 @@ impl StencilEncodeCompiler {
     }
 }
 
+pub(super) struct LocalEncodeStencilCompiler<'a> {
+    pub(super) ops: Vec<EncodeStencilOp>,
+    pub(super) helpers: Vec<StencilEncodeHelper>,
+    pub(super) failures: Vec<StencilFailure>,
+    pub(super) thunks: &'a LocalThunkBindings,
+}
+
+impl LocalEncodeStencilCompiler<'_> {
+    // r[impl binette.local-access.descriptor]
+    // r[impl binette.local-access.strict-hybrid]
+    pub(super) fn compile_root(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        root: &WriterNode,
+    ) -> Result<(), StencilError> {
+        let mut pending = FixedEncodeSegment {
+            ops: Vec::new(),
+            output_len: 0,
+        };
+        self.compile_node(descriptor, root, 0, "$", &mut pending)?;
+        self.flush_direct_segment(&mut pending);
+        Ok(())
+    }
+
+    fn compile_node(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        node: &WriterNode,
+        input_offset: usize,
+        path: &str,
+        pending: &mut FixedEncodeSegment,
+    ) -> Result<(), StencilError> {
+        match fixed_descriptor_encode_segment(
+            descriptor,
+            node,
+            input_offset,
+            pending.output_len,
+            path,
+        ) {
+            Ok(segment) if copy_ops_fit_direct_code(&segment.ops) => {
+                pending.ops.extend(segment.ops);
+                pending.output_len = checked_offset(pending.output_len, segment.output_len, path)?;
+                return Ok(());
+            }
+            Ok(_) => {
+                self.flush_direct_segment(pending);
+                match fixed_descriptor_encode_segment(descriptor, node, input_offset, 0, path) {
+                    Ok(segment) if copy_ops_fit_direct_code(&segment.ops) => {
+                        self.push_direct_segment(segment);
+                        return Ok(());
+                    }
+                    Ok(_) => {
+                        return Err(StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "local direct encode segment exceeds first stencil immediate range",
+                        });
+                    }
+                    Err(StencilError::Unsupported { .. }) => {}
+                    Err(err) => return Err(err),
+                }
+            }
+            Err(StencilError::Unsupported { .. }) => {}
+            Err(err) => return Err(err),
+        }
+
+        match node {
+            WriterNode::Primitive(Primitive::String | Primitive::Bytes | Primitive::Payload) => {
+                self.flush_direct_segment(pending);
+                self.push_sequence_bytes(descriptor, input_offset, path)
+            }
+            WriterNode::Struct { fields } => {
+                self.compile_struct(descriptor, fields, input_offset, path, pending)
+            }
+            WriterNode::Tuple { elements } => {
+                self.compile_tuple(descriptor, elements, input_offset, path, pending)
+            }
+            WriterNode::Array {
+                dimensions,
+                element,
+            } => self.compile_array(descriptor, dimensions, element, input_offset, path, pending),
+            WriterNode::External => Ok(()),
+            WriterNode::Ref { .. }
+            | WriterNode::Enum { .. }
+            | WriterNode::Result { .. }
+            | WriterNode::List { .. }
+            | WriterNode::Set { .. }
+            | WriterNode::Map { .. }
+            | WriterNode::Option { .. }
+            | WriterNode::Primitive(_)
+            | WriterNode::Dynamic => Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "local hybrid encode has no backend thunk for this subtree",
+            }),
+        }
+    }
+
+    fn compile_struct(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        fields: &[WriterFieldPlan],
+        input_offset: usize,
+        path: &str,
+        pending: &mut FixedEncodeSegment,
+    ) -> Result<(), StencilError> {
+        let descriptor_fields = local_struct_fields(descriptor, path)?;
+        for field in fields {
+            let field_path = format!("{path}.{}", field.name);
+            let field_descriptor = descriptor_fields.get(field.facet_index).ok_or_else(|| {
+                StencilError::Unsupported {
+                    path: field_path.clone(),
+                    reason: "writer descriptor field index is out of range",
+                }
+            })?;
+            let field_offset = checked_offset(
+                input_offset,
+                local_direct_offset(&field_descriptor.access, &field_path)?,
+                &field_path,
+            )?;
+            self.compile_node(
+                &field_descriptor.descriptor,
+                &field.node,
+                field_offset,
+                &field_path,
+                pending,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn compile_tuple(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        elements: &[WriterTupleElementPlan],
+        input_offset: usize,
+        path: &str,
+        pending: &mut FixedEncodeSegment,
+    ) -> Result<(), StencilError> {
+        let descriptor_fields = local_struct_fields(descriptor, path)?;
+        if descriptor_fields.len() != elements.len() {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "writer tuple arity differs from local descriptor",
+            });
+        }
+        for element in elements {
+            let element_path = format!("{path}.{}", element.facet_index);
+            let element_descriptor =
+                descriptor_fields.get(element.facet_index).ok_or_else(|| {
+                    StencilError::Unsupported {
+                        path: element_path.clone(),
+                        reason: "writer tuple descriptor field index is out of range",
+                    }
+                })?;
+            let element_offset = checked_offset(
+                input_offset,
+                local_direct_offset(&element_descriptor.access, &element_path)?,
+                &element_path,
+            )?;
+            self.compile_node(
+                &element_descriptor.descriptor,
+                &element.node,
+                element_offset,
+                &element_path,
+                pending,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn compile_array(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        dimensions: &[u64],
+        element: &WriterNode,
+        input_offset: usize,
+        path: &str,
+        pending: &mut FixedEncodeSegment,
+    ) -> Result<(), StencilError> {
+        let expected_count = dimensions_element_count(dimensions, path)?;
+        let (element_descriptor, element_count, element_stride) =
+            local_inline_fixed_array(descriptor, path)?;
+        if element_count != expected_count {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "writer array dimensions differ from local descriptor",
+            });
+        }
+        for index in 0..element_count {
+            let element_input_offset = checked_offset(
+                input_offset,
+                checked_mul(index, element_stride, path)?,
+                path,
+            )?;
+            self.compile_node(
+                element_descriptor,
+                element,
+                element_input_offset,
+                &format!("{path}[{index}]"),
+                pending,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn push_sequence_bytes(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let thunks = local_sequence_bytes_thunks(descriptor, self.thunks, path)?;
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilEncodeHelper::LocalSequenceBytes {
+            input_offset,
+            thunks,
+            failure_index,
+        });
+        self.ops.push(EncodeStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
+    fn push_helper_failure(&mut self, path: &str) -> Result<usize, StencilError> {
+        let failure_index = self.failures.len();
+        let _ = status_for_failure(failure_index)?;
+        self.failures.push(StencilFailure::Helper {
+            path: path.to_owned(),
+        });
+        Ok(failure_index)
+    }
+
+    fn push_direct_segment(&mut self, segment: FixedEncodeSegment) {
+        if segment.output_len == 0 {
+            return;
+        }
+        self.ops.push(EncodeStencilOp::Direct {
+            ops: segment.ops,
+            output_len: segment.output_len,
+        });
+    }
+
+    fn flush_direct_segment(&mut self, segment: &mut FixedEncodeSegment) {
+        if segment.output_len == 0 {
+            segment.ops.clear();
+            return;
+        }
+        let segment = std::mem::replace(
+            segment,
+            FixedEncodeSegment {
+                ops: Vec::new(),
+                output_len: 0,
+            },
+        );
+        self.push_direct_segment(segment);
+    }
+}
+
 impl FixedEncodeCompiler {
     pub(super) fn compile_root<T: Facet<'static>>(
         &mut self,
@@ -2309,6 +2566,31 @@ fn fixed_encode_segment(
     })
 }
 
+fn fixed_descriptor_encode_segment(
+    descriptor: &LocalTypeDescriptor,
+    node: &WriterNode,
+    input_offset: usize,
+    output_offset: usize,
+    path: &str,
+) -> Result<FixedEncodeSegment, StencilError> {
+    let mut compiler = FixedEncodeCompiler {
+        ops: Vec::new(),
+        output_offset,
+    };
+    compiler.compile_descriptor_node(descriptor, node, input_offset, path)?;
+    let output_len = compiler
+        .output_offset
+        .checked_sub(output_offset)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "direct encode output offset underflow",
+        })?;
+    Ok(FixedEncodeSegment {
+        ops: compiler.ops,
+        output_len,
+    })
+}
+
 fn copy_ops_fit_direct_code(ops: &[CopyOp]) -> bool {
     ops.iter()
         .all(|op| op.input_offset <= 255 && op.output_offset <= 255)
@@ -2526,6 +2808,36 @@ fn local_inline_fixed_array<'a>(
         });
     };
     Ok((element, *element_count, *element_stride))
+}
+
+fn local_sequence_bytes_thunks(
+    descriptor: &LocalTypeDescriptor,
+    bindings: &LocalThunkBindings,
+    path: &str,
+) -> Result<LocalSequenceEncodeThunks, StencilError> {
+    let storage = match &descriptor.kind {
+        LocalTypeKind::Scalar(
+            LocalScalarAccess::String(storage) | LocalScalarAccess::Bytes(storage),
+        ) => storage,
+        _ => {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "local descriptor is not a thunk-backed byte sequence",
+            });
+        }
+    };
+    let LocalSequenceStorage::Thunk { len, element } = storage else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local byte sequence descriptor does not use backend thunks",
+        });
+    };
+    bindings
+        .sequence_u8(len, element)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local byte sequence backend thunks are not bound",
+        })
 }
 
 fn local_enum_variant<'a>(

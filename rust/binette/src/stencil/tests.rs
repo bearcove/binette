@@ -5,7 +5,8 @@ use crate::encode::{encode_to_vec_with_plan, writer_plan_for};
 use crate::hash::primitive_type_id;
 use crate::local_access::{
     LocalAccess, LocalBackend, LocalDescriptorImport, LocalDescriptorImportKind, LocalFieldImport,
-    LocalScalarAccess, LocalTypeDescriptor, LocalValueLayout,
+    LocalScalarAccess, LocalSequenceEncodeThunks, LocalSequenceStorage, LocalThunk,
+    LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout,
 };
 use crate::reader_plan_for_bundle;
 
@@ -22,6 +23,14 @@ struct Fixed {
 struct SwiftFixed {
     id: u64,
     active: bool,
+    code: u16,
+}
+
+#[derive(Facet)]
+#[repr(C)]
+struct SwiftText {
+    id: u64,
+    title: String,
     code: u16,
 }
 
@@ -84,6 +93,34 @@ fn strict_local_decode_stencil_accepts_swift_imported_fixed_descriptor() {
     assert_eq!(decoded, value);
 }
 
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_string_subtree() {
+    let value = SwiftText {
+        id: 0x0102_0304_0506_0708,
+        title: "hello from a bound thunk".to_owned(),
+        code: 0x1122,
+    };
+    let plan = writer_plan_for::<SwiftText>().unwrap();
+    let descriptor = swift_text_descriptor(plan.root());
+
+    let strict_error = match strict_local_stencil_encoder_from_plan(&plan, &descriptor) {
+        Ok(_) => panic!("strict local encode must reject thunk-backed string fields"),
+        Err(err) => err,
+    };
+    assert!(matches!(strict_error, StencilError::Unsupported { .. }));
+
+    let thunks = swift_string_thunk_bindings();
+    let encoder = hybrid_local_stencil_encoder_from_plan(&plan, &descriptor, &thunks).unwrap();
+
+    assert_eq!(encoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(encoder.report().helper_count, 1);
+    assert_eq!(encoder.report().helper_paths, vec!["$.title".to_owned()]);
+    let actual = unsafe { encoder.encode_raw_to_vec((&value as *const SwiftText).cast()) }.unwrap();
+    assert_eq!(actual, encode_to_vec_with_plan(&value, &plan).unwrap());
+}
+
 fn swift_fixed_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
     LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
         root.clone(),
@@ -115,6 +152,88 @@ fn swift_fixed_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
         },
     ))
     .unwrap()
+}
+
+fn swift_text_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
+    LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
+        root.clone(),
+        LocalValueLayout::of::<SwiftText>(),
+        LocalDescriptorImportKind::Struct {
+            fields: vec![
+                LocalFieldImport {
+                    name: "id".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftText, id),
+                    },
+                    descriptor: primitive_import(Primitive::U64, LocalValueLayout::of::<u64>()),
+                },
+                LocalFieldImport {
+                    name: "title".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftText, title),
+                    },
+                    descriptor: swift_thunk_string_import(),
+                },
+                LocalFieldImport {
+                    name: "code".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftText, code),
+                    },
+                    descriptor: primitive_import(Primitive::U16, LocalValueLayout::of::<u16>()),
+                },
+            ],
+        },
+    ))
+    .unwrap()
+}
+
+fn swift_thunk_string_import() -> LocalDescriptorImport {
+    LocalDescriptorImport {
+        schema: TypeRef::concrete(primitive_type_id(Primitive::String)).into(),
+        backend: LocalBackend::SwiftProbe,
+        layout: LocalValueLayout::of::<String>(),
+        kind: LocalDescriptorImportKind::Scalar(LocalScalarAccess::String(
+            LocalSequenceStorage::Thunk {
+                len: swift_string_len_thunk(),
+                element: swift_string_element_thunk(),
+            },
+        )),
+    }
+}
+
+fn swift_string_thunk_bindings() -> LocalThunkBindings {
+    LocalThunkBindings::new().with_sequence_u8(
+        swift_string_len_thunk(),
+        swift_string_element_thunk(),
+        LocalSequenceEncodeThunks {
+            len: test_swift_string_len,
+            element_u8: test_swift_string_element,
+            context: 0,
+        },
+    )
+}
+
+fn swift_string_len_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "Swift.String.utf8.count")
+}
+
+fn swift_string_element_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "Swift.String.utf8.element")
+}
+
+unsafe extern "C" fn test_swift_string_len(
+    value: *const u8,
+    _context: *mut std::ffi::c_void,
+) -> usize {
+    unsafe { (&*value.cast::<String>()).len() }
+}
+
+unsafe extern "C" fn test_swift_string_element(
+    value: *const u8,
+    index: usize,
+    _context: *mut std::ffi::c_void,
+) -> u8 {
+    unsafe { (&*value.cast::<String>()).as_bytes()[index] }
 }
 
 fn primitive_import(primitive: Primitive, layout: LocalValueLayout) -> LocalDescriptorImport {
