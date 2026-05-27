@@ -113,5 +113,89 @@
         "write_some_bytes": "Swift.Optional<String>.init.some.utf8"
       }
     }
+  },
+  {
+    "schema_name": "ProbeEnum",
+    "backend": "swift-probe",
+    "layout": { "size": 24, "alignment": 8, "stride": 24 },
+    "kind": {
+      "tag": "enum",
+      "fields": [
+        {
+          "name": "$tag",
+          "access": { "tag": "thunk", "thunk": "ProbeEnum.discriminant" },
+          "descriptor": {
+            "schema_name": "u32",
+            "backend": "swift-probe",
+            "layout": { "size": 4, "alignment": 4, "stride": 4 },
+            "kind": { "tag": "scalar" }
+          }
+        }
+      ],
+      "variants": [
+        {
+          "name": "empty",
+          "index": 0,
+          "access": { "tag": "thunk", "thunk": "ProbeEnum.project.empty" },
+          "construct": "ProbeEnum.init.empty"
+        },
+        {
+          "name": "titled",
+          "index": 1,
+          "access": { "tag": "thunk", "thunk": "ProbeEnum.project.titled" },
+          "construct": "ProbeEnum.init.titled.utf8",
+          "payload": {
+            "schema_name": "string",
+            "backend": "swift-probe",
+            "layout": { "size": 16, "alignment": 8, "stride": 16 },
+            "kind": {
+              "tag": "string",
+              "storage": {
+                "tag": "thunk",
+                "count": "Swift.String.utf8.count",
+                "element": "Swift.String.utf8.element",
+                "write": "Swift.String.init.utf8"
+              }
+            }
+          }
+        },
+        {
+          "name": "nested",
+          "index": 2,
+          "access": { "tag": "thunk", "thunk": "ProbeEnum.project.nested" },
+          "construct": "ProbeEnum.init.nested",
+          "payload": {
+            "schema_name": "ProbeLeaf",
+            "backend": "swift-probe",
+            "layout": { "size": 8, "alignment": 4, "stride": 8 },
+            "kind": {
+              "tag": "struct",
+              "fields": [
+                {
+                  "name": "count",
+                  "access": { "tag": "direct", "offset": 0 },
+                  "descriptor": {
+                    "schema_name": "i32",
+                    "backend": "swift-probe",
+                    "layout": { "size": 4, "alignment": 4, "stride": 4 },
+                    "kind": { "tag": "scalar" }
+                  }
+                },
+                {
+                  "name": "flag",
+                  "access": { "tag": "direct", "offset": 4 },
+                  "descriptor": {
+                    "schema_name": "bool",
+                    "backend": "swift-probe",
+                    "layout": { "size": 1, "alignment": 1, "stride": 1 },
+                    "kind": { "tag": "scalar" }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
   }
 ]
