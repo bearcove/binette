@@ -5,3 +5,4 @@
 /typescript/*/node_modules/
 /typescript/*/dist/
 /typescript/*/dist-test/
+/swift/*/.build/

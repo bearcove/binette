@@ -458,4 +458,5 @@ Compact schemas and type identity are part of binette. The companion
 compact mode and the content-hash scheme for stable schema identifiers.
 [Schema bundles](./bundles/) define how schemas travel with compact bytes, and
 [compatibility](./compatibility/) defines schema comparison and translation
-rules for long-lived data.
+rules for long-lived data. [Local access](./local-access/) defines the
+process-local bridge from binette schemas and plans to language runtime values.

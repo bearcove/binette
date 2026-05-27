@@ -1,0 +1,100 @@
++++
+title = "local access"
+description = "Process-local type access descriptors for binette execution engines"
+weight = 17
++++
+
+binette schemas and binette values are the wire contract. A programming
+language runtime still needs a way to read and write its own local values when
+encoding, decoding, interpreting, or generating code. That bridge is a local
+access backend.
+
+A local access backend is not a new serialization format. It is process-local
+metadata that describes how one runtime representation maps to a binette schema
+inside the current process.
+
+# Boundary
+
+> r[binette.local-access.boundary]
+>
+> binette execution engines consume two independent inputs:
+>
+> - a binette schema and compatibility plan, which define the byte-level value
+>   contract
+> - a local access descriptor, which defines how to read or write the current
+>   process's runtime representation for that schema
+>
+> The schema/value model is portable. The local access descriptor is not
+> portable and is not part of the encoded bytes, schema hash, schema bundle, or
+> compatibility result.
+
+> r[binette.local-access.backends]
+>
+> Rust/Facet metadata and Swift runtime probes are sibling producers of local
+> access descriptors. Neither backend defines the architecture of the execution
+> engine.
+>
+> A backend may produce direct memory facts, accessor thunks, or a mixture of
+> both. Execution engines consume those facts through the descriptor model
+> rather than by depending directly on the source-language reflection API.
+
+# Descriptor model
+
+> r[binette.local-access.descriptor]
+>
+> A local access descriptor for a type contains:
+>
+> - the binette schema reference it maps to
+> - the producing backend
+> - local layout facts such as size, alignment, and stride when relevant
+> - the value kind's local access shape: scalar, struct fields, enum variants,
+>   sequence elements, option representation, external attachment, or opaque
+>   fallback
+> - direct memory access facts where validated
+> - backend-provided accessor or thunk fallbacks where direct memory is not
+>   available or not worth assuming
+> - child descriptors for nested local values
+>
+> Direct memory facts are offsets, strides, tags, or pointers that have been
+> observed or proven for this process. Accessor thunks are explicit calls owned
+> by the backend; an engine may use them in interpreted or hybrid execution but
+> not in strict JIT execution.
+
+> r[binette.local-access.runtime-facts]
+>
+> Runtime layout facts are process-local observations. They MUST NOT be cached
+> on disk, embedded into portable artifacts, or treated as promises made by a
+> compiler or language ABI. A new process constructs or validates its own local
+> access descriptors before using direct memory access.
+
+# Execution modes
+
+> r[binette.local-access.strict-hybrid]
+>
+> Strict optimized execution emits only code that is covered by schema facts,
+> plan facts, and direct local access descriptor facts. If any required subtree
+> needs a backend helper, accessor thunk, or interpreter call, strict optimized
+> construction fails before execution.
+>
+> Hybrid optimized execution is recursive non-strict execution. It attempts to
+> compile each node or subtree normally. If a subtree cannot be compiled from
+> direct descriptor facts, the engine may emit one explicit backend-provided
+> fallback for that unsupported subtree, then continue compiling supported
+> siblings and children.
+>
+> A hybrid report distinguishes native subtrees from fallback subtrees so
+> benchmark results can show which work is still capable of becoming faster.
+
+# Swift probes
+
+> r[binette.local-access.swift-probes]
+>
+> A Swift backend produces local access descriptors by probing and validating
+> the current process's Swift runtime representation. Representative probe
+> coverage includes stored-field structs, nested structs, enums with payloads,
+> optionals, arrays, strings, and fallback accessor/thunk cases.
+>
+> Swift support in binette does not define a separate Swift-native binette
+> codec. Swift feeds local descriptors and accessors into the same binette
+> schema, planning, interpreter, and code-generation machinery as other
+> backends.

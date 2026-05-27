@@ -1,0 +1,60 @@
+import BinetteSwiftProbes
+import XCTest
+
+final class BinetteSwiftProbesTests: XCTestCase {
+    func testRepresentativeDescriptorsAreProduced() {
+        let descriptors = makeProbeDescriptors()
+
+        XCTAssertTrue(validateProbeDescriptors(descriptors))
+        XCTAssertTrue(descriptors.allSatisfy { $0.backend == .swiftProbe })
+    }
+
+    func testStoredStructFieldsUseDirectOffsets() throws {
+        let descriptor = try XCTUnwrap(
+            makeProbeDescriptors().first { $0.schemaName == "ProbeNested" }
+        )
+
+        guard case let .storedStruct(fields) = descriptor.kind else {
+            return XCTFail("expected stored struct descriptor")
+        }
+
+        XCTAssertEqual(fields.map(\.name), ["title", "leaf", "values"])
+        XCTAssertEqual(fields.map(\.access), [
+            .direct(offset: MemoryLayout<ProbeNested>.offset(of: \ProbeNested.title)!),
+            .direct(offset: MemoryLayout<ProbeNested>.offset(of: \ProbeNested.leaf)!),
+            .direct(offset: MemoryLayout<ProbeNested>.offset(of: \ProbeNested.values)!),
+        ])
+    }
+
+    func testSwiftStandardLibraryShapesStartAsExplicitThunkFallbacks() throws {
+        let descriptors = makeProbeDescriptors()
+        let string = try XCTUnwrap(descriptors.first { $0.schemaName == "string" })
+        let array = try XCTUnwrap(descriptors.first { $0.schemaName == "array<i64>" })
+        let optional = try XCTUnwrap(descriptors.first { $0.schemaName == "option<string>" })
+        let enumPayloads = try XCTUnwrap(descriptors.first { $0.schemaName == "ProbeEnum" })
+
+        guard case let .sequence(_, stringStorage) = string.kind else {
+            return XCTFail("expected string sequence descriptor")
+        }
+        guard case let .sequence(_, arrayStorage) = array.kind else {
+            return XCTFail("expected array sequence descriptor")
+        }
+        guard case let .optional(_, optionalStorage) = optional.kind else {
+            return XCTFail("expected optional descriptor")
+        }
+
+        XCTAssertEqual(
+            stringStorage,
+            .thunk(count: "Swift.String.utf8.count", element: "Swift.String.utf8.element")
+        )
+        XCTAssertEqual(
+            arrayStorage,
+            .thunk(count: "Swift.Array.count", element: "Swift.Array.element")
+        )
+        XCTAssertEqual(
+            optionalStorage,
+            .thunk(isSome: "Swift.Optional.isSome", some: "Swift.Optional.some")
+        )
+        XCTAssertEqual(enumPayloads.kind, .enumPayloads(thunk: "ProbeEnum.project"))
+    }
+}

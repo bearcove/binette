@@ -12,6 +12,7 @@ mod facet;
 mod hash;
 #[cfg(not(target_arch = "wasm32"))]
 mod layout;
+pub mod local_access;
 mod plan;
 mod registry;
 mod schema;

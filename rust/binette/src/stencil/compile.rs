@@ -1,5 +1,8 @@
 use super::*;
-use crate::layout::{option_string_layout, vec_layout};
+use crate::local_access::{
+    LocalAccess, LocalOptionRepresentation, LocalSequenceStorage,
+    rust_option_string_representation, rust_vec_storage,
+};
 
 pub(super) struct StencilCompiler<'registry> {
     pub(super) writer_registry: &'registry SchemaRegistry,
@@ -1123,8 +1126,10 @@ impl StencilEncodeCompiler {
         }
 
         let layout = if matches!(element, WriterNode::Primitive(Primitive::String))
-            && option_string_layout().is_some_and(|layout| layout.same_size_niche)
-        {
+            && matches!(
+                rust_option_string_representation(),
+                Some(LocalOptionRepresentation::NicheString { .. })
+            ) {
             EncodeOptionLayout::NicheString
         } else {
             EncodeOptionLayout::Facet
@@ -1178,11 +1183,18 @@ impl StencilEncodeCompiler {
                 reason: "writer list element shape is unsized",
             })?
             .size();
-        let layout = vec_layout().map_or(EncodeListLayout::Facet, |layout| EncodeListLayout::Vec {
-            ptr_offset: layout.ptr_offset,
-            len_offset: layout.len_offset,
-            element_stride,
-        });
+        let layout = match rust_vec_storage(element_stride) {
+            Some(LocalSequenceStorage::DirectContiguous {
+                pointer: LocalAccess::Direct { offset: ptr_offset },
+                length: LocalAccess::Direct { offset: len_offset },
+                ..
+            }) => EncodeListLayout::Vec {
+                ptr_offset,
+                len_offset,
+                element_stride,
+            },
+            _ => EncodeListLayout::Facet,
+        };
 
         self.ops.push(EncodeStencilOp::List {
             shape,
