@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use facet_core::{Def, DynValueKind, Facet, FieldError, Shape, Type, UserType};
+use facet_core::{Def, DynValueKind, Facet, FieldError, Shape, StructKind, Type, UserType};
 use facet_reflect::{Peek, PeekDynamicValue, ReflectError};
 use thiserror::Error;
 
@@ -578,8 +578,6 @@ impl WriterPlanExecutor<'_> {
             return self.encode_node(proxy_peek.as_peek(), node);
         }
 
-        let outer_peek = peek;
-        let peek = peek.innermost_peek();
         match node {
             WriterNode::Ref { node_index } => {
                 let node = self
@@ -590,7 +588,9 @@ impl WriterPlanExecutor<'_> {
                     })?;
                 self.encode_node(peek, node)
             }
-            WriterNode::Primitive(primitive) => self.encode_primitive(peek, *primitive),
+            WriterNode::Primitive(primitive) => {
+                self.encode_primitive(peek.innermost_peek(), *primitive)
+            }
             WriterNode::Struct { fields } => self.encode_struct(peek, fields),
             WriterNode::Enum { variants } => self.encode_enum(peek, variants),
             WriterNode::Tuple { elements } => self.encode_tuple(peek, elements),
@@ -609,7 +609,7 @@ impl WriterPlanExecutor<'_> {
             } => self.encode_result(peek, *ok_wire_index, ok, *err_wire_index, err),
             WriterNode::Option { element } => self.encode_option(peek, element),
             WriterNode::Dynamic => self.encode_dynamic(peek),
-            WriterNode::External => self.encode_external(outer_peek),
+            WriterNode::External => self.encode_external(peek),
         }
     }
 
@@ -960,7 +960,7 @@ impl Env {
 
 fn schema_shape(mut shape: &'static Shape) -> &'static Shape {
     loop {
-        if shape.is_transparent()
+        if should_peel_transparent(shape)
             && let Some(inner) = shape.inner
         {
             shape = inner;
@@ -976,6 +976,16 @@ fn schema_shape(mut shape: &'static Shape) -> &'static Shape {
 
         return shape;
     }
+}
+
+fn should_peel_transparent(shape: &'static Shape) -> bool {
+    if !(shape.is_transparent() && shape.inner.is_some()) {
+        return false;
+    }
+    !matches!(
+        shape.ty,
+        Type::User(UserType::Struct(struct_type)) if struct_type.kind == StructKind::Tuple
+    )
 }
 
 fn list_element_shape(shape: &'static Shape) -> Result<&'static Shape, EncodeError> {

@@ -198,6 +198,31 @@ fn facet_tuple_shape_extracts_non_empty_tuple_schema() {
     );
 }
 
+// r[verify binette.schema.tuple]
+// r[verify binette.type-id.hash.tuple]
+#[test]
+fn facet_nested_tuple_shape_keeps_unary_tuple_boundary() {
+    let bundle = schema_bundle_for::<((i32, String),)>().unwrap();
+    let outer = schema(&bundle, concrete_id(&bundle.root));
+
+    let SchemaKind::Tuple { elements } = &outer.kind else {
+        panic!("expected outer tuple schema, got {outer:#?}");
+    };
+    assert_eq!(elements.len(), 1);
+
+    let inner = schema(&bundle, concrete_id(&elements[0]));
+    assert_eq!(
+        inner.kind,
+        SchemaKind::Tuple {
+            elements: vec![
+                TypeRef::concrete(primitive_type_id(Primitive::I32)),
+                TypeRef::concrete(primitive_type_id(Primitive::String)),
+            ],
+        }
+    );
+    assert_ne!(outer.id, inner.id);
+}
+
 // r[verify binette.schema.fields]
 // r[verify binette.type-id.hash.enum]
 #[test]

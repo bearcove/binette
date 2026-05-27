@@ -1,8 +1,11 @@
 use std::{borrow::Cow, collections::HashMap};
 
-use facet_core::{Facet, OpaqueDeserialize, ScalarType};
 #[cfg(not(target_arch = "wasm32"))]
-use facet_core::{PtrUninit, Shape};
+use facet_core::PtrUninit;
+use facet_core::{
+    Facet, OpaqueDeserialize, ScalarType, Shape, StructKind, Type, UserType, alloc_for_layout,
+    dealloc_for_layout,
+};
 use facet_reflect::{AllocError, Partial, ReflectError, ShapeMismatchError};
 use thiserror::Error;
 
@@ -134,10 +137,46 @@ impl DecodeExecutor<'_, '_> {
             return Ok(partial.end()?);
         }
 
-        if shape.builder_shape.is_some() || (shape.is_transparent() && shape.inner.is_some()) {
+        if shape.builder_shape.is_some() || should_peel_transparent(shape) {
             let partial = partial.begin_inner()?;
             let partial = self.decode_node(partial, node)?;
             return Ok(partial.end()?);
+        }
+
+        if let Some(proxy) = shape.proxy {
+            let proxy_shape = proxy.shape;
+            let proxy_layout =
+                proxy_shape
+                    .layout
+                    .sized_layout()
+                    .map_err(|_| DecodeError::Unsupported {
+                        position: self.reader.position(),
+                        reason: "proxy type must be sized",
+                    })?;
+            let proxy_uninit = alloc_for_layout(proxy_layout);
+            let proxy_partial = unsafe { Partial::from_raw_with_shape(proxy_uninit, proxy_shape)? };
+            let proxy_partial = self.decode_node(proxy_partial, node)?;
+            proxy_partial.finish_in_place()?;
+
+            let convert_in = proxy.convert_in;
+            let proxy_ptr = unsafe { proxy_uninit.assume_init() };
+            let partial = unsafe {
+                partial.set_from_function(move |target_uninit| {
+                    convert_in(proxy_ptr.as_const(), target_uninit)
+                        .map(|_| ())
+                        .map_err(
+                            |error| facet_reflect::ReflectErrorKind::InvariantViolation {
+                                invariant: Box::leak(
+                                    format!("proxy convert_in failed: {error}").into_boxed_str(),
+                                ),
+                            },
+                        )
+                })?
+            };
+            unsafe {
+                dealloc_for_layout(proxy_ptr, proxy_layout);
+            }
+            return Ok(partial);
         }
 
         match node {
@@ -957,6 +996,16 @@ impl DecodeExecutor<'_, '_> {
             })
         })
     }
+}
+
+fn should_peel_transparent(shape: &'static Shape) -> bool {
+    if !(shape.is_transparent() && shape.inner.is_some()) {
+        return false;
+    }
+    !matches!(
+        shape.ty,
+        Type::User(UserType::Struct(struct_type)) if struct_type.kind == StructKind::Tuple
+    )
 }
 
 fn facet_value_from_binette_value(value: Value) -> Result<facet_value::Value, &'static str> {

@@ -1206,6 +1206,25 @@ fn encode_then_decode_tuple_values() {
     assert_eq!(decoded, expected);
 }
 
+// r[verify binette.aggregate.tuple]
+#[test]
+fn encode_then_decode_nested_unary_tuple_values() {
+    let expected = ((42_i32, "hello".to_owned()),);
+    let writer_plan = writer_plan_for::<((i32, String),)>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+
+    let bytes = encode_to_vec_with_plan(&expected, &writer_plan).unwrap();
+    assert_eq!(
+        bytes,
+        [42, 0, 0, 0, 5, 0, 0, 0, b'h', b'e', b'l', b'l', b'o']
+    );
+
+    let decoded =
+        decode_from_slice::<((i32, String),)>(&bytes, writer_plan.root(), &writer_registry)
+            .unwrap();
+    assert_eq!(decoded, expected);
+}
+
 // r[verify binette.aggregate.set]
 // r[verify binette.aggregate.map]
 // r[verify binette.aggregate.set-map.canonical]

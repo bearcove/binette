@@ -42,7 +42,7 @@ impl ExtractCtx {
             return self.extract(proxy.shape);
         }
 
-        if shape.is_transparent()
+        if should_peel_transparent(shape)
             && let Some(inner) = shape.inner
         {
             return self.extract(inner);
@@ -128,6 +128,18 @@ impl ExtractCtx {
                 reason: "shape is neither a supported container nor a user type",
             });
         };
+
+        if let UserType::Struct(struct_type) = user_type
+            && struct_type.kind == StructKind::Tuple
+        {
+            let kind = self.struct_kind(shape, struct_type, &type_param_map(shape))?;
+            return match kind {
+                SchemaKind::Primitive(primitive) => {
+                    Ok(TypeRef::concrete(primitive_type_id(primitive)))
+                }
+                kind => self.emit_anonymous(kind),
+            };
+        }
 
         let type_id = if let Some(type_id) = self.emitted_by_user_decl.get(&shape.decl_id) {
             *type_id
@@ -684,6 +696,16 @@ fn primitive_for_scalar(shape: &'static Shape) -> Result<Option<Primitive>, Sche
         Some(scalar) => scalar_to_primitive(scalar, shape.type_identifier).map(Some),
         None => Ok(None),
     }
+}
+
+fn should_peel_transparent(shape: &'static Shape) -> bool {
+    if !shape.is_transparent() {
+        return false;
+    }
+    !matches!(
+        shape.ty,
+        Type::User(UserType::Struct(struct_type)) if struct_type.kind == StructKind::Tuple
+    )
 }
 
 fn scalar_primitive(shape: &'static Shape) -> Option<Primitive> {
