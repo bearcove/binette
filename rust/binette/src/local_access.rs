@@ -31,7 +31,7 @@ pub enum LocalSchemaRef {
     Position { owner: TypeRef, path: String },
 }
 
-// r[impl binette.local-access.descriptor]
+// r[impl binette.local-access.descriptor+2]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalTypeDescriptor {
     pub schema: LocalSchemaRef,
@@ -588,7 +588,7 @@ mod rust_layout {
     }
 
     // r[impl binette.local-access.backends]
-    // r[impl binette.local-access.descriptor]
+    // r[impl binette.local-access.descriptor+2]
     pub fn rust_facet_descriptor_for_shape(
         shape: &'static Shape,
     ) -> Result<LocalTypeDescriptor, LocalAccessError> {
@@ -607,7 +607,7 @@ mod rust_layout {
     }
 
     // r[impl binette.local-access.backends]
-    // r[impl binette.local-access.descriptor]
+    // r[impl binette.local-access.descriptor+2]
     pub fn rust_facet_descriptor_for<T: Facet<'static>>()
     -> Result<LocalTypeDescriptor, LocalAccessError> {
         rust_facet_descriptor_for_shape(T::SHAPE)
@@ -1531,7 +1531,7 @@ mod tests {
         Named { label: String, code: u16 },
     }
 
-    // r[verify binette.local-access.descriptor]
+    // r[verify binette.local-access.descriptor+2]
     #[test]
     fn descriptor_keeps_schema_backend_and_layout_separate() {
         let schema = TypeRef::concrete(primitive_type_id(Primitive::U8));
@@ -1739,8 +1739,8 @@ mod tests {
         assert_eq!(len, thunk);
     }
 
-    // r[verify binette.local-access.swift-probes]
-    // r[verify binette.local-access.descriptor]
+    // r[verify binette.local-access.swift-probes+2]
+    // r[verify binette.local-access.descriptor+2]
     #[test]
     fn swift_probe_import_lowers_to_runtime_descriptor_tree() {
         let u8_schema = TypeRef::concrete(primitive_type_id(Primitive::U8));
@@ -1945,8 +1945,8 @@ mod tests {
         ));
     }
 
-    // r[verify binette.local-access.swift-probes]
-    // r[verify binette.local-access.descriptor]
+    // r[verify binette.local-access.swift-probes+2]
+    // r[verify binette.local-access.descriptor+2]
     #[test]
     fn swift_probe_export_lowers_string_as_scalar_descriptor() {
         let export = LocalDescriptorExport {
@@ -2006,8 +2006,8 @@ mod tests {
         );
     }
 
-    // r[verify binette.local-access.swift-probes]
-    // r[verify binette.local-access.descriptor]
+    // r[verify binette.local-access.swift-probes+2]
+    // r[verify binette.local-access.descriptor+2]
     #[test]
     fn swift_probe_json_handoff_lowers_to_runtime_descriptor_tree() {
         let exports = local_descriptor_exports_from_json(include_str!(
@@ -2179,7 +2179,7 @@ mod tests {
         ));
     }
 
-    // r[verify binette.local-access.swift-probes]
+    // r[verify binette.local-access.swift-probes+2]
     #[test]
     fn imported_descriptor_rejects_cross_backend_thunks() {
         let import = LocalDescriptorImport::swift_probe(
@@ -2227,7 +2227,7 @@ mod tests {
     }
 
     // r[verify binette.local-access.backends]
-    // r[verify binette.local-access.descriptor]
+    // r[verify binette.local-access.descriptor+2]
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn rust_facet_descriptor_lowers_nested_struct_fields_and_arrays() {
@@ -2300,7 +2300,7 @@ mod tests {
     }
 
     // r[verify binette.local-access.backends]
-    // r[verify binette.local-access.descriptor]
+    // r[verify binette.local-access.descriptor+2]
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn rust_facet_descriptor_lowers_vec_and_enum_payloads() {

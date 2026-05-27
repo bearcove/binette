@@ -45,7 +45,7 @@ inside the current process.
 
 # Descriptor model
 
-> r[binette.local-access.descriptor]
+> r[binette.local-access.descriptor+2]
 >
 > A local access descriptor for a type contains:
 >
@@ -96,12 +96,15 @@ inside the current process.
 > Decode-side sequence construction may similarly use a backend write thunk
 > after the engine decodes fixed-width elements into process-local element
 > layout.
-> For an optional subtree, a backend may provide direct tag and payload access
-> facts, or presence/projector thunks for encode and construction thunks for
-> decode. Direct optional access identifies the tag location, the local none and
-> some tag values, the tag width, and the payload location for the some case.
-> Hybrid execution treats the optional node as the fallback boundary unless the
-> engine has proven direct local layout facts for that optional representation.
+> For an optional subtree, a backend may provide direct tag/payload facts,
+> niche-tag facts, or presence/projector thunks for encode and construction
+> thunks for decode. A direct-tag optional identifies the tag location, tag
+> width, local none value, local some value, and payload location. A niche-tag
+> optional identifies the tag location, tag width, local none value, and payload
+> location; every tag value other than the none value is treated as `some`, and
+> the payload bytes carry the actual value. Hybrid execution treats the optional
+> node as the fallback boundary unless the engine has proven direct local layout
+> facts for that optional representation.
 > For an enum subtree, a backend may provide a tag thunk plus per-variant
 > payload projectors; hybrid execution writes the binette variant index and
 > encodes the projected payload using the variant payload descriptor.
@@ -142,12 +145,18 @@ inside the current process.
 
 # Swift probes
 
-> r[binette.local-access.swift-probes]
+> r[binette.local-access.swift-probes+2]
 >
 > A Swift backend produces local access descriptors by probing and validating
 > the current process's Swift runtime representation. Representative probe
 > coverage includes stored-field structs, nested structs, enums with payloads,
 > optionals, arrays, strings, and fallback accessor/thunk cases.
+>
+> Swift option probes may produce either direct-tag or niche-tag descriptors for
+> the current process. For example, a Swift `Optional<UInt16>` may expose a
+> separate tag byte while a Swift `Optional<Bool>` may use a niche value in the
+> same byte that stores the boolean payload. The probe must validate those facts
+> against live values before exporting them as descriptor metadata.
 >
 > Swift support in binette does not define a separate Swift-native binette
 > codec. Swift feeds local descriptors and accessors into the same binette

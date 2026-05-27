@@ -100,7 +100,7 @@ pub(super) struct LocalDecodeStencilCompiler<'registry> {
 }
 
 impl LocalDecodeStencilCompiler<'_> {
-    // r[impl binette.local-access.descriptor]
+    // r[impl binette.local-access.descriptor+2]
     pub(super) fn compile_root(
         &mut self,
         reader: &LocalTypeDescriptor,
@@ -703,7 +703,7 @@ pub(super) struct LocalHybridDecodeStencilCompiler<'registry, 'thunks> {
 }
 
 impl LocalHybridDecodeStencilCompiler<'_, '_> {
-    // r[impl binette.local-access.descriptor]
+    // r[impl binette.local-access.descriptor+2]
     // r[impl binette.local-access.strict-hybrid]
     pub(super) fn compile_root(
         &mut self,
@@ -1198,7 +1198,7 @@ pub(super) struct LocalEncodeStencilCompiler<'a> {
 }
 
 impl LocalEncodeStencilCompiler<'_> {
-    // r[impl binette.local-access.descriptor]
+    // r[impl binette.local-access.descriptor+2]
     // r[impl binette.local-access.strict-hybrid]
     pub(super) fn compile_root(
         &mut self,
@@ -1951,7 +1951,7 @@ impl LocalEncodeStencilCompiler<'_> {
 }
 
 impl FixedEncodeCompiler {
-    // r[impl binette.local-access.descriptor]
+    // r[impl binette.local-access.descriptor+2]
     pub(super) fn compile_descriptor_root(
         &mut self,
         descriptor: &LocalTypeDescriptor,

@@ -115,7 +115,7 @@ enum RustLocalEvent {
 }
 
 // r[verify binette.local-access.backends]
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn rust_facet_descriptor_drives_strict_local_encode_stencil() {
@@ -138,7 +138,7 @@ fn rust_facet_descriptor_drives_strict_local_encode_stencil() {
 }
 
 // r[verify binette.local-access.backends]
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn rust_facet_descriptor_drives_strict_local_decode_stencil() {
@@ -178,7 +178,7 @@ fn rust_facet_descriptor_drives_strict_local_decode_stencil() {
 }
 
 // r[verify binette.local-access.backends]
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 // r[verify binette.compat.enum]
 // r[verify binette.compat.enum.payload]
@@ -229,7 +229,7 @@ fn rust_facet_descriptor_drives_strict_local_enum_decode_stencil() {
 }
 
 // r[verify binette.local-access.backends]
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 // r[verify binette.compat.enum]
 // r[verify binette.compat.enum.payload]
@@ -253,7 +253,7 @@ fn rust_facet_descriptor_drives_strict_local_enum_encode_stencil() {
 }
 
 // r[verify binette.local-access.backends]
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 // r[verify binette.aggregate.list]
 #[test]
@@ -274,7 +274,7 @@ fn rust_facet_descriptor_drives_strict_local_vec_encode_stencil() {
 }
 
 // r[verify binette.local-access.backends]
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 // r[verify binette.scalar.string]
 #[test]
@@ -292,7 +292,7 @@ fn rust_facet_descriptor_drives_strict_local_string_encode_stencil() {
     assert_eq!(actual, encode_to_vec_with_plan(&value, &plan).unwrap());
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn strict_local_encode_stencil_accepts_swift_imported_fixed_descriptor() {
@@ -313,7 +313,7 @@ fn strict_local_encode_stencil_accepts_swift_imported_fixed_descriptor() {
     assert_eq!(actual, encode_to_vec_with_plan(&value, &plan).unwrap());
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn strict_local_decode_stencil_accepts_swift_imported_fixed_descriptor() {
@@ -351,8 +351,8 @@ fn strict_local_decode_stencil_accepts_swift_imported_fixed_descriptor() {
     assert_eq!(decoded, value);
 }
 
-// r[verify binette.local-access.swift-probes]
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.swift-probes+2]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 // r[verify binette.aggregate.option]
 #[test]
@@ -408,8 +408,8 @@ fn swift_probe_fixture_direct_option_drives_strict_local_stencils() {
     );
 }
 
-// r[verify binette.local-access.swift-probes]
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.swift-probes+2]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 // r[verify binette.aggregate.option]
 #[test]
@@ -503,7 +503,7 @@ fn assert_schema_only_hybrid_encode_matches<T>(
     assert_eq!(actual, encode_to_vec_with_plan(value, &facet_plan).unwrap());
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_string_subtree() {
@@ -531,7 +531,7 @@ fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_string_subtree() {
     assert_eq!(actual, encode_to_vec_with_plan(&value, &plan).unwrap());
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_string_subtree() {
@@ -583,8 +583,8 @@ fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_string_subtree() {
     assert_eq!(decoded.code, value.code);
 }
 
-// r[verify binette.local-access.swift-probes]
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.swift-probes+2]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn exported_swift_descriptor_drives_hybrid_local_string_stencils() {
@@ -655,7 +655,7 @@ fn exported_swift_descriptor_drives_hybrid_local_string_stencils() {
 }
 
 // r[verify binette.local-access.boundary]
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn schema_only_writer_plan_drives_swift_local_encode_stencil() {
@@ -690,7 +690,7 @@ fn schema_only_writer_plan_drives_swift_local_encode_stencil() {
 }
 
 // r[verify binette.local-access.boundary]
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 // r[verify binette.aggregate.option]
 // r[verify binette.aggregate.list]
@@ -738,7 +738,7 @@ fn schema_only_writer_plans_cover_swift_option_array_and_enum_subtrees() {
     );
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn local_stencils_reject_byte_sequence_descriptor_that_disagrees_with_plan() {
@@ -793,7 +793,7 @@ fn local_stencils_reject_byte_sequence_descriptor_that_disagrees_with_plan() {
 }
 
 // r[verify binette.local-access.boundary]
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 #[test]
 fn local_encode_rejects_descriptor_field_name_that_disagrees_with_plan() {
     let facet_plan = writer_plan_for::<SwiftText>().unwrap();
@@ -816,7 +816,7 @@ fn local_encode_rejects_descriptor_field_name_that_disagrees_with_plan() {
 }
 
 // r[verify binette.local-access.boundary]
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 #[test]
 fn local_decode_rejects_descriptor_field_name_that_disagrees_with_plan() {
     let writer_plan = writer_plan_for::<SwiftText>().unwrap();
@@ -854,7 +854,7 @@ fn local_decode_rejects_descriptor_field_name_that_disagrees_with_plan() {
 }
 
 // r[verify binette.local-access.boundary]
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 #[test]
 fn local_decode_rejects_descriptor_enum_variant_name_that_disagrees_with_plan() {
     let writer_plan = writer_plan_for::<SwiftEventEnvelope>().unwrap();
@@ -891,7 +891,7 @@ fn local_decode_rejects_descriptor_enum_variant_name_that_disagrees_with_plan() 
     ));
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_optional_string_subtree() {
@@ -929,7 +929,7 @@ fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_optional_string_subt
     }
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_optional_string_subtree() {
@@ -988,7 +988,7 @@ fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_optional_string_subt
     }
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn strict_local_encode_stencil_accepts_direct_tag_option_descriptor() {
@@ -1019,7 +1019,7 @@ fn strict_local_encode_stencil_accepts_direct_tag_option_descriptor() {
     );
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn strict_local_decode_stencil_accepts_direct_tag_option_descriptor() {
@@ -1079,7 +1079,7 @@ fn strict_local_decode_stencil_accepts_direct_tag_option_descriptor() {
     ));
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_array_subtree() {
@@ -1108,7 +1108,7 @@ fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_array_subtree() {
     assert_eq!(actual, encode_to_vec_with_plan(&value, &plan).unwrap());
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_array_subtree() {
@@ -1158,7 +1158,7 @@ fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_array_subtree() {
     assert_eq!(decoded, value);
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_struct_array_subtree() {
@@ -1196,7 +1196,7 @@ fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_struct_array_subtree
     assert_eq!(actual, encode_to_vec_with_plan(&value, &plan).unwrap());
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_struct_array_subtree() {
@@ -1255,7 +1255,7 @@ fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_struct_array_subtree
     assert_eq!(decoded, value);
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn hybrid_local_encode_stencil_uses_bound_backend_thunks_for_enum_subtree() {
@@ -1302,7 +1302,7 @@ fn hybrid_local_encode_stencil_uses_bound_backend_thunks_for_enum_subtree() {
     }
 }
 
-// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.descriptor+2]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
 fn hybrid_local_decode_stencil_uses_bound_backend_thunks_for_enum_subtree() {

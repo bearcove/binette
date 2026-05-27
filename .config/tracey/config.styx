@@ -3,7 +3,12 @@
 specs (
     {
         name binette
-        include (docs/content/spec/*.md)
+        include (
+            docs/content/spec/_index.md
+            docs/content/spec/bundles.md
+            docs/content/spec/compatibility.md
+            docs/content/spec/schemas.md
+        )
         impls (
             {
                 name rust
@@ -16,6 +21,16 @@ specs (
                     typescript/*/dist/**
                     typescript/*/dist-test/**
                 )
+            }
+        )
+    }
+    {
+        name binette-local-access
+        include (docs/content/spec/local-access.md)
+        impls (
+            {
+                name rust
+                include (rust/**/*.rs)
             }
         )
     }
