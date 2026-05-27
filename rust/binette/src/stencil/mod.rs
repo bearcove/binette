@@ -15,7 +15,9 @@ use crate::encode::{
     WriterVariantPayloadPlan, WriterVariantPlan, encode_node_with_writer_node, writer_plan_for,
 };
 use crate::hash::primitive_for_type_id;
-use crate::local_access::{LocalSequenceEncodeThunks, LocalThunkBindings, LocalTypeDescriptor};
+use crate::local_access::{
+    LocalSequenceDecodeThunks, LocalSequenceEncodeThunks, LocalThunkBindings, LocalTypeDescriptor,
+};
 use crate::plan::{
     EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, ReaderPlan, StructFieldPlan,
     reader_plan_for,
@@ -36,8 +38,8 @@ use self::aarch64::{
     status_for_failure,
 };
 use self::compile::{
-    CursorStencilCompiler, LocalDecodeStencilCompiler, LocalEncodeStencilCompiler, StencilCompiler,
-    StencilEncodeCompiler,
+    CursorStencilCompiler, LocalDecodeStencilCompiler, LocalEncodeStencilCompiler,
+    LocalHybridDecodeStencilCompiler, StencilCompiler, StencilEncodeCompiler,
 };
 use self::memory::ExecutableMemory;
 use self::runtime::{
@@ -91,8 +93,7 @@ pub struct LocalStencilEncoder {
 
 pub struct LocalStencilDecoder {
     code: ExecutableMemory,
-    func: FixedStencilFn,
-    length_check: LengthCheck,
+    entry: LocalDecodeStencilEntry,
     failures: Vec<StencilFailure>,
     report: StencilReport,
 }
@@ -140,6 +141,17 @@ enum LocalEncodeStencilEntry {
     Helper {
         func: EncodeStencilFn,
         runtime: Box<StencilEncodeRuntime>,
+    },
+}
+
+enum LocalDecodeStencilEntry {
+    Fixed {
+        func: FixedStencilFn,
+        length_check: LengthCheck,
+    },
+    Hybrid {
+        func: HybridStencilFn,
+        runtime: Box<StencilRuntime>,
     },
 }
 
@@ -308,9 +320,14 @@ impl LocalStencilEncoder {
 
 impl LocalStencilDecoder {
     pub fn expected_len(&self) -> usize {
-        self.length_check
-            .fixed_expected_len()
-            .expect("local stencil decoder has variable input length")
+        match &self.entry {
+            LocalDecodeStencilEntry::Fixed { length_check, .. } => length_check
+                .fixed_expected_len()
+                .expect("local stencil decoder has variable input length"),
+            LocalDecodeStencilEntry::Hybrid { .. } => {
+                panic!("local hybrid stencil decoder has variable input length")
+            }
+        }
     }
 
     pub fn code_len(&self) -> usize {
@@ -329,14 +346,33 @@ impl LocalStencilDecoder {
     /// [`LocalTypeDescriptor`] used to build this decoder. The storage must be
     /// valid to write for the duration of the call.
     pub unsafe fn decode_raw_into(&self, input: &[u8], out: *mut u8) -> Result<(), StencilError> {
-        self.length_check.validate(input)?;
-        // SAFETY: the caller promises that `out` points to writable storage
-        // matching the descriptor used to compile this decoder.
-        let status = unsafe { (self.func)(input.as_ptr(), input.len(), out) };
-        if status == STENCIL_OK {
-            Ok(())
-        } else {
-            Err(failure_for_status(&self.failures, status, input))
+        match &self.entry {
+            LocalDecodeStencilEntry::Fixed { func, length_check } => {
+                length_check.validate(input)?;
+                // SAFETY: the caller promises that `out` points to writable storage
+                // matching the descriptor used to compile this decoder.
+                let status = unsafe { func(input.as_ptr(), input.len(), out) };
+                if status == STENCIL_OK {
+                    Ok(())
+                } else {
+                    Err(failure_for_status(&self.failures, status, input))
+                }
+            }
+            LocalDecodeStencilEntry::Hybrid { func, runtime } => {
+                // SAFETY: the caller promises that `out` points to writable storage
+                // matching the descriptor used to compile this decoder.
+                let result = unsafe { func(runtime.as_ref(), input.as_ptr(), input.len(), out) };
+                if let Some(status) = hybrid_error_status(result) {
+                    return Err(failure_for_status(&self.failures, status, input));
+                }
+                if result != input.len() {
+                    return Err(StencilError::InputLength {
+                        expected: result,
+                        actual: input.len(),
+                    });
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -602,8 +638,57 @@ pub fn strict_local_stencil_decoder_from_plan(
     let func = code.as_fixed_fn();
     Ok(LocalStencilDecoder {
         code,
-        func,
-        length_check,
+        entry: LocalDecodeStencilEntry::Fixed { func, length_check },
+        failures: compiler.failures,
+        report,
+    })
+}
+
+// r[impl binette.local-access.descriptor]
+// r[impl binette.local-access.strict-hybrid]
+// r[impl binette.mode.compact]
+pub fn hybrid_local_stencil_decoder_from_plan(
+    plan: &ReaderPlan,
+    writer_registry: &SchemaRegistry,
+    descriptor: &LocalTypeDescriptor,
+    thunks: &LocalThunkBindings,
+) -> Result<LocalStencilDecoder, StencilError> {
+    match strict_local_stencil_decoder_from_plan(plan, writer_registry, descriptor) {
+        Ok(decoder) => return Ok(decoder),
+        Err(err) if !matches!(&err, StencilError::Unsupported { .. }) => return Err(err),
+        Err(_) => {}
+    }
+
+    if !matches!(&descriptor.schema, crate::local_access::LocalSchemaRef::Type(type_ref) if type_ref == plan.reader_root())
+    {
+        return Err(StencilError::Unsupported {
+            path: "$".to_owned(),
+            reason: "local descriptor root schema differs from reader plan root",
+        });
+    }
+
+    let mut compiler = LocalHybridDecodeStencilCompiler {
+        writer_registry,
+        plan_nodes: plan.nodes(),
+        ops: Vec::new(),
+        helpers: Vec::new(),
+        failures: Vec::new(),
+        thunks,
+    };
+    compiler.compile_root(descriptor, &plan.root)?;
+
+    let code = generate_hybrid_code(&compiler.ops)?;
+    let report = decode_report(&code, &compiler.ops, &compiler.helpers, &compiler.failures);
+    let func = code.as_hybrid_fn();
+    Ok(LocalStencilDecoder {
+        code,
+        entry: LocalDecodeStencilEntry::Hybrid {
+            func,
+            runtime: Box::new(StencilRuntime {
+                writer_registry: writer_registry.clone(),
+                helpers: compiler.helpers,
+            }),
+        },
         failures: compiler.failures,
         report,
     })
@@ -746,6 +831,7 @@ fn decode_helper_paths(helpers: &[StencilHelper], failures: &[StencilFailure]) -
         .iter()
         .filter_map(|helper| match helper {
             StencilHelper::Decode { failure_index, .. }
+            | StencilHelper::LocalSequenceBytes { failure_index, .. }
             | StencilHelper::Skip { failure_index, .. } => helper_path(failures, *failure_index),
         })
         .collect()

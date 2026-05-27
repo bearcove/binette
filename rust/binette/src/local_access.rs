@@ -101,11 +101,19 @@ pub type LocalSequenceLenThunk =
     unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> usize;
 pub type LocalSequenceU8Thunk =
     unsafe extern "C" fn(value: *const u8, index: usize, context: *mut c_void) -> u8;
+pub type LocalSequenceWriteBytesThunk =
+    unsafe extern "C" fn(value: *mut u8, ptr: *const u8, len: usize, context: *mut c_void) -> bool;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LocalSequenceEncodeThunks {
     pub len: LocalSequenceLenThunk,
     pub element_u8: LocalSequenceU8Thunk,
+    pub context: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LocalSequenceDecodeThunks {
+    pub write_bytes: LocalSequenceWriteBytesThunk,
     pub context: usize,
 }
 
@@ -116,9 +124,16 @@ pub struct LocalSequenceThunkBinding {
     pub thunks: LocalSequenceEncodeThunks,
 }
 
+#[derive(Debug, Clone)]
+pub struct LocalSequenceDecodeThunkBinding {
+    pub write: LocalThunk,
+    pub thunks: LocalSequenceDecodeThunks,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct LocalThunkBindings {
     sequence_u8: Vec<LocalSequenceThunkBinding>,
+    sequence_decode: Vec<LocalSequenceDecodeThunkBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +152,7 @@ pub enum LocalSequenceStorage {
     Thunk {
         len: LocalThunk,
         element: LocalThunk,
+        write: Option<LocalThunk>,
     },
 }
 
@@ -229,6 +245,16 @@ impl LocalThunkBindings {
         self
     }
 
+    pub fn with_sequence_decode(
+        mut self,
+        write: LocalThunk,
+        thunks: LocalSequenceDecodeThunks,
+    ) -> Self {
+        self.sequence_decode
+            .push(LocalSequenceDecodeThunkBinding { write, thunks });
+        self
+    }
+
     pub fn sequence_u8(
         &self,
         len: &LocalThunk,
@@ -237,6 +263,13 @@ impl LocalThunkBindings {
         self.sequence_u8
             .iter()
             .find(|binding| &binding.len == len && &binding.element == element)
+            .map(|binding| binding.thunks)
+    }
+
+    pub fn sequence_decode(&self, write: &LocalThunk) -> Option<LocalSequenceDecodeThunks> {
+        self.sequence_decode
+            .iter()
+            .find(|binding| &binding.write == write)
             .map(|binding| binding.thunks)
     }
 }
@@ -424,6 +457,7 @@ mod rust_layout {
                         LocalSequenceStorage::Thunk {
                             len: LocalThunk::new(LocalBackend::RustFacet, "Facet.List.len"),
                             element: LocalThunk::new(LocalBackend::RustFacet, "Facet.List.element"),
+                            write: None,
                         }
                     });
                     Ok(LocalTypeKind::Sequence {
@@ -954,6 +988,7 @@ mod tests {
                 storage: LocalSequenceStorage::Thunk {
                     len: thunk.clone(),
                     element: LocalThunk::new(LocalBackend::SwiftProbe, "SwiftArray.element"),
+                    write: None,
                 },
             },
         );
@@ -1003,6 +1038,10 @@ mod tests {
                 LocalSequenceStorage::Thunk {
                     len: LocalThunk::new(LocalBackend::SwiftProbe, "Swift.String.utf8.count"),
                     element: LocalThunk::new(LocalBackend::SwiftProbe, "Swift.String.utf8.element"),
+                    write: Some(LocalThunk::new(
+                        LocalBackend::SwiftProbe,
+                        "Swift.String.init.utf8",
+                    )),
                 },
             )),
         );
@@ -1056,6 +1095,7 @@ mod tests {
                                         LocalBackend::SwiftProbe,
                                         "Swift.Array.element",
                                     ),
+                                    write: None,
                                 },
                             },
                         ),
@@ -1165,6 +1205,7 @@ mod tests {
                 LocalSequenceStorage::Thunk {
                     len: LocalThunk::new(LocalBackend::RustFacet, "Facet.List.len"),
                     element: LocalThunk::new(LocalBackend::SwiftProbe, "Swift.String.utf8.element"),
+                    write: None,
                 },
             )),
         );

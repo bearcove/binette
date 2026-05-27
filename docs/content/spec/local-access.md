@@ -69,6 +69,10 @@ inside the current process.
 > the embedding backend to bind those names to callable process-local function
 > pointers before compilation succeeds. An unbound thunk is not a valid implicit
 > fallback.
+>
+> Decode-side fallback thunks construct or write the local representation for
+> the unsupported subtree. Encode-side fallback thunks project local bytes or
+> elements from the same subtree. Both directions are explicit backend calls.
 
 > r[binette.local-access.runtime-facts]
 >

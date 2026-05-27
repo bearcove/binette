@@ -61,6 +61,28 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
                 Err(_) => return hybrid_error_for_helper(helper),
             }
         }
+        StencilHelper::LocalSequenceBytes {
+            output_offset,
+            thunks,
+            ..
+        } => {
+            if tail.len() < 4 {
+                return hybrid_error_for_helper(helper);
+            }
+            let len = u32::from_le_bytes(tail[..4].try_into().unwrap()) as usize;
+            let Some(end) = 4usize.checked_add(len) else {
+                return hybrid_error_for_helper(helper);
+            };
+            let Some(bytes) = tail.get(4..end) else {
+                return hybrid_error_for_helper(helper);
+            };
+            let output = unsafe { out.add(*output_offset) };
+            let context = thunks.context as *mut std::ffi::c_void;
+            if !unsafe { (thunks.write_bytes)(output, bytes.as_ptr(), bytes.len(), context) } {
+                return hybrid_error_for_helper(helper);
+            }
+            end
+        }
         StencilHelper::Skip { writer_type, .. } => {
             let mut reader = CompactReader::new(tail);
             if reader
@@ -80,9 +102,9 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
 
 fn hybrid_error_for_helper(helper: &StencilHelper) -> usize {
     match helper {
-        StencilHelper::Decode { failure_index, .. } | StencilHelper::Skip { failure_index, .. } => {
-            hybrid_error_for_failure(*failure_index)
-        }
+        StencilHelper::Decode { failure_index, .. }
+        | StencilHelper::LocalSequenceBytes { failure_index, .. }
+        | StencilHelper::Skip { failure_index, .. } => hybrid_error_for_failure(*failure_index),
     }
 }
 

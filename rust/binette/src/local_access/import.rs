@@ -268,9 +268,17 @@ impl LocalSequenceStorage {
                 }
                 Ok(())
             }
-            Self::Thunk { len, element } => {
+            Self::Thunk {
+                len,
+                element,
+                write,
+            } => {
                 len.validate_backend(backend, path)?;
-                element.validate_backend(backend, path)
+                element.validate_backend(backend, path)?;
+                if let Some(write) = write {
+                    write.validate_backend(backend, path)?;
+                }
+                Ok(())
             }
         }
     }
