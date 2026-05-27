@@ -157,8 +157,8 @@ pub(super) enum EncodeStencilOp {
         kind: EncodeBytesKind,
     },
     Enum {
-        shape: &'static Shape,
         input_offset: usize,
+        selector: EncodeEnumSelector,
         cases: Vec<EncodeEnumCase>,
     },
     Option {
@@ -197,9 +197,15 @@ pub(super) enum EncodeListLayout {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) enum EncodeEnumSelector {
+    Facet { shape: &'static Shape },
+    DirectTag { offset: usize },
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct EncodeEnumCase {
-    pub(super) facet_index: usize,
+    pub(super) local_index: u32,
     pub(super) wire_index: u32,
     pub(super) ops: Vec<EncodeStencilOp>,
 }

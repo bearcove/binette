@@ -206,6 +206,30 @@ fn rust_facet_descriptor_drives_strict_local_enum_decode_stencil() {
     ));
 }
 
+// r[verify binette.local-access.backends]
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+// r[verify binette.compat.enum]
+// r[verify binette.compat.enum.payload]
+#[test]
+fn rust_facet_descriptor_drives_strict_local_enum_encode_stencil() {
+    let value = RustLocalEvent::Named {
+        code: 0x1122,
+        flag: true,
+    };
+    let plan = writer_plan_for::<RustLocalEvent>().unwrap();
+    let descriptor = rust_facet_descriptor_for::<RustLocalEvent>().unwrap();
+    let encoder = strict_local_stencil_encoder_from_plan(&plan, &descriptor).unwrap();
+
+    assert_eq!(descriptor.backend, LocalBackend::RustFacet);
+    assert_eq!(encoder.report().mode, StencilMode::Strict);
+    assert_eq!(encoder.report().helper_count, 0);
+    assert!(encoder.report().helper_paths.is_empty());
+    let actual =
+        unsafe { encoder.encode_raw_to_vec((&value as *const RustLocalEvent).cast()) }.unwrap();
+    assert_eq!(actual, encode_to_vec_with_plan(&value, &plan).unwrap());
+}
+
 // r[verify binette.local-access.descriptor]
 // r[verify binette.local-access.strict-hybrid]
 #[test]

@@ -2336,15 +2336,20 @@ impl StencilEncodeCompiler {
                 &variant_path,
             )?;
             cases.push(EncodeEnumCase {
-                facet_index: variant.facet_index,
+                local_index: u32::try_from(variant.facet_index).map_err(|_| {
+                    StencilError::Unsupported {
+                        path: path.to_owned(),
+                        reason: "writer enum facet index does not fit u32",
+                    }
+                })?,
                 wire_index: variant.wire_index,
                 ops,
             });
         }
 
         self.ops.push(EncodeStencilOp::Enum {
-            shape,
             input_offset,
+            selector: EncodeEnumSelector::Facet { shape },
             cases,
         });
         Ok(())
@@ -2642,7 +2647,13 @@ impl LocalEncodeStencilCompiler<'_> {
             }),
             WriterNode::Enum { variants } => {
                 self.flush_direct_segment(pending);
-                self.push_projected_enum(descriptor, variants, input_offset, path)
+                match self.push_direct_enum(descriptor, variants, input_offset, path) {
+                    Ok(()) => Ok(()),
+                    Err(StencilError::Unsupported { .. }) => {
+                        self.push_projected_enum(descriptor, variants, input_offset, path)
+                    }
+                    Err(err) => Err(err),
+                }
             }
             WriterNode::List { element } => {
                 self.flush_direct_segment(pending);
@@ -2805,6 +2816,150 @@ impl LocalEncodeStencilCompiler<'_> {
             });
         self.ops.push(EncodeStencilOp::Helper { helper_index });
         Ok(())
+    }
+
+    fn push_direct_enum(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        variants: &[WriterVariantPlan],
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let (tag_offset, local_variants) = local_enum_direct_tag_variants(descriptor, path)?;
+        let mut cases = Vec::with_capacity(variants.len());
+        for variant in variants {
+            let local_variant = local_variants.get(variant.facet_index).ok_or_else(|| {
+                StencilError::Unsupported {
+                    path: path.to_owned(),
+                    reason: "writer enum variant index is out of range",
+                }
+            })?;
+            let variant_path = format!("{path}.{}", local_variant.name);
+            let ops = self.compile_direct_enum_payload(
+                local_variant,
+                &variant.payload,
+                input_offset,
+                &variant_path,
+            )?;
+            cases.push(EncodeEnumCase {
+                local_index: local_variant.index,
+                wire_index: variant.wire_index,
+                ops,
+            });
+        }
+
+        self.ops.push(EncodeStencilOp::Enum {
+            input_offset,
+            selector: EncodeEnumSelector::DirectTag { offset: tag_offset },
+            cases,
+        });
+        Ok(())
+    }
+
+    fn compile_direct_enum_payload(
+        &mut self,
+        local_variant: &crate::local_access::LocalVariantDescriptor,
+        payload: &WriterVariantPayloadPlan,
+        input_offset: usize,
+        path: &str,
+    ) -> Result<Vec<EncodeStencilOp>, StencilError> {
+        let outer_ops = std::mem::take(&mut self.ops);
+        let mut pending = FixedEncodeSegment {
+            ops: Vec::new(),
+            output_len: 0,
+        };
+        let result = (|| {
+            match payload {
+                WriterVariantPayloadPlan::Unit => {}
+                WriterVariantPayloadPlan::Newtype(element) => {
+                    let payload_descriptor = local_variant.payload.as_deref().ok_or_else(|| {
+                        StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "writer enum newtype payload is missing local descriptor",
+                        }
+                    })?;
+                    let payload_offset = checked_offset(
+                        input_offset,
+                        local_direct_offset(&local_variant.access, path)?,
+                        path,
+                    )?;
+                    self.compile_node(
+                        payload_descriptor,
+                        &element.node,
+                        payload_offset,
+                        path,
+                        &mut pending,
+                    )?;
+                }
+                WriterVariantPayloadPlan::Tuple(elements) => {
+                    let descriptor_fields = local_struct_fields(
+                        local_variant.payload.as_deref().ok_or_else(|| {
+                            StencilError::Unsupported {
+                                path: path.to_owned(),
+                                reason: "writer enum tuple payload is missing local descriptor",
+                            }
+                        })?,
+                        path,
+                    )?;
+                    for element in elements {
+                        let field_descriptor = descriptor_fields
+                            .get(element.facet_index)
+                            .ok_or_else(|| StencilError::Unsupported {
+                                path: path.to_owned(),
+                                reason: "writer enum tuple descriptor field index is out of range",
+                            })?;
+                        let field_offset = checked_offset(
+                            input_offset,
+                            local_direct_offset(&field_descriptor.access, path)?,
+                            path,
+                        )?;
+                        self.compile_node(
+                            &field_descriptor.descriptor,
+                            &element.node,
+                            field_offset,
+                            &format!("{path}.{}", element.facet_index),
+                            &mut pending,
+                        )?;
+                    }
+                }
+                WriterVariantPayloadPlan::Struct(fields) => {
+                    let descriptor_fields = local_struct_fields(
+                        local_variant.payload.as_deref().ok_or_else(|| {
+                            StencilError::Unsupported {
+                                path: path.to_owned(),
+                                reason: "writer enum struct payload is missing local descriptor",
+                            }
+                        })?,
+                        path,
+                    )?;
+                    for field in fields {
+                        let field_path = format!("{path}.{}", field.name);
+                        let field_descriptor = descriptor_fields
+                            .get(field.facet_index)
+                            .ok_or_else(|| StencilError::Unsupported {
+                                path: field_path.clone(),
+                                reason: "writer enum struct descriptor field index is out of range",
+                            })?;
+                        let field_offset = checked_offset(
+                            input_offset,
+                            local_direct_offset(&field_descriptor.access, &field_path)?,
+                            &field_path,
+                        )?;
+                        self.compile_node(
+                            &field_descriptor.descriptor,
+                            &field.node,
+                            field_offset,
+                            &field_path,
+                            &mut pending,
+                        )?;
+                    }
+                }
+            }
+            self.flush_direct_segment(&mut pending);
+            Ok(())
+        })();
+        let payload_ops = std::mem::replace(&mut self.ops, outer_ops);
+        result.map(|()| payload_ops)
     }
 
     fn push_projected_enum(

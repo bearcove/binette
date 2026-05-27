@@ -53,9 +53,9 @@ use self::runtime::{
     stencil_enum_variant_index, stencil_list_element, stencil_list_len, stencil_option_parts,
 };
 use self::types::{
-    CopyOp, CopyWidth, EncodeBytesKind, EncodeEnumCase, EncodeListLayout, EncodeOptionLayout,
-    EncodeStencilOp, EnumCase, FixedEncodeCompiler, FixedEncodeSegment, HybridStencilOp,
-    LengthCheck, LocalEnumDecodeCase, LocalEnumDecodePayload, LocalEnumEncodeCase,
+    CopyOp, CopyWidth, EncodeBytesKind, EncodeEnumCase, EncodeEnumSelector, EncodeListLayout,
+    EncodeOptionLayout, EncodeStencilOp, EnumCase, FixedEncodeCompiler, FixedEncodeSegment,
+    HybridStencilOp, LengthCheck, LocalEnumDecodeCase, LocalEnumDecodePayload, LocalEnumEncodeCase,
     LocalEnumEncodePayload, StencilEncodeHelper, StencilEncodeRuntime, StencilFailure,
     StencilHelper, StencilOp, StencilRuntime, TaggedLength,
 };
@@ -571,24 +571,64 @@ pub fn strict_local_stencil_encoder_from_plan(
         });
     }
 
-    let mut compiler = FixedEncodeCompiler {
+    let mut fixed_compiler = FixedEncodeCompiler {
         ops: Vec::new(),
         output_offset: 0,
     };
-    let output_len = compiler.compile_descriptor_root(descriptor, plan.root_node())?;
+    match fixed_compiler.compile_descriptor_root(descriptor, plan.root_node()) {
+        Ok(output_len) => {
+            let code = generate_direct_encode_code(&fixed_compiler.ops, output_len)?;
+            let report = StencilReport {
+                mode: StencilMode::Strict,
+                code_len: code.len(),
+                native_ops: fixed_compiler.ops.len(),
+                helper_count: 0,
+                helper_paths: Vec::new(),
+            };
+            let func = code.as_direct_encode_fn();
+            return Ok(LocalStencilEncoder {
+                code,
+                entry: LocalEncodeStencilEntry::Direct { func },
+                report,
+            });
+        }
+        Err(err) if !matches!(&err, StencilError::Unsupported { .. }) => return Err(err),
+        Err(_) => {}
+    }
 
-    let code = generate_direct_encode_code(&compiler.ops, output_len)?;
+    let empty_thunks = LocalThunkBindings::new();
+    let mut compiler = LocalEncodeStencilCompiler {
+        ops: Vec::new(),
+        helpers: Vec::new(),
+        failures: Vec::new(),
+        thunks: &empty_thunks,
+    };
+    compiler.compile_root(descriptor, plan.root_node())?;
+    if !compiler.helpers.is_empty() {
+        return Err(StencilError::Unsupported {
+            path: "$".to_owned(),
+            reason: "strict local encode stencil does not support helper fallbacks",
+        });
+    }
+
+    let code = generate_encode_code(&compiler.ops)?;
     let report = StencilReport {
         mode: StencilMode::Strict,
         code_len: code.len(),
-        native_ops: compiler.ops.len(),
+        native_ops: encode_native_op_count(&compiler.ops),
         helper_count: 0,
         helper_paths: Vec::new(),
     };
-    let func = code.as_direct_encode_fn();
+    let func = code.as_encode_fn();
     Ok(LocalStencilEncoder {
         code,
-        entry: LocalEncodeStencilEntry::Direct { func },
+        entry: LocalEncodeStencilEntry::Helper {
+            func,
+            runtime: Box::new(StencilEncodeRuntime {
+                helpers: compiler.helpers,
+                nodes: plan.nodes().to_vec(),
+            }),
+        },
         report,
     })
 }

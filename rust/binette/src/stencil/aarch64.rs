@@ -900,13 +900,13 @@ fn emit_encode_op(
             value_base_reg,
         )?,
         EncodeStencilOp::Enum {
-            shape,
             input_offset,
+            selector,
             cases,
         } => emit_encode_enum_op(
             code,
-            shape,
             *input_offset,
+            *selector,
             cases,
             error_branches,
             value_base_reg,
@@ -1072,33 +1072,53 @@ fn emit_encode_failure_branch(
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn emit_encode_enum_op(
     code: &mut Vec<u8>,
-    shape: &'static Shape,
     input_offset: usize,
+    selector: EncodeEnumSelector,
     cases: &[EncodeEnumCase],
     error_branches: &mut Vec<EncodeBranchFixup>,
     value_base_reg: u8,
     option_depth: usize,
 ) -> Result<(), StencilError> {
-    if input_offset == 0 {
-        push_u32(code, mov_x_register(0, value_base_reg)?);
-    } else {
-        push_u32(
-            code,
-            add_x_immediate(0, value_base_reg, input_offset, "$input")?,
-        );
+    match selector {
+        EncodeEnumSelector::Facet { shape } => {
+            if input_offset == 0 {
+                push_u32(code, mov_x_register(0, value_base_reg)?);
+            } else {
+                push_u32(
+                    code,
+                    add_x_immediate(0, value_base_reg, input_offset, "$input")?,
+                );
+            }
+            emit_mov_x_immediate(code, 1, shape as *const Shape as usize as u64)?;
+            emit_mov_x_immediate(
+                code,
+                16,
+                stencil_enum_variant_index as *const () as usize as u64,
+            )?;
+            push_u32(code, AARCH64_BLR_X16);
+            push_u32(code, mov_x_register(24, 0)?);
+        }
+        EncodeEnumSelector::DirectTag { offset } => {
+            let tag_offset =
+                input_offset
+                    .checked_add(offset)
+                    .ok_or_else(|| StencilError::Unsupported {
+                        path: "$enum".to_owned(),
+                        reason: "enum tag input offset overflow",
+                    })?;
+            push_u32(
+                code,
+                ldur_b_register(24, value_base_reg, tag_offset, "$enum")?,
+            );
+        }
     }
-    emit_mov_x_immediate(code, 1, shape as *const Shape as usize as u64)?;
-    emit_mov_x_immediate(
-        code,
-        16,
-        stencil_enum_variant_index as *const () as usize as u64,
-    )?;
-    push_u32(code, AARCH64_BLR_X16);
-    push_u32(code, mov_x_register(24, 0)?);
 
     let mut case_branches = Vec::with_capacity(cases.len());
     for (case_index, case) in cases.iter().enumerate() {
-        push_u32(code, cmp_x_immediate(24, case.facet_index, "$enum")?);
+        push_u32(
+            code,
+            cmp_x_immediate(24, case.local_index as usize, "$enum")?,
+        );
         let offset = code.len();
         push_u32(code, 0);
         case_branches.push((offset, case_index));
@@ -1844,6 +1864,21 @@ fn ldur_w_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, Ste
     }
     patch_ldur_stur_imm9(
         0xB840_0000 | (u32::from(rn) << 5) | u32::from(rt),
+        offset,
+        path,
+    )
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn ldur_b_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, StencilError> {
+    if rt > 31 || rn > 31 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil register index exceeds AArch64 range",
+        });
+    }
+    patch_ldur_stur_imm9(
+        0x3840_0000 | (u32::from(rn) << 5) | u32::from(rt),
         offset,
         path,
     )
