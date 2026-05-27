@@ -825,6 +825,28 @@ fn nested_list_encode_jit_fixture() -> EncodeStencilFixture<aggregate::NestedLis
     }
 }
 
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn tuple_encode_jit_fixture() -> EncodeStencilFixture<aggregate::Tuple> {
+    let writer_plan = writer_plan_for::<aggregate::Tuple>().unwrap();
+    let stencil = strict_stencil_encoder_from_plan::<aggregate::Tuple>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: aggregate::tuple_sample(),
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn option_encode_jit_fixture() -> EncodeStencilFixture<aggregate::OptionValue> {
+    let writer_plan = writer_plan_for::<aggregate::OptionValue>().unwrap();
+    let stencil = strict_stencil_encoder_from_plan::<aggregate::OptionValue>(&writer_plan).unwrap();
+
+    EncodeStencilFixture {
+        sample: aggregate::option_sample(),
+        stencil,
+    }
+}
+
 macro_rules! same_schema_encode_benches {
     ($module:ident, $ty:ty, $sample:expr) => {
         mod $module {
@@ -1187,6 +1209,19 @@ mod encode {
                 )
             });
         }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn jit(bencher: Bencher) {
+            let fixture = tuple_encode_jit_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
+                )
+            });
+        }
     }
     mod list {
         use super::*;
@@ -1363,6 +1398,19 @@ mod encode {
                         &fixture.encoder,
                     )
                     .unwrap(),
+                )
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[divan::bench]
+        pub fn jit(bencher: Bencher) {
+            let fixture = option_encode_jit_fixture();
+
+            bencher.bench(|| {
+                black_box(
+                    encode_to_vec_with_stencil(black_box(&fixture.sample), &fixture.stencil)
+                        .unwrap(),
                 )
             });
         }

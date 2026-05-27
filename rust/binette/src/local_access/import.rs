@@ -114,6 +114,7 @@ pub struct LocalStorageExport {
     pub element: Option<String>,
     pub write: Option<String>,
     pub option_tag_offset: Option<usize>,
+    pub option_tag_width: Option<usize>,
     pub none_value: Option<usize>,
     pub some_value: Option<usize>,
     pub some_offset: Option<usize>,
@@ -448,8 +449,19 @@ impl LocalStorageExport {
                 tag: LocalAccess::Direct {
                     offset: required(self.option_tag_offset, path, "option_tag_offset")?,
                 },
+                tag_width: self.option_tag_width.unwrap_or(1),
                 none_value: required(self.none_value, path, "none_value")?,
                 some_value: required(self.some_value, path, "some_value")?,
+                some: LocalAccess::Direct {
+                    offset: required(self.some_offset, path, "some_offset")?,
+                },
+            }),
+            "niche-tag" => Ok(LocalOptionRepresentation::Niche {
+                tag: LocalAccess::Direct {
+                    offset: required(self.option_tag_offset, path, "option_tag_offset")?,
+                },
+                tag_width: self.option_tag_width.unwrap_or(1),
+                none_value: required(self.none_value, path, "none_value")?,
                 some: LocalAccess::Direct {
                     offset: required(self.some_offset, path, "some_offset")?,
                 },
@@ -686,7 +698,7 @@ impl LocalOptionRepresentation {
         path: &str,
     ) -> Result<(), LocalDescriptorImportError> {
         match self {
-            Self::Tag { tag, some, .. } => {
+            Self::Tag { tag, some, .. } | Self::Niche { tag, some, .. } => {
                 tag.validate_backend(backend, path)?;
                 some.validate_backend(backend, &format!("{path}.some"))
             }

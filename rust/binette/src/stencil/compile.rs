@@ -179,8 +179,7 @@ impl LocalDecodeStencilCompiler<'_> {
             });
         }
 
-        let (some_descriptor, tag_output_offset, none_value, some_value, some_output_offset) =
-            local_direct_option_parts(reader, path)?;
+        let option_parts = local_direct_option_parts(reader, path)?;
         let input_offset = self.input_offset;
         self.input_offset = checked_offset(self.input_offset, 1, path)?;
         let invalid_failure_index = self.failures.len();
@@ -191,18 +190,19 @@ impl LocalDecodeStencilCompiler<'_> {
 
         let (body, expected_some) = self.compile_branch_body(input_offset + 1, |compiler| {
             compiler.compile_node(
-                some_descriptor,
+                option_parts.some,
                 element,
-                some_output_offset,
+                option_parts.some_offset,
                 &format!("{path}.some"),
             )
         })?;
 
         self.ops.push(StencilOp::RootOption {
             input_offset,
-            tag_output_offset,
-            none_value,
-            some_value,
+            tag_output_offset: option_parts.tag_offset,
+            tag_output_width: option_parts.tag_width,
+            none_value: option_parts.none_value,
+            some_value: option_parts.some_value,
             body,
             invalid_failure_index,
         });
@@ -1504,8 +1504,7 @@ impl LocalEncodeStencilCompiler<'_> {
         input_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
-        let (some_descriptor, tag_offset, none_value, _some_value, some_offset) =
-            local_direct_option_parts(descriptor, path)?;
+        let option_parts = local_direct_option_parts(descriptor, path)?;
         let mut compiler = LocalEncodeStencilCompiler {
             ops: Vec::new(),
             helpers: Vec::new(),
@@ -1517,7 +1516,7 @@ impl LocalEncodeStencilCompiler<'_> {
             output_len: 0,
         };
         compiler.compile_node(
-            some_descriptor,
+            option_parts.some,
             element,
             0,
             &format!("{path}.some"),
@@ -1534,9 +1533,10 @@ impl LocalEncodeStencilCompiler<'_> {
         self.ops.push(EncodeStencilOp::Option {
             input_offset,
             layout: EncodeOptionLayout::DirectTag {
-                tag_offset,
-                none_value,
-                some_offset,
+                tag_offset: option_parts.tag_offset,
+                tag_width: option_parts.tag_width,
+                none_value: option_parts.none_value,
+                some_offset: option_parts.some_offset,
             },
             some_ops: compiler.ops,
         });
@@ -2414,30 +2414,49 @@ fn local_option_descriptor<'a>(
     Ok((some, representation))
 }
 
+struct LocalDirectOptionParts<'a> {
+    some: &'a LocalTypeDescriptor,
+    tag_offset: usize,
+    tag_width: usize,
+    none_value: usize,
+    some_value: Option<usize>,
+    some_offset: usize,
+}
+
 fn local_direct_option_parts<'a>(
     descriptor: &'a LocalTypeDescriptor,
     path: &str,
-) -> Result<(&'a LocalTypeDescriptor, usize, usize, usize, usize), StencilError> {
+) -> Result<LocalDirectOptionParts<'a>, StencilError> {
     let (some, representation) = local_option_descriptor(descriptor, path)?;
-    let LocalOptionRepresentation::Tag {
-        tag,
+    let (tag, tag_width, none_value, some_value, some_access) = match representation {
+        LocalOptionRepresentation::Tag {
+            tag,
+            tag_width,
+            none_value,
+            some_value,
+            some,
+        } => (tag, *tag_width, *none_value, Some(*some_value), some),
+        LocalOptionRepresentation::Niche {
+            tag,
+            tag_width,
+            none_value,
+            some,
+        } => (tag, *tag_width, *none_value, None, some),
+        _ => {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "local option descriptor does not use a direct tag",
+            });
+        }
+    };
+    Ok(LocalDirectOptionParts {
+        some,
+        tag_offset: local_direct_offset(tag, path)?,
+        tag_width,
         none_value,
         some_value,
-        some: some_access,
-    } = representation
-    else {
-        return Err(StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "local option descriptor does not use a direct tag",
-        });
-    };
-    Ok((
-        some,
-        local_direct_offset(tag, path)?,
-        *none_value,
-        *some_value,
-        local_direct_offset(some_access, &format!("{path}.some"))?,
-    ))
+        some_offset: local_direct_offset(some_access, &format!("{path}.some"))?,
+    })
 }
 
 fn local_inline_fixed_array<'a>(

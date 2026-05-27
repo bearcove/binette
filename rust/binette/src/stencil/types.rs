@@ -67,8 +67,9 @@ pub(super) enum StencilOp {
     RootOption {
         input_offset: usize,
         tag_output_offset: usize,
+        tag_output_width: usize,
         none_value: usize,
-        some_value: usize,
+        some_value: Option<usize>,
         body: Vec<StencilOp>,
         invalid_failure_index: usize,
     },
@@ -220,6 +221,7 @@ pub(super) enum EncodeOptionLayout {
     NicheString,
     DirectTag {
         tag_offset: usize,
+        tag_width: usize,
         none_value: usize,
         some_offset: usize,
     },

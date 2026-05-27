@@ -1783,6 +1783,7 @@ fn swift_direct_tag_option_u16_descriptor(root: &TypeRef) -> LocalTypeDescriptor
                 tag: LocalAccess::Direct {
                     offset: std::mem::offset_of!(SwiftTaggedMaybeU16, tag),
                 },
+                tag_width: 1,
                 none_value: 0,
                 some_value: 1,
                 some: LocalAccess::Direct {
@@ -2389,21 +2390,29 @@ fn strict_encode_accepts_helperless_enum_stencils() {
 }
 
 #[test]
-fn option_encode_hybrid_falls_back_for_unprobed_payload_layout() {
+fn option_tuple_encode_uses_strict_niche_stencil() {
     type Value = Option<(u16, String)>;
 
     let value = Some((0x1122, "payload".to_owned()));
     let plan = writer_plan_for::<Value>().unwrap();
 
-    assert!(matches!(
-        strict_stencil_encoder_from_plan::<Value>(&plan),
-        Err(StencilError::Unsupported { .. })
-    ));
+    let strict = strict_stencil_encoder_from_plan::<Value>(&plan).unwrap();
+    assert_eq!(strict.report().mode, StencilMode::Strict);
+    assert_eq!(strict.report().helper_count, 0);
+    assert!(strict.report().helper_paths.is_empty());
+    assert_eq!(
+        strict.encode_to_vec(&value).unwrap(),
+        encode_to_vec_with_plan(&value, &plan).unwrap()
+    );
+    assert_eq!(
+        strict.encode_to_vec(&None).unwrap(),
+        encode_to_vec_with_plan(&None::<(u16, String)>, &plan).unwrap()
+    );
 
     let encoder = hybrid_stencil_encoder_from_plan::<Value>(&plan).unwrap();
-    assert_eq!(encoder.report().mode, StencilMode::Hybrid);
-    assert_eq!(encoder.report().helper_count, 1);
-    assert_eq!(encoder.report().helper_paths, vec!["$"]);
+    assert_eq!(encoder.report().mode, StencilMode::Strict);
+    assert_eq!(encoder.report().helper_count, 0);
+    assert!(encoder.report().helper_paths.is_empty());
     assert_eq!(
         encoder.encode_to_vec(&value).unwrap(),
         encode_to_vec_with_plan(&value, &plan).unwrap()

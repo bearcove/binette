@@ -287,8 +287,15 @@ pub enum LocalSequenceStorage {
 pub enum LocalOptionRepresentation {
     Tag {
         tag: LocalAccess,
+        tag_width: usize,
         none_value: usize,
         some_value: usize,
+        some: LocalAccess,
+    },
+    Niche {
+        tag: LocalAccess,
+        tag_width: usize,
+        none_value: usize,
         some: LocalAccess,
     },
     NicheString {
@@ -552,10 +559,15 @@ impl LocalThunkBindings {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod rust_layout {
+    use std::alloc::{Layout as AllocLayout, alloc_zeroed, dealloc};
     use std::collections::HashMap;
+    use std::ptr::NonNull;
+    use std::slice;
 
     use super::*;
-    use facet_core::{Def, EnumRepr, Facet, Shape, StructKind, Type, UserType};
+    use facet_core::{
+        Def, EnumRepr, Facet, PtrConst, PtrMut, PtrUninit, Shape, StructKind, Type, UserType,
+    };
 
     use crate::error::SchemaError;
     use crate::facet::schema_bundle_for_shape;
@@ -772,6 +784,10 @@ mod rust_layout {
                                 write_some_bytes: None,
                             }
                         })
+                    } else if let Some(representation) =
+                        rust_option_direct_tag_representation(shape, element_shape, &element)
+                    {
+                        representation
                     } else {
                         LocalOptionRepresentation::Thunk {
                             is_some: LocalThunk::new(
@@ -1047,6 +1063,264 @@ mod rust_layout {
             .then(|| option_string_representation_from_layout(layout))
     }
 
+    pub fn rust_option_direct_tag_representation(
+        option_shape: &'static Shape,
+        element_shape: &'static Shape,
+        element: &LocalTypeDescriptor,
+    ) -> Option<LocalOptionRepresentation> {
+        let Def::Option(option) = option_shape.def else {
+            return None;
+        };
+        let option_layout = layout_for_shape(option_shape).ok()?;
+        let element_layout = layout_for_shape(element_shape).ok()?;
+        if let Some(representation) = rust_option_explicit_discriminant_representation(
+            option_shape,
+            &option_layout,
+            &element_layout,
+        ) {
+            return Some(representation);
+        }
+        if let Some(representation) = rust_option_descriptor_niche_representation(
+            option_shape,
+            &option_layout,
+            &element_layout,
+            element,
+        ) {
+            return Some(representation);
+        }
+        if let Some(representation) = rust_option_niche_representation(option_shape, &option_layout)
+        {
+            return Some(representation);
+        }
+        let mut none = Scratch::new(option_layout.size, option_layout.align)?;
+        let mut some = Scratch::new(option_layout.size, option_layout.align)?;
+        let mut element = Scratch::new(element_layout.size, element_layout.align)?;
+
+        unsafe {
+            (option.vtable.init_none)(PtrUninit::new_sized(none.as_mut_ptr()));
+            element_shape.call_default_in_place(PtrUninit::new_sized(element.as_mut_ptr()))?;
+            (option.vtable.init_some)(
+                PtrUninit::new_sized(some.as_mut_ptr()),
+                PtrMut::new_sized(element.as_mut_ptr()),
+            );
+        }
+
+        let some_ptr = unsafe { (option.vtable.get_value)(PtrConst::new_sized(some.as_mut_ptr())) };
+        if some_ptr.is_null() {
+            unsafe {
+                option_shape.call_drop_in_place(PtrMut::new_sized(some.as_mut_ptr()));
+                option_shape.call_drop_in_place(PtrMut::new_sized(none.as_mut_ptr()));
+            }
+            return None;
+        }
+        let some_base = some.as_mut_ptr() as usize;
+        let some_ptr = some_ptr as usize;
+        let some_offset = some_ptr.checked_sub(some_base)?;
+        if element_layout.size == 0 {
+            if some_offset > option_layout.size {
+                unsafe {
+                    option_shape.call_drop_in_place(PtrMut::new_sized(some.as_mut_ptr()));
+                    option_shape.call_drop_in_place(PtrMut::new_sized(none.as_mut_ptr()));
+                }
+                return None;
+            }
+        } else if some_offset.checked_add(element_layout.size)? > option_layout.size {
+            unsafe {
+                option_shape.call_drop_in_place(PtrMut::new_sized(some.as_mut_ptr()));
+                option_shape.call_drop_in_place(PtrMut::new_sized(none.as_mut_ptr()));
+            }
+            return None;
+        }
+
+        let none_bytes = unsafe { none.bytes(option_layout.size) };
+        let some_bytes = unsafe { some.bytes(option_layout.size) };
+        let payload_range = some_offset..some_offset.saturating_add(element_layout.size);
+        let all_candidates = option_tag_candidates(none_bytes, some_bytes);
+        let candidate = unique_option_tag_candidate(
+            all_candidates
+                .iter()
+                .copied()
+                .filter(|(offset, _, _)| !payload_range.contains(offset)),
+        )
+        .or_else(|| {
+            (option_layout.size == element_layout.size)
+                .then(|| unique_option_tag_candidate(all_candidates.iter().copied()))
+                .flatten()
+        });
+
+        unsafe {
+            option_shape.call_drop_in_place(PtrMut::new_sized(some.as_mut_ptr()));
+            option_shape.call_drop_in_place(PtrMut::new_sized(none.as_mut_ptr()));
+        }
+
+        let (tag_offset, none_value, some_value) = candidate?;
+        Some(LocalOptionRepresentation::Tag {
+            tag: LocalAccess::Direct { offset: tag_offset },
+            tag_width: 1,
+            none_value: usize::from(none_value),
+            some_value: usize::from(some_value),
+            some: LocalAccess::Direct {
+                offset: some_offset,
+            },
+        })
+    }
+
+    fn rust_option_explicit_discriminant_representation(
+        option_shape: &'static Shape,
+        option_layout: &LocalValueLayout,
+        element_layout: &LocalValueLayout,
+    ) -> Option<LocalOptionRepresentation> {
+        let Type::User(UserType::Enum(enum_type)) = option_shape.ty else {
+            return None;
+        };
+        if enum_type.enum_repr != EnumRepr::Rust || option_layout.size <= element_layout.size {
+            return None;
+        }
+        let tag_width = option_layout.size.checked_sub(element_layout.size)?;
+        if !matches!(tag_width, 1 | 2 | 4 | 8) {
+            return None;
+        }
+        Some(LocalOptionRepresentation::Tag {
+            tag: LocalAccess::Direct { offset: 0 },
+            tag_width,
+            none_value: 0,
+            some_value: 1,
+            some: LocalAccess::Direct { offset: tag_width },
+        })
+    }
+
+    fn rust_option_descriptor_niche_representation(
+        option_shape: &'static Shape,
+        option_layout: &LocalValueLayout,
+        element_layout: &LocalValueLayout,
+        element: &LocalTypeDescriptor,
+    ) -> Option<LocalOptionRepresentation> {
+        if option_layout.size == 0 || option_layout.size != element_layout.size {
+            return None;
+        }
+
+        let option_string = option_string_layout()?;
+        let tag_width = size_of::<usize>();
+        let candidates = descriptor_niche_tag_offsets(element, 0);
+        let tag_offset = candidates.into_iter().find(|offset| {
+            read_option_none_word(option_shape, option_layout, *offset)
+                .is_some_and(|value| value == option_string.none_tag_value)
+        })?;
+
+        Some(LocalOptionRepresentation::Niche {
+            tag: LocalAccess::Direct { offset: tag_offset },
+            tag_width,
+            none_value: option_string.none_tag_value,
+            some: LocalAccess::Direct { offset: 0 },
+        })
+    }
+
+    fn descriptor_niche_tag_offsets(descriptor: &LocalTypeDescriptor, base: usize) -> Vec<usize> {
+        let mut offsets = Vec::new();
+        collect_descriptor_niche_tag_offsets(descriptor, base, &mut offsets);
+        offsets
+    }
+
+    fn collect_descriptor_niche_tag_offsets(
+        descriptor: &LocalTypeDescriptor,
+        base: usize,
+        offsets: &mut Vec<usize>,
+    ) {
+        match &descriptor.kind {
+            LocalTypeKind::Scalar(LocalScalarAccess::String(storage))
+            | LocalTypeKind::Scalar(LocalScalarAccess::Bytes(storage))
+            | LocalTypeKind::Sequence { storage, .. } => {
+                collect_sequence_capacity_offset(storage, base, offsets);
+            }
+            LocalTypeKind::Struct { fields } => {
+                for field in fields {
+                    let LocalAccess::Direct { offset } = field.access else {
+                        continue;
+                    };
+                    collect_descriptor_niche_tag_offsets(&field.descriptor, base + offset, offsets);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_sequence_capacity_offset(
+        storage: &LocalSequenceStorage,
+        base: usize,
+        offsets: &mut Vec<usize>,
+    ) {
+        let LocalSequenceStorage::DirectContiguous {
+            capacity:
+                Some(LocalAccess::Direct {
+                    offset: capacity_offset,
+                }),
+            ..
+        } = storage
+        else {
+            return;
+        };
+        offsets.push(base + capacity_offset);
+    }
+
+    fn read_option_none_word(
+        option_shape: &'static Shape,
+        option_layout: &LocalValueLayout,
+        offset: usize,
+    ) -> Option<usize> {
+        let Def::Option(option) = option_shape.def else {
+            return None;
+        };
+        let width = size_of::<usize>();
+        if offset.checked_add(width)? > option_layout.size {
+            return None;
+        }
+
+        let mut none = Scratch::new(option_layout.size, option_layout.align)?;
+        unsafe {
+            (option.vtable.init_none)(PtrUninit::new_sized(none.as_mut_ptr()));
+        }
+        let bytes = unsafe { none.bytes(option_layout.size) };
+        let value = bytes
+            .get(offset..offset + width)
+            .and_then(read_little_endian_usize);
+        unsafe {
+            option_shape.call_drop_in_place(PtrMut::new_sized(none.as_mut_ptr()));
+        }
+        value
+    }
+
+    fn rust_option_niche_representation(
+        option_shape: &'static Shape,
+        option_layout: &LocalValueLayout,
+    ) -> Option<LocalOptionRepresentation> {
+        let Type::User(UserType::Enum(enum_type)) = option_shape.ty else {
+            return None;
+        };
+        if enum_type.enum_repr != EnumRepr::RustNPO || option_layout.size == 0 {
+            return None;
+        }
+
+        let Def::Option(option) = option_shape.def else {
+            return None;
+        };
+        let mut none = Scratch::new(option_layout.size, option_layout.align)?;
+        unsafe {
+            (option.vtable.init_none)(PtrUninit::new_sized(none.as_mut_ptr()));
+        }
+        let none_bytes = unsafe { none.bytes(option_layout.size) };
+        let (tag_offset, tag_width, none_value) = unique_niche_none_tag(none_bytes)?;
+        unsafe {
+            option_shape.call_drop_in_place(PtrMut::new_sized(none.as_mut_ptr()));
+        }
+
+        Some(LocalOptionRepresentation::Niche {
+            tag: LocalAccess::Direct { offset: tag_offset },
+            tag_width,
+            none_value,
+            some: LocalAccess::Direct { offset: 0 },
+        })
+    }
+
     fn option_string_representation_from_layout(
         layout: OptionStringLayout,
     ) -> LocalOptionRepresentation {
@@ -1074,6 +1348,79 @@ mod rust_layout {
                 offset: layout.cap_offset,
             }),
             element_stride,
+        }
+    }
+
+    struct Scratch {
+        ptr: NonNull<u8>,
+        layout: AllocLayout,
+    }
+
+    impl Scratch {
+        fn new(size: usize, align: usize) -> Option<Self> {
+            let layout = AllocLayout::from_size_align(size.max(1), align).ok()?;
+            let ptr = unsafe { alloc_zeroed(layout) };
+            let ptr = NonNull::new(ptr)?;
+            Some(Self { ptr, layout })
+        }
+
+        fn as_mut_ptr(&mut self) -> *mut u8 {
+            self.ptr.as_ptr()
+        }
+
+        unsafe fn bytes(&self, len: usize) -> &[u8] {
+            unsafe { slice::from_raw_parts(self.ptr.as_ptr(), len) }
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            unsafe { dealloc(self.ptr.as_ptr(), self.layout) };
+        }
+    }
+
+    fn option_tag_candidates(none: &[u8], some: &[u8]) -> Vec<(usize, u8, u8)> {
+        none.iter()
+            .copied()
+            .zip(some.iter().copied())
+            .enumerate()
+            .filter_map(|(offset, (none, some))| (none != some).then_some((offset, none, some)))
+            .collect()
+    }
+
+    fn unique_option_tag_candidate(
+        candidates: impl IntoIterator<Item = (usize, u8, u8)>,
+    ) -> Option<(usize, u8, u8)> {
+        let mut candidates = candidates.into_iter();
+        let candidate = candidates.next()?;
+        candidates.next().is_none().then_some(candidate)
+    }
+
+    fn unique_niche_none_tag(bytes: &[u8]) -> Option<(usize, usize, usize)> {
+        [8usize, 4, 2, 1]
+            .into_iter()
+            .filter(|width| bytes.len() >= *width)
+            .find_map(|width| {
+                let mut candidates =
+                    bytes
+                        .chunks_exact(width)
+                        .enumerate()
+                        .filter_map(|(index, chunk)| {
+                            let value = read_little_endian_usize(chunk)?;
+                            (value != 0).then_some((index * width, width, value))
+                        });
+                let candidate = candidates.next()?;
+                candidates.next().is_none().then_some(candidate)
+            })
+    }
+
+    fn read_little_endian_usize(bytes: &[u8]) -> Option<usize> {
+        match bytes.len() {
+            1 => Some(usize::from(bytes[0])),
+            2 => Some(usize::from(u16::from_le_bytes(bytes.try_into().ok()?))),
+            4 => Some(u32::from_le_bytes(bytes.try_into().ok()?).try_into().ok()?),
+            8 => usize::try_from(u64::from_le_bytes(bytes.try_into().ok()?)).ok(),
+            _ => None,
         }
     }
 
@@ -1291,6 +1638,72 @@ mod tests {
             LocalSequenceStorage::DirectContiguous { .. }
         ));
         assert!(matches!(none_tag, LocalAccess::Direct { .. }));
+    }
+
+    // r[verify binette.local-access.backends]
+    // r[verify binette.local-access.runtime-facts]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn rust_option_bool_probe_lowers_to_direct_tag_descriptor() {
+        let descriptor = rust_facet_descriptor_for::<Option<bool>>()
+            .expect("current Rust Option<bool> layout is probeable");
+
+        let LocalTypeKind::Option {
+            some: some_descriptor,
+            representation,
+        } = descriptor.kind
+        else {
+            panic!("expected option storage");
+        };
+
+        assert!(matches!(
+            some_descriptor.kind,
+            LocalTypeKind::Scalar(LocalScalarAccess::Plain)
+        ));
+        let LocalOptionRepresentation::Niche {
+            tag,
+            tag_width,
+            none_value,
+            some: some_access,
+        } = representation
+        else {
+            panic!("expected direct niche option storage");
+        };
+        assert!(matches!(tag, LocalAccess::Direct { .. }));
+        assert!(matches!(some_access, LocalAccess::Direct { .. }));
+        assert_eq!(tag_width, 1);
+        assert!(none_value <= usize::from(u8::MAX));
+    }
+
+    // r[verify binette.local-access.backends]
+    // r[verify binette.local-access.runtime-facts]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn rust_option_tuple_probe_lowers_to_direct_tag_descriptor() {
+        type Value = Option<(u16, String)>;
+
+        let descriptor =
+            rust_facet_descriptor_for::<Value>().expect("current Rust Option layout is probeable");
+
+        let LocalTypeKind::Option {
+            some,
+            representation:
+                LocalOptionRepresentation::Niche {
+                    tag,
+                    tag_width,
+                    some: some_access,
+                    none_value,
+                },
+        } = descriptor.kind
+        else {
+            panic!("expected direct niche option storage, got {descriptor:?}");
+        };
+
+        assert_eq!(some.layout, LocalValueLayout::of::<(u16, String)>());
+        assert!(matches!(tag, LocalAccess::Direct { .. }));
+        assert!(matches!(some_access, LocalAccess::Direct { .. }));
+        assert!(matches!(tag_width, 1 | 2 | 4 | 8));
+        assert_ne!(none_value, 0);
     }
 
     #[test]

@@ -357,6 +357,7 @@ fn emit_op(
         StencilOp::RootOption {
             input_offset,
             tag_output_offset,
+            tag_output_width,
             none_value,
             some_value,
             body,
@@ -366,6 +367,7 @@ fn emit_op(
             RootOptionEmit {
                 input_offset: *input_offset,
                 tag_output_offset: *tag_output_offset,
+                tag_output_width: *tag_output_width,
                 none_value: *none_value,
                 some_value: *some_value,
                 body,
@@ -448,8 +450,9 @@ const AARCH64_STURB_W10_X2: u32 = 0x3800_004A;
 struct RootOptionEmit<'a> {
     input_offset: usize,
     tag_output_offset: usize,
+    tag_output_width: usize,
     none_value: usize,
-    some_value: usize,
+    some_value: Option<usize>,
     body: &'a [StencilOp],
     invalid_failure_index: usize,
 }
@@ -477,7 +480,14 @@ fn emit_root_option_op(
     let none_branch = code.len();
     push_u32(code, 0);
 
-    emit_store_local_option_tag(code, option.tag_output_offset, option.some_value)?;
+    if let Some(some_value) = option.some_value {
+        emit_store_local_option_tag(
+            code,
+            option.tag_output_offset,
+            option.tag_output_width,
+            some_value,
+        )?;
+    }
     for op in option.body {
         emit_op(code, op, branches)?;
     }
@@ -485,7 +495,12 @@ fn emit_root_option_op(
     push_u32(code, 0);
 
     let none_offset = code.len();
-    emit_store_local_option_tag(code, option.tag_output_offset, option.none_value)?;
+    emit_store_local_option_tag(
+        code,
+        option.tag_output_offset,
+        option.tag_output_width,
+        option.none_value,
+    )?;
 
     let done = code.len();
     let none_word = patch_cond_branch_imm19(AARCH64_B_EQ, none_branch, none_offset)?;
@@ -499,14 +514,49 @@ fn emit_root_option_op(
 fn emit_store_local_option_tag(
     code: &mut Vec<u8>,
     tag_output_offset: usize,
+    tag_output_width: usize,
     value: usize,
 ) -> Result<(), StencilError> {
-    let value = u32::try_from(value).map_err(|_| StencilError::Unsupported {
-        path: "$option".to_owned(),
-        reason: "local option tag value exceeds u32",
-    })?;
-    push_u32(code, mov_w10_immediate(value)?);
-    push_u32(code, stur_b_register(10, 2, tag_output_offset, "$option")?);
+    match tag_output_width {
+        1 => {
+            let value = u32::try_from(value).map_err(|_| StencilError::Unsupported {
+                path: "$option".to_owned(),
+                reason: "local option tag value exceeds u32",
+            })?;
+            push_u32(code, mov_w10_immediate(value)?);
+            push_u32(code, stur_b_register(10, 2, tag_output_offset, "$option")?);
+        }
+        2 => {
+            let value = u32::try_from(value).map_err(|_| StencilError::Unsupported {
+                path: "$option".to_owned(),
+                reason: "local option tag value exceeds u32",
+            })?;
+            push_u32(code, mov_w10_immediate(value)?);
+            push_u32(code, stur_h_register(10, 2, tag_output_offset, "$option")?);
+        }
+        4 => {
+            let value = u32::try_from(value).map_err(|_| StencilError::Unsupported {
+                path: "$option".to_owned(),
+                reason: "local option tag value exceeds u32",
+            })?;
+            push_u32(code, mov_w10_immediate(value)?);
+            push_u32(code, stur_w_register(10, 2, tag_output_offset, "$option")?);
+        }
+        8 => {
+            let value = u64::try_from(value).map_err(|_| StencilError::Unsupported {
+                path: "$option".to_owned(),
+                reason: "local option tag value exceeds u64",
+            })?;
+            emit_mov_x_immediate(code, 10, value)?;
+            push_u32(code, stur_x_register(10, 2, tag_output_offset, "$option")?);
+        }
+        _ => {
+            return Err(StencilError::Unsupported {
+                path: "$option".to_owned(),
+                reason: "local option tag width is not supported",
+            });
+        }
+    }
     Ok(())
 }
 
@@ -1133,12 +1183,14 @@ fn emit_encode_option_op(
         }
         EncodeOptionLayout::DirectTag {
             tag_offset,
+            tag_width,
             none_value,
             some_offset,
         } => emit_encode_direct_tag_option_op(
             code,
             option,
             tag_offset,
+            tag_width,
             none_value,
             some_offset,
             error_branches,
@@ -1151,6 +1203,7 @@ fn emit_encode_direct_tag_option_op(
     code: &mut Vec<u8>,
     option: EncodeOptionEmit<'_>,
     tag_offset: usize,
+    tag_width: usize,
     none_value: usize,
     some_offset: usize,
     error_branches: &mut Vec<EncodeBranchFixup>,
@@ -1174,11 +1227,8 @@ fn emit_encode_direct_tag_option_op(
         );
     }
 
-    push_u32(
-        code,
-        ldur_b_register(24, option_base_reg, tag_offset, "$option")?,
-    );
-    push_u32(code, cmp_x_immediate(24, none_value, "$option")?);
+    emit_load_local_option_tag(code, 24, option_base_reg, tag_offset, tag_width)?;
+    emit_cmp_x_value(code, 24, none_value, "$option")?;
     let none_branch = code.len();
     push_u32(code, 0);
 
@@ -1209,6 +1259,30 @@ fn emit_encode_direct_tag_option_op(
     code[none_branch..none_branch + 4].copy_from_slice(&none_word.to_le_bytes());
     let some_done_word = patch_uncond_branch_imm26(AARCH64_B, some_done_branch, done)?;
     code[some_done_branch..some_done_branch + 4].copy_from_slice(&some_done_word.to_le_bytes());
+    Ok(())
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_load_local_option_tag(
+    code: &mut Vec<u8>,
+    rt: u8,
+    rn: u8,
+    offset: usize,
+    width: usize,
+) -> Result<(), StencilError> {
+    let word = match width {
+        1 => ldur_b_register(rt, rn, offset, "$option")?,
+        2 => ldur_h_register(rt, rn, offset, "$option")?,
+        4 => ldur_w_register(rt, rn, offset, "$option")?,
+        8 => ldur_x_register(rt, rn, offset, "$option")?,
+        _ => {
+            return Err(StencilError::Unsupported {
+                path: "$option".to_owned(),
+                reason: "local option tag width is not supported",
+            });
+        }
+    };
+    push_u32(code, word);
     Ok(())
 }
 
@@ -1764,6 +1838,21 @@ fn stur_w_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, Ste
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn stur_x_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, StencilError> {
+    if rt > 31 || rn > 31 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil register index exceeds AArch64 range",
+        });
+    }
+    patch_ldur_stur_imm9(
+        0xF800_0000 | (u32::from(rn) << 5) | u32::from(rt),
+        offset,
+        path,
+    )
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn ldur_b_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, StencilError> {
     if rt > 31 || rn > 31 {
         return Err(StencilError::Unsupported {
@@ -1773,6 +1862,36 @@ fn ldur_b_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, Ste
     }
     patch_ldur_stur_imm9(
         0x3840_0000 | (u32::from(rn) << 5) | u32::from(rt),
+        offset,
+        path,
+    )
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn ldur_h_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, StencilError> {
+    if rt > 31 || rn > 31 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil register index exceeds AArch64 range",
+        });
+    }
+    patch_ldur_stur_imm9(
+        0x7840_0000 | (u32::from(rn) << 5) | u32::from(rt),
+        offset,
+        path,
+    )
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn ldur_w_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, StencilError> {
+    if rt > 31 || rn > 31 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil register index exceeds AArch64 range",
+        });
+    }
+    patch_ldur_stur_imm9(
+        0xB840_0000 | (u32::from(rn) << 5) | u32::from(rt),
         offset,
         path,
     )
@@ -1809,6 +1928,21 @@ fn stur_b_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, Ste
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn stur_h_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, StencilError> {
+    if rt > 31 || rn > 31 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil register index exceeds AArch64 range",
+        });
+    }
+    patch_ldur_stur_imm9(
+        0x7800_0000 | (u32::from(rn) << 5) | u32::from(rt),
+        offset,
+        path,
+    )
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn patch_registers(word: &mut [u8], rt: u8, rn: u8) -> Result<(), StencilError> {
     if word.len() != 4 || rt > 31 || rn > 31 {
         return Err(StencilError::Unsupported {
@@ -1838,6 +1972,22 @@ fn cmp_x_immediate(rn: u8, value: usize, path: &str) -> Result<u32, StencilError
         });
     }
     Ok(0xF100_001F | ((value as u32) << 10) | (u32::from(rn) << 5))
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_cmp_x_value(
+    code: &mut Vec<u8>,
+    rn: u8,
+    value: usize,
+    path: &str,
+) -> Result<(), StencilError> {
+    if value <= 0xfff {
+        push_u32(code, cmp_x_immediate(rn, value, path)?);
+    } else {
+        emit_mov_x_immediate(code, 10, value as u64)?;
+        push_u32(code, cmp_x_register(rn, 10)?);
+    }
+    Ok(())
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
