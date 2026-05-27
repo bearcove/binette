@@ -26,3 +26,18 @@ probes are sibling descriptor producers; neither defines the binary format.
 Strict optimized execution uses only direct descriptor facts. Hybrid optimized
 execution compiles supported subtrees and uses explicit backend thunks only at
 unsupported subtree boundaries.
+
+## Benchmarks
+
+The Rust codec benchmarks are grouped by data shape and execution path:
+
+```bash
+cargo bench -p binette --bench codec -- --list
+```
+
+To turn Divan output into a browsable report:
+
+```bash
+cargo bench -p binette --bench codec -- --color never > /tmp/binette-bench.txt
+tools/bench_report.py /tmp/binette-bench.html < /tmp/binette-bench.txt
+```
