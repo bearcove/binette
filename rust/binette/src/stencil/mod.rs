@@ -42,7 +42,7 @@ use self::aarch64::{
 };
 use self::compile::{
     CursorStencilCompiler, LocalDecodeStencilCompiler, LocalEncodeStencilCompiler,
-    LocalHybridDecodeStencilCompiler, StencilCompiler, StencilEncodeCompiler,
+    LocalHybridDecodeStencilCompiler, StencilEncodeCompiler,
 };
 use self::memory::ExecutableMemory;
 use self::runtime::{
@@ -989,42 +989,8 @@ fn fixed_stencil_decoder_from_plan<T: Facet<'static>>(
     match strict_local_stencil_decoder_from_plan(plan, writer_registry, &descriptor) {
         Ok(decoder) => Ok(StencilDecoder::from_local(decoder)),
         Err(err) if !matches!(&err, StencilError::Unsupported { .. }) => Err(err),
-        Err(_) if matches!(&plan.root, PlanNode::Enum { .. }) => {
-            fixed_root_enum_stencil_decoder_from_plan(plan, writer_registry)
-        }
         Err(err) => Err(err),
     }
-}
-
-fn fixed_root_enum_stencil_decoder_from_plan<T: Facet<'static>>(
-    plan: &ReaderPlan,
-    writer_registry: &SchemaRegistry,
-) -> Result<StencilDecoder<T>, StencilError> {
-    let mut compiler = StencilCompiler {
-        writer_registry,
-        plan_nodes: plan.nodes(),
-        ops: Vec::new(),
-        failures: Vec::new(),
-        input_offset: 0,
-    };
-    let length_check = compiler.compile_root_enum::<T>(&plan.root)?;
-
-    let code = generate_code(&compiler.ops, compiler.failures.len())?;
-    let report = StencilReport {
-        mode: StencilMode::Strict,
-        code_len: code.len(),
-        native_ops: fixed_decode_native_op_count(&compiler.ops),
-        helper_count: 0,
-        helper_paths: Vec::new(),
-    };
-    let func = code.as_fixed_fn();
-    Ok(StencilDecoder {
-        code,
-        entry: StencilEntry::Fixed { func, length_check },
-        failures: compiler.failures,
-        report,
-        _marker: PhantomData,
-    })
 }
 
 fn cursor_stencil_decoder_from_plan<T: Facet<'static>>(

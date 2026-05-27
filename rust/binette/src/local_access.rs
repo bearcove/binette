@@ -550,7 +550,7 @@ mod rust_layout {
     use std::collections::HashMap;
 
     use super::*;
-    use facet_core::{Def, Facet, Shape, StructKind, Type, UserType};
+    use facet_core::{Def, EnumRepr, Facet, Shape, StructKind, Type, UserType};
 
     use crate::error::SchemaError;
     use crate::facet::schema_bundle_for_shape;
@@ -785,6 +785,7 @@ mod rust_layout {
                 }
                 SchemaKind::Enum { variants, .. } => {
                     let shape_enum = enum_type_for_shape(shape)?;
+                    let direct_u8_tag = shape_enum.enum_repr == EnumRepr::U8;
                     let variants = shape_enum
                         .variants
                         .iter()
@@ -823,23 +824,54 @@ mod rust_layout {
                                     )?,
                                 )),
                             };
+                            let (index, access) = if direct_u8_tag {
+                                let discriminant = shape_variant.discriminant.ok_or({
+                                    LocalAccessError::Unsupported {
+                                        type_name: shape.type_identifier,
+                                        reason: "repr(u8) enum variant is missing a discriminant",
+                                    }
+                                })?;
+                                let index =
+                                    u32::try_from(discriminant).map_err(|_| {
+                                        LocalAccessError::Unsupported {
+                                            type_name: shape.type_identifier,
+                                            reason: "repr(u8) enum variant discriminant does not fit u32",
+                                        }
+                                    })?;
+                                let access = match shape_variant.data.fields.first() {
+                                    Some(field) => LocalAccess::Direct {
+                                        offset: field.offset,
+                                    },
+                                    None => LocalAccess::Direct { offset: 0 },
+                                };
+                                (index, access)
+                            } else {
+                                (
+                                    schema_variant.index,
+                                    LocalAccess::Thunk(LocalThunk::new(
+                                        LocalBackend::RustFacet,
+                                        format!("Facet.Enum.{}", schema_variant.name),
+                                    )),
+                                )
+                            };
                             Ok(LocalVariantDescriptor {
                                 name: schema_variant.name.clone(),
-                                index: schema_variant.index,
-                                access: LocalAccess::Thunk(LocalThunk::new(
-                                    LocalBackend::RustFacet,
-                                    format!("Facet.Enum.{}", schema_variant.name),
-                                )),
+                                index,
+                                access,
                                 construct: None,
                                 payload,
                             })
                         })
                         .collect::<Result<Vec<_>, LocalAccessError>>()?;
                     Ok(LocalTypeKind::Enum {
-                        tag: LocalAccess::Thunk(LocalThunk::new(
-                            LocalBackend::RustFacet,
-                            "Facet.Enum.discriminant",
-                        )),
+                        tag: if direct_u8_tag {
+                            LocalAccess::Direct { offset: 0 }
+                        } else {
+                            LocalAccess::Thunk(LocalThunk::new(
+                                LocalBackend::RustFacet,
+                                "Facet.Enum.discriminant",
+                            ))
+                        },
                         variants,
                     })
                 }
@@ -1614,9 +1646,10 @@ mod tests {
         ));
 
         let enum_descriptor = rust_facet_descriptor_for_shape(DescriptorEvent::SHAPE).unwrap();
-        let LocalTypeKind::Enum { variants, .. } = enum_descriptor.kind else {
+        let LocalTypeKind::Enum { tag, variants } = enum_descriptor.kind else {
             panic!("expected enum descriptor");
         };
+        assert_eq!(tag, LocalAccess::Direct { offset: 0 });
         assert_eq!(
             variants
                 .iter()
@@ -1624,7 +1657,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["Empty", "Count", "Named"]
         );
+        assert_eq!(variants[0].access, LocalAccess::Direct { offset: 0 });
         assert!(variants[0].payload.is_none());
+        assert!(matches!(variants[1].access, LocalAccess::Direct { .. }));
         assert!(matches!(
             variants[1].payload.as_deref().map(|payload| &payload.kind),
             Some(LocalTypeKind::Scalar(LocalScalarAccess::Plain))

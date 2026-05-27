@@ -84,6 +84,14 @@ struct SwiftEventEnvelope {
     code: u16,
 }
 
+#[derive(Debug, PartialEq, Facet)]
+#[repr(u8)]
+enum RustLocalEvent {
+    Empty,
+    Count(u16),
+    Named { code: u16, flag: bool },
+}
+
 // r[verify binette.local-access.backends]
 // r[verify binette.local-access.descriptor]
 // r[verify binette.local-access.strict-hybrid]
@@ -145,6 +153,57 @@ fn rust_facet_descriptor_drives_strict_local_decode_stencil() {
     unsafe { decoder.decode_raw_into(&bytes, decoded.as_mut_ptr().cast()) }.unwrap();
     let decoded = unsafe { decoded.assume_init() };
     assert_eq!(decoded, value);
+}
+
+// r[verify binette.local-access.backends]
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+// r[verify binette.compat.enum]
+// r[verify binette.compat.enum.payload]
+#[test]
+fn rust_facet_descriptor_drives_strict_local_enum_decode_stencil() {
+    let value = RustLocalEvent::Named {
+        code: 0x1122,
+        flag: true,
+    };
+    let writer_plan = writer_plan_for::<RustLocalEvent>().unwrap();
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        writer_plan.root(),
+        &writer_registry,
+    )
+    .unwrap();
+    let descriptor = rust_facet_descriptor_for::<RustLocalEvent>().unwrap();
+    let decoder =
+        strict_local_stencil_decoder_from_plan(&reader_plan, &writer_registry, &descriptor)
+            .unwrap();
+    let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+
+    assert_eq!(descriptor.backend, LocalBackend::RustFacet);
+    assert_eq!(decoder.report().mode, StencilMode::Strict);
+    assert_eq!(decoder.report().helper_count, 0);
+    assert!(decoder.report().helper_paths.is_empty());
+
+    let mut decoded = std::mem::MaybeUninit::<RustLocalEvent>::uninit();
+    unsafe { decoder.decode_raw_into(&bytes, decoded.as_mut_ptr().cast()) }.unwrap();
+    let decoded = unsafe { decoded.assume_init() };
+    assert_eq!(decoded, value);
+
+    let mut unknown_variant = bytes;
+    unknown_variant[0..4].copy_from_slice(&99u32.to_le_bytes());
+    let mut out = std::mem::MaybeUninit::<RustLocalEvent>::uninit();
+    assert!(matches!(
+        unsafe { decoder.decode_raw_into(&unknown_variant, out.as_mut_ptr().cast()) },
+        Err(StencilError::UnknownVariantIndex {
+            position: 0,
+            variant_index: 99,
+        })
+    ));
 }
 
 // r[verify binette.local-access.descriptor]

@@ -19,20 +19,6 @@ pub(super) struct StencilCompiler<'registry> {
 }
 
 impl StencilCompiler<'_> {
-    pub(super) fn compile_root_enum<T: Facet<'static>>(
-        &mut self,
-        root: &PlanNode,
-    ) -> Result<LengthCheck, StencilError> {
-        let reader = rust_facet_descriptor(T::SHAPE, "$")?;
-        let PlanNode::Enum { variants } = root else {
-            return Err(StencilError::Unsupported {
-                path: "$".to_owned(),
-                reason: "root enum stencil requires an enum reader plan",
-            });
-        };
-        self.compile_enum_root(T::SHAPE, &reader, variants, "$")
-    }
-
     fn compile_node(
         &mut self,
         reader_shape: &'static Shape,
@@ -334,6 +320,7 @@ impl StencilCompiler<'_> {
 
         self.ops.push(StencilOp::RootEnum {
             input_offset,
+            tag_output_offset: 0,
             cases,
             bodies,
             unknown_failure_index,
@@ -599,6 +586,9 @@ impl LocalDecodeStencilCompiler<'_> {
         reader: &LocalTypeDescriptor,
         root: &PlanNode,
     ) -> Result<LengthCheck, StencilError> {
+        if let PlanNode::Enum { variants } = root {
+            return self.compile_enum_root(reader, variants, "$");
+        }
         self.compile_node(reader, root, 0, "$")?;
         Ok(LengthCheck::Exact(self.input_offset))
     }
@@ -650,6 +640,221 @@ impl LocalDecodeStencilCompiler<'_> {
                 path: path.to_owned(),
                 reason: "direct local decode stencil only supports fixed-width roots",
             }),
+        }
+    }
+
+    // r[impl binette.compat.enum]
+    // r[impl binette.compat.enum.payload]
+    fn compile_enum_root(
+        &mut self,
+        reader: &LocalTypeDescriptor,
+        variants: &[EnumVariantPlan],
+        path: &str,
+    ) -> Result<LengthCheck, StencilError> {
+        if self.input_offset != 0 || !self.ops.is_empty() {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "local direct enum decode only supports enums at the root",
+            });
+        }
+
+        let (tag_output_offset, local_variants) = local_enum_direct_tag_variants(reader, path)?;
+
+        let input_offset = self.input_offset;
+        self.input_offset = checked_offset(self.input_offset, 4, path)?;
+        let unknown_failure_index = self.failures.len();
+        self.failures.push(StencilFailure::UnknownVariantIndex {
+            position: input_offset,
+        });
+
+        let mut cases = Vec::with_capacity(variants.len());
+        let mut bodies = Vec::new();
+        let mut lengths = Vec::new();
+
+        for variant in variants {
+            match variant {
+                EnumVariantPlan::Read {
+                    writer_index,
+                    reader_index,
+                    name,
+                    payload,
+                } => {
+                    let local_variant = local_variants.get(*reader_index).ok_or_else(|| {
+                        StencilError::Unsupported {
+                            path: format!("{path}.{name}"),
+                            reason: "reader enum variant index is out of range",
+                        }
+                    })?;
+                    let reader_discriminant = u8::try_from(local_variant.index).map_err(|_| {
+                        StencilError::Unsupported {
+                            path: format!("{path}.{name}"),
+                            reason: "local enum variant index does not fit u8 tag",
+                        }
+                    })?;
+                    let (body, expected) =
+                        self.compile_branch_body(input_offset + 4, |compiler| {
+                            compiler.compile_enum_payload(
+                                local_variant,
+                                payload,
+                                &format!("{path}.{name}"),
+                            )
+                        })?;
+                    let body_index = bodies.len();
+                    bodies.push(body);
+                    lengths.push(TaggedLength {
+                        variant_index: *writer_index,
+                        expected,
+                    });
+                    cases.push(EnumCase {
+                        writer_index: *writer_index,
+                        reader_discriminant: Some(reader_discriminant),
+                        body_index: Some(body_index),
+                        failure_index: None,
+                    });
+                }
+                EnumVariantPlan::Reject { writer_index, name } => {
+                    let failure_index = self.failures.len();
+                    self.failures.push(StencilFailure::UnreadableWriterVariant {
+                        position: input_offset,
+                        variant_index: *writer_index,
+                        variant: name.clone(),
+                    });
+                    cases.push(EnumCase {
+                        writer_index: *writer_index,
+                        reader_discriminant: None,
+                        body_index: None,
+                        failure_index: Some(failure_index),
+                    });
+                }
+            }
+        }
+
+        self.ops.push(StencilOp::RootEnum {
+            input_offset,
+            tag_output_offset,
+            cases,
+            bodies,
+            unknown_failure_index,
+        });
+
+        Ok(LengthCheck::RootU32Tag {
+            position: input_offset,
+            cases: lengths,
+        })
+    }
+
+    fn compile_branch_body(
+        &mut self,
+        input_offset: usize,
+        compile: impl FnOnce(&mut Self) -> Result<(), StencilError>,
+    ) -> Result<(Vec<StencilOp>, usize), StencilError> {
+        let parent_ops = std::mem::take(&mut self.ops);
+        let parent_input_offset = self.input_offset;
+        self.input_offset = input_offset;
+
+        let result = compile(self);
+        let body_ops = std::mem::take(&mut self.ops);
+        let body_input_offset = self.input_offset;
+        self.ops = parent_ops;
+        self.input_offset = parent_input_offset;
+
+        result?;
+        Ok((body_ops, body_input_offset))
+    }
+
+    fn compile_enum_payload(
+        &mut self,
+        local_variant: &crate::local_access::LocalVariantDescriptor,
+        payload: &EnumPayloadPlan,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        match payload {
+            EnumPayloadPlan::Unit => Ok(()),
+            EnumPayloadPlan::Newtype(element) => {
+                let payload_descriptor =
+                    local_variant
+                        .payload
+                        .as_deref()
+                        .ok_or_else(|| StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "newtype enum payload is missing local descriptor",
+                        })?;
+                let payload_offset = local_direct_offset(&local_variant.access, path)?;
+                self.compile_node(payload_descriptor, element, payload_offset, path)
+            }
+            EnumPayloadPlan::Tuple(elements) => {
+                let descriptor_fields = local_struct_fields(
+                    local_variant
+                        .payload
+                        .as_deref()
+                        .ok_or_else(|| StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "tuple enum payload is missing local descriptor",
+                        })?,
+                    path,
+                )?;
+                if descriptor_fields.len() != elements.len() {
+                    return Err(StencilError::Unsupported {
+                        path: path.to_owned(),
+                        reason: "tuple enum payload arity differs from local descriptor",
+                    });
+                }
+                for (index, element) in elements.iter().enumerate() {
+                    let field_descriptor = &descriptor_fields[index];
+                    self.compile_node(
+                        &field_descriptor.descriptor,
+                        element,
+                        local_direct_offset(&field_descriptor.access, path)?,
+                        &format!("{path}.{index}"),
+                    )?;
+                }
+                Ok(())
+            }
+            EnumPayloadPlan::Struct(fields) => {
+                let descriptor_fields = local_struct_fields(
+                    local_variant
+                        .payload
+                        .as_deref()
+                        .ok_or_else(|| StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "struct enum payload is missing local descriptor",
+                        })?,
+                    path,
+                )?;
+                for field in fields {
+                    match field {
+                        StructFieldPlan::Read {
+                            reader_index,
+                            name,
+                            plan,
+                            ..
+                        } => {
+                            let field_descriptor = descriptor_fields
+                                .get(*reader_index)
+                                .ok_or_else(|| StencilError::Unsupported {
+                                    path: format!("{path}.{name}"),
+                                    reason: "reader enum struct field index is out of range",
+                                })?;
+                            self.compile_node(
+                                &field_descriptor.descriptor,
+                                plan,
+                                local_direct_offset(&field_descriptor.access, path)?,
+                                &format!("{path}.{name}"),
+                            )?;
+                        }
+                        StructFieldPlan::Skip {
+                            writer_type, name, ..
+                        } => self.compile_skip(writer_type, &format!("{path}.{name}"))?,
+                        StructFieldPlan::Default { name, .. } => {
+                            return Err(StencilError::Unsupported {
+                                path: format!("{path}.{name}"),
+                                reason: "default-filled enum fields require backend construction support",
+                            });
+                        }
+                    }
+                }
+                Ok(())
+            }
         }
     }
 
@@ -3597,6 +3802,25 @@ fn local_enum_tag_thunks<'a>(
             reason: "local enum tag thunk is not bound",
         })?;
     Ok((tag_thunks, variants))
+}
+
+fn local_enum_direct_tag_variants<'a>(
+    descriptor: &'a LocalTypeDescriptor,
+    path: &str,
+) -> Result<(usize, &'a [crate::local_access::LocalVariantDescriptor]), StencilError> {
+    let LocalTypeKind::Enum { tag, variants } = &descriptor.kind else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor is not an enum layout",
+        });
+    };
+    let LocalAccess::Direct { offset } = tag else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "strict local enum decode requires a direct tag access",
+        });
+    };
+    Ok((*offset, variants))
 }
 
 fn local_enum_construct_variants<'a>(

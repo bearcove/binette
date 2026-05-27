@@ -55,6 +55,7 @@ pub(super) enum StencilOp {
     },
     RootEnum {
         input_offset: usize,
+        tag_output_offset: usize,
         cases: Vec<EnumCase>,
         bodies: Vec<Vec<StencilOp>>,
         unknown_failure_index: usize,

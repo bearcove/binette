@@ -340,12 +340,14 @@ fn emit_op(
         ),
         StencilOp::RootEnum {
             input_offset,
+            tag_output_offset,
             cases,
             bodies,
             unknown_failure_index,
         } => emit_root_enum_op(
             code,
             *input_offset,
+            *tag_output_offset,
             cases,
             bodies,
             *unknown_failure_index,
@@ -426,6 +428,7 @@ const AARCH64_STURB_W10_X2: u32 = 0x3800_004A;
 fn emit_root_enum_op(
     code: &mut Vec<u8>,
     input_offset: usize,
+    tag_output_offset: usize,
     cases: &[EnumCase],
     bodies: &[Vec<StencilOp>],
     unknown_failure_index: usize,
@@ -476,7 +479,7 @@ fn emit_root_enum_op(
         push_u32(code, mov_w10_immediate(u32::from(reader_discriminant))?);
         push_u32(
             code,
-            patch_ldur_stur_imm9(AARCH64_STURB_W10_X2, 0, "$output")?,
+            patch_ldur_stur_imm9(AARCH64_STURB_W10_X2, tag_output_offset, "$output")?,
         );
 
         let Some(body_index) = case.body_index else {
