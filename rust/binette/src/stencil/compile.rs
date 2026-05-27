@@ -19,101 +19,18 @@ pub(super) struct StencilCompiler<'registry> {
 }
 
 impl StencilCompiler<'_> {
-    pub(super) fn compile_root<T: Facet<'static>>(
+    pub(super) fn compile_root_enum<T: Facet<'static>>(
         &mut self,
         root: &PlanNode,
     ) -> Result<LengthCheck, StencilError> {
         let reader = rust_facet_descriptor(T::SHAPE, "$")?;
-        if let PlanNode::Enum { variants } = root {
-            return self.compile_enum_root(T::SHAPE, &reader, variants, "$");
-        }
-        if let PlanNode::List { element } = root {
-            return self.compile_list_root(T::SHAPE, &reader, element, "$");
-        }
-
-        self.compile_node(T::SHAPE, &reader, root, 0, "$")?;
-        Ok(LengthCheck::Exact(self.input_offset))
-    }
-
-    // r[impl binette.aggregate.list]
-    fn compile_list_root(
-        &mut self,
-        reader_shape: &'static Shape,
-        reader_descriptor: &LocalTypeDescriptor,
-        element: &PlanNode,
-        path: &str,
-    ) -> Result<LengthCheck, StencilError> {
-        if self.input_offset != 0 || !self.ops.is_empty() {
+        let PlanNode::Enum { variants } = root else {
             return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "list root stencil must be the first decode op",
-            });
-        }
-
-        let Def::List(list) = reader_shape.def else {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "reader list stencil requires Facet list shape",
+                path: "$".to_owned(),
+                reason: "root enum stencil requires an enum reader plan",
             });
         };
-        if list.init_in_place_with_capacity().is_none()
-            || list.as_mut_ptr_typed().is_none()
-            || list.set_len().is_none()
-        {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "reader list shape does not expose direct-fill operations",
-            });
-        }
-
-        let element_shape = list.t();
-        let (element_descriptor, element_stride) = local_sequence_element(reader_descriptor, path)?;
-
-        let mut element_compiler = StencilCompiler {
-            writer_registry: self.writer_registry,
-            plan_nodes: self.plan_nodes,
-            ops: Vec::new(),
-            failures: Vec::new(),
-            input_offset: 0,
-        };
-        element_compiler.compile_node(
-            element_shape,
-            element_descriptor,
-            element,
-            0,
-            &format!("{path}[]"),
-        )?;
-        if !element_compiler.failures.is_empty() {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "strict list decode currently supports only infallible element stencils",
-            });
-        }
-        let Some(element_ops) = copy_ops_from_stencil_ops(&element_compiler.ops) else {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "strict list decode currently supports only fixed-copy element stencils",
-            });
-        };
-        let element_input_len = element_compiler.input_offset;
-
-        let failure_index = self.failures.len();
-        let _ = status_for_failure(failure_index)?;
-        self.failures.push(StencilFailure::Helper {
-            path: path.to_owned(),
-        });
-        self.ops.push(StencilOp::RootList {
-            shape: reader_shape,
-            element_ops,
-            element_input_len,
-            element_stride,
-            failure_index,
-        });
-
-        Ok(LengthCheck::RootList {
-            count_position: 0,
-            element_input_len,
-        })
+        self.compile_enum_root(T::SHAPE, &reader, variants, "$")
     }
 
     fn compile_node(
@@ -871,9 +788,86 @@ impl LocalDecodeStencilCompiler<'_> {
     }
 
     fn compile_skip(&mut self, writer_type: &TypeRef, path: &str) -> Result<(), StencilError> {
-        let input_len = fixed_skip_len(self.writer_registry, writer_type, path)?;
-        self.input_offset = checked_offset(self.input_offset, input_len, path)?;
+        self.compile_skip_type(writer_type, path)
+    }
+
+    fn compile_skip_type(&mut self, type_ref: &TypeRef, path: &str) -> Result<(), StencilError> {
+        if let Some(primitive) = primitive_for_plain_type_ref(type_ref) {
+            return self.compile_primitive_skip(primitive, path);
+        }
+
+        let kind = self.schema_for(type_ref, path)?.kind.clone();
+        self.compile_skip_kind(&kind, path)
+    }
+
+    fn compile_skip_kind(&mut self, kind: &SchemaKind, path: &str) -> Result<(), StencilError> {
+        match kind {
+            SchemaKind::Primitive(primitive) => self.compile_primitive_skip(*primitive, path),
+            SchemaKind::Struct { fields, .. } => {
+                for field in fields {
+                    self.compile_skip_type(&field.type_ref, &format!("{path}.{}", field.name))?;
+                }
+                Ok(())
+            }
+            SchemaKind::Tuple { elements } => {
+                for (index, element) in elements.iter().enumerate() {
+                    self.compile_skip_type(element, &format!("{path}.{index}"))?;
+                }
+                Ok(())
+            }
+            SchemaKind::Array {
+                dimensions,
+                element,
+            } => {
+                let count = dimensions_element_count(dimensions, path)?;
+                for index in 0..count {
+                    self.compile_skip_type(element, &format!("{path}[{index}]"))?;
+                }
+                Ok(())
+            }
+            _ => Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "local decode stencil only supports fixed-width skipped values",
+            }),
+        }
+    }
+
+    fn compile_primitive_skip(
+        &mut self,
+        primitive: Primitive,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        if primitive == Primitive::Bool {
+            return self.emit_bool(path, None);
+        }
+
+        let Some(widths) = primitive_widths(primitive) else {
+            return Err(unsupported_primitive(path, primitive));
+        };
+        for width in widths {
+            self.input_offset = checked_offset(self.input_offset, width.bytes(), path)?;
+        }
         Ok(())
+    }
+
+    fn schema_for(
+        &self,
+        type_ref: &TypeRef,
+        path: &str,
+    ) -> Result<&crate::schema::Schema, StencilError> {
+        match type_ref {
+            TypeRef::Concrete { type_id, args } if args.is_empty() => self
+                .writer_registry
+                .get(*type_id)
+                .ok_or_else(|| StencilError::UnknownWriterType {
+                    path: path.to_owned(),
+                    type_id: *type_id,
+                }),
+            TypeRef::Concrete { .. } | TypeRef::Var { .. } => Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "local decode stencil does not support generic skipped type refs",
+            }),
+        }
     }
 
     fn emit_primitive_copies(
@@ -2764,15 +2758,6 @@ impl LocalEncodeStencilCompiler<'_> {
 }
 
 impl FixedEncodeCompiler {
-    pub(super) fn compile_root<T: Facet<'static>>(
-        &mut self,
-        root: &WriterNode,
-    ) -> Result<usize, StencilError> {
-        let writer = rust_facet_descriptor(T::SHAPE, "$")?;
-        self.compile_node(T::SHAPE, &writer, root, 0, "$")?;
-        Ok(self.output_offset)
-    }
-
     // r[impl binette.local-access.descriptor]
     pub(super) fn compile_descriptor_root(
         &mut self,
@@ -3791,9 +3776,7 @@ fn copy_ops_from_stencil_ops(ops: &[StencilOp]) -> Option<Vec<CopyOp>> {
     ops.iter()
         .map(|op| match op {
             StencilOp::Copy(op) => Some(*op),
-            StencilOp::Bool { .. } | StencilOp::RootEnum { .. } | StencilOp::RootList { .. } => {
-                None
-            }
+            StencilOp::Bool { .. } | StencilOp::RootEnum { .. } => None,
         })
         .collect()
 }
@@ -3880,7 +3863,7 @@ fn fixed_local_decode_ops(
     if compiler
         .ops
         .iter()
-        .any(|op| matches!(op, StencilOp::RootEnum { .. } | StencilOp::RootList { .. }))
+        .any(|op| matches!(op, StencilOp::RootEnum { .. }))
     {
         return Err(StencilError::Unsupported {
             path: path.to_owned(),

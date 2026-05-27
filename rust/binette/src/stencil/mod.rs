@@ -19,7 +19,7 @@ use crate::local_access::{
     LocalEnumTagThunks, LocalOptionEncodeThunks, LocalOptionSequenceDecodeThunks,
     LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks,
     LocalSequenceFixedDecodeThunks, LocalThunkBindings, LocalTypeDescriptor,
-    LocalVariantConstructThunks, LocalVariantProjectThunks,
+    LocalVariantConstructThunks, LocalVariantProjectThunks, rust_facet_descriptor_for,
 };
 use crate::plan::{
     EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, ReaderPlan, StructFieldPlan,
@@ -226,6 +226,24 @@ impl<T> StencilDecoder<T> {
     pub fn report(&self) -> &StencilReport {
         &self.report
     }
+
+    fn from_local(local: LocalStencilDecoder) -> Self {
+        let entry = match local.entry {
+            LocalDecodeStencilEntry::Fixed { func, length_check } => {
+                StencilEntry::Fixed { func, length_check }
+            }
+            LocalDecodeStencilEntry::Hybrid { func, runtime } => {
+                StencilEntry::Hybrid { func, runtime }
+            }
+        };
+        Self {
+            code: local.code,
+            entry,
+            failures: local.failures,
+            report: local.report,
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<T: Facet<'static>> StencilDecoder<T> {
@@ -281,6 +299,21 @@ impl<T> StencilEncoder<T> {
 
     pub fn report(&self) -> &StencilReport {
         &self.report
+    }
+
+    fn from_local(local: LocalStencilEncoder) -> Self {
+        let entry = match local.entry {
+            LocalEncodeStencilEntry::Direct { func } => EncodeStencilEntry::Direct { func },
+            LocalEncodeStencilEntry::Helper { func, runtime } => {
+                EncodeStencilEntry::Helper { func, runtime }
+            }
+        };
+        Self {
+            code: local.code,
+            entry,
+            report: local.report,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -701,27 +734,11 @@ pub fn hybrid_local_stencil_decoder_from_plan(
 fn fixed_encode_stencil_encoder_from_plan<T: Facet<'static>>(
     plan: &WriterPlan,
 ) -> Result<StencilEncoder<T>, StencilError> {
-    let mut compiler = FixedEncodeCompiler {
-        ops: Vec::new(),
-        output_offset: 0,
-    };
-    let output_len = compiler.compile_root::<T>(plan.root_node())?;
-
-    let code = generate_direct_encode_code(&compiler.ops, output_len)?;
-    let report = StencilReport {
-        mode: StencilMode::Strict,
-        code_len: code.len(),
-        native_ops: compiler.ops.len(),
-        helper_count: 0,
-        helper_paths: Vec::new(),
-    };
-    let func = code.as_direct_encode_fn();
-    Ok(StencilEncoder {
-        code,
-        entry: EncodeStencilEntry::Direct { func },
-        report,
-        _marker: PhantomData,
-    })
+    let descriptor = rust_facet_descriptor_for::<T>().map_err(|_| StencilError::Unsupported {
+        path: "$".to_owned(),
+        reason: "failed to build Rust local access descriptor for stencil compilation",
+    })?;
+    strict_local_stencil_encoder_from_plan(plan, &descriptor).map(StencilEncoder::from_local)
 }
 
 fn strict_encode_stencil_encoder_from_plan<T: Facet<'static>>(
@@ -872,7 +889,7 @@ fn helper_path(failures: &[StencilFailure], failure_index: usize) -> Option<Stri
 fn fixed_decode_native_op_count(ops: &[StencilOp]) -> usize {
     ops.iter()
         .map(|op| match op {
-            StencilOp::Copy(_) | StencilOp::Bool { .. } | StencilOp::RootList { .. } => 1,
+            StencilOp::Copy(_) | StencilOp::Bool { .. } => 1,
             StencilOp::RootEnum { bodies, .. } => {
                 1 + bodies
                     .iter()
@@ -965,6 +982,24 @@ fn fixed_stencil_decoder_from_plan<T: Facet<'static>>(
     plan: &ReaderPlan,
     writer_registry: &SchemaRegistry,
 ) -> Result<StencilDecoder<T>, StencilError> {
+    let descriptor = rust_facet_descriptor_for::<T>().map_err(|_| StencilError::Unsupported {
+        path: "$".to_owned(),
+        reason: "failed to build Rust local access descriptor for stencil compilation",
+    })?;
+    match strict_local_stencil_decoder_from_plan(plan, writer_registry, &descriptor) {
+        Ok(decoder) => Ok(StencilDecoder::from_local(decoder)),
+        Err(err) if !matches!(&err, StencilError::Unsupported { .. }) => Err(err),
+        Err(_) if matches!(&plan.root, PlanNode::Enum { .. }) => {
+            fixed_root_enum_stencil_decoder_from_plan(plan, writer_registry)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn fixed_root_enum_stencil_decoder_from_plan<T: Facet<'static>>(
+    plan: &ReaderPlan,
+    writer_registry: &SchemaRegistry,
+) -> Result<StencilDecoder<T>, StencilError> {
     let mut compiler = StencilCompiler {
         writer_registry,
         plan_nodes: plan.nodes(),
@@ -972,7 +1007,7 @@ fn fixed_stencil_decoder_from_plan<T: Facet<'static>>(
         failures: Vec::new(),
         input_offset: 0,
     };
-    let length_check = compiler.compile_root::<T>(&plan.root)?;
+    let length_check = compiler.compile_root_enum::<T>(&plan.root)?;
 
     let code = generate_code(&compiler.ops, compiler.failures.len())?;
     let report = StencilReport {

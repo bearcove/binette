@@ -59,13 +59,6 @@ pub(super) enum StencilOp {
         bodies: Vec<Vec<StencilOp>>,
         unknown_failure_index: usize,
     },
-    RootList {
-        shape: &'static Shape,
-        element_ops: Vec<CopyOp>,
-        element_input_len: usize,
-        element_stride: usize,
-        failure_index: usize,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -309,10 +302,6 @@ pub(super) enum LengthCheck {
         position: usize,
         cases: Vec<TaggedLength>,
     },
-    RootList {
-        count_position: usize,
-        element_input_len: usize,
-    },
 }
 
 impl LengthCheck {
@@ -320,7 +309,6 @@ impl LengthCheck {
         match self {
             LengthCheck::Exact(len) => Some(*len),
             LengthCheck::RootU32Tag { .. } => None,
-            LengthCheck::RootList { .. } => None,
         }
     }
 
@@ -351,38 +339,6 @@ impl LengthCheck {
                 {
                     return Err(StencilError::InputLength {
                         expected: case.expected,
-                        actual: input.len(),
-                    });
-                }
-            }
-            LengthCheck::RootList {
-                count_position,
-                element_input_len,
-            } => {
-                let needed = count_position + 4;
-                if input.len() < needed {
-                    return Err(StencilError::InputLength {
-                        expected: needed,
-                        actual: input.len(),
-                    });
-                }
-                let count = u32::from_le_bytes(input[*count_position..needed].try_into().unwrap());
-                let body_len = (count as usize)
-                    .checked_mul(*element_input_len)
-                    .ok_or_else(|| StencilError::Unsupported {
-                        path: "$".to_owned(),
-                        reason: "stencil list input length overflows usize",
-                    })?;
-                let expected =
-                    needed
-                        .checked_add(body_len)
-                        .ok_or_else(|| StencilError::Unsupported {
-                            path: "$".to_owned(),
-                            reason: "stencil list input length overflows usize",
-                        })?;
-                if input.len() != expected {
-                    return Err(StencilError::InputLength {
-                        expected,
                         actual: input.len(),
                     });
                 }

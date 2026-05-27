@@ -308,7 +308,7 @@ fn run_fixed_decode_ops(ops: &[StencilOp], input: &[u8], output: &mut [u8]) -> b
                     *output = value;
                 }
             }
-            StencilOp::RootEnum { .. } | StencilOp::RootList { .. } => return false,
+            StencilOp::RootEnum { .. } => return false,
         }
     }
     true
