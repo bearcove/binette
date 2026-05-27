@@ -38,6 +38,10 @@ struct ExtractCtx {
 impl ExtractCtx {
     // r[impl binette.type-id.context-free]
     fn extract(&mut self, shape: &'static Shape) -> Result<TypeRef, SchemaError> {
+        if let Some(proxy) = shape.effective_proxy(None) {
+            return self.extract(proxy.shape);
+        }
+
         if shape.is_transparent()
             && let Some(inner) = shape.inner
         {

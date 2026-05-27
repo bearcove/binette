@@ -571,6 +571,11 @@ struct WriterPlanExecutor<'a> {
 
 impl WriterPlanExecutor<'_> {
     fn encode_node(&mut self, peek: Peek<'_, '_>, node: &WriterNode) -> Result<(), EncodeError> {
+        if let Some(proxy_peek) = peek.custom_serialization_from_shape()? {
+            return self.encode_node(proxy_peek.as_peek(), node);
+        }
+
+        let outer_peek = peek;
         let peek = peek.innermost_peek();
         match node {
             WriterNode::Ref { node_index } => {
@@ -601,8 +606,15 @@ impl WriterPlanExecutor<'_> {
             } => self.encode_result(peek, *ok_wire_index, ok, *err_wire_index, err),
             WriterNode::Option { element } => self.encode_option(peek, element),
             WriterNode::Dynamic => self.encode_dynamic(peek),
-            WriterNode::External => self.encode_primitive(peek, Primitive::Unit),
+            WriterNode::External => self.encode_external(outer_peek),
         }
+    }
+
+    fn encode_external(&mut self, peek: Peek<'_, '_>) -> Result<(), EncodeError> {
+        if let Some(adapter) = peek.shape().opaque_adapter {
+            let _ = unsafe { (adapter.serialize)(peek.data()) };
+        }
+        self.encode_primitive(peek, Primitive::Unit)
     }
 
     fn encode_dynamic(&mut self, peek: Peek<'_, '_>) -> Result<(), EncodeError> {
