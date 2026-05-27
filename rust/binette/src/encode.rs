@@ -68,6 +68,7 @@ pub struct WriterPlan {
     bundle: SchemaBundle,
     root: WriterNode,
     nodes: Vec<WriterNode>,
+    local_index_source: WriterPlanLocalIndexSource,
 }
 
 impl WriterPlan {
@@ -88,6 +89,12 @@ impl WriterPlan {
     pub(crate) fn nodes(&self) -> &[WriterNode] {
         &self.nodes
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriterPlanLocalIndexSource {
+    RustFacet,
+    SchemaDeclaration,
 }
 
 // r[impl binette.schema.model]
@@ -114,6 +121,28 @@ pub fn writer_plan_for_shape(shape: &'static Shape) -> Result<WriterPlan, Encode
         bundle,
         root,
         nodes: builder.nodes,
+        local_index_source: WriterPlanLocalIndexSource::RustFacet,
+    })
+}
+
+// r[impl binette.local-access.boundary]
+// r[impl binette.mode.compact]
+pub fn writer_plan_for_bundle(bundle: &SchemaBundle) -> Result<WriterPlan, EncodeError> {
+    let mut registry = SchemaRegistry::new();
+    registry.install_bundle(bundle)?;
+
+    let mut builder = SchemaWriterPlanBuilder {
+        registry: &registry,
+        nodes: Vec::new(),
+        active: HashMap::new(),
+    };
+    let root = builder.plan_type(&bundle.root, &Env::default())?;
+
+    Ok(WriterPlan {
+        bundle: bundle.clone(),
+        root,
+        nodes: builder.nodes,
+        local_index_source: WriterPlanLocalIndexSource::SchemaDeclaration,
     })
 }
 
@@ -146,6 +175,12 @@ pub fn encode_peek_with_plan(
     peek: Peek<'_, '_>,
     plan: &WriterPlan,
 ) -> Result<(), EncodeError> {
+    if plan.local_index_source == WriterPlanLocalIndexSource::SchemaDeclaration {
+        return Err(EncodeError::InvalidPlan {
+            reason: "schema-only writer plans require a local access descriptor",
+        });
+    }
+
     WriterPlanExecutor {
         out,
         nodes: &plan.nodes,
@@ -564,6 +599,207 @@ impl WriterPlanBuilder<'_> {
             });
         }
         Ok(fields)
+    }
+}
+
+struct SchemaWriterPlanBuilder<'a> {
+    registry: &'a SchemaRegistry,
+    nodes: Vec<WriterNode>,
+    active: HashMap<TypeRef, usize>,
+}
+
+impl SchemaWriterPlanBuilder<'_> {
+    fn plan_type(&mut self, type_ref: &TypeRef, env: &Env) -> Result<WriterNode, EncodeError> {
+        let type_ref = self.resolve_type_ref(type_ref, env)?;
+        match type_ref {
+            TypeRef::Concrete { type_id, args } => {
+                if let Some(primitive) = primitive_for_type_id(type_id) {
+                    if !args.is_empty() {
+                        return Err(EncodeError::InvalidPlan {
+                            reason: "primitive type reference has type arguments",
+                        });
+                    }
+                    return Ok(WriterNode::Primitive(primitive));
+                }
+
+                let resolved = TypeRef::Concrete {
+                    type_id,
+                    args: args.clone(),
+                };
+                if let Some(node_index) = self.active.get(&resolved) {
+                    return Ok(WriterNode::Ref {
+                        node_index: *node_index,
+                    });
+                }
+
+                let schema = self
+                    .registry
+                    .get(type_id)
+                    .ok_or(EncodeError::UnknownWriterType { type_id })?;
+                let env = Env::bind(schema, &args);
+                let node_index = self.nodes.len();
+                self.nodes.push(WriterNode::Dynamic);
+                self.active.insert(resolved.clone(), node_index);
+                let node = self.plan_kind(&schema.kind, &env);
+                self.active.remove(&resolved);
+                let node = node?;
+                self.nodes[node_index] = node.clone();
+                Ok(node)
+            }
+            TypeRef::Var { name } => Err(EncodeError::UnboundTypeParameter { name }),
+        }
+    }
+
+    fn resolve_type_ref(&self, type_ref: &TypeRef, env: &Env) -> Result<TypeRef, EncodeError> {
+        match type_ref {
+            TypeRef::Concrete { type_id, args } => Ok(TypeRef::Concrete {
+                type_id: *type_id,
+                args: args
+                    .iter()
+                    .map(|arg| self.resolve_type_ref(arg, env))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            TypeRef::Var { name } => env
+                .resolve(name)
+                .cloned()
+                .ok_or_else(|| EncodeError::UnboundTypeParameter { name: name.clone() }),
+        }
+    }
+
+    fn plan_kind(&mut self, kind: &SchemaKind, env: &Env) -> Result<WriterNode, EncodeError> {
+        match kind {
+            SchemaKind::Primitive(primitive) => Ok(WriterNode::Primitive(*primitive)),
+            SchemaKind::Struct { fields, .. } => self.plan_struct(fields, env),
+            SchemaKind::Enum { variants, .. } => self.plan_enum(variants, env),
+            SchemaKind::Tuple { elements } => self.plan_tuple(elements, env),
+            SchemaKind::List { element } => Ok(WriterNode::List {
+                element: Box::new(self.plan_type(element, env)?),
+            }),
+            SchemaKind::Set { element } => Ok(WriterNode::Set {
+                element: Box::new(self.plan_type(element, env)?),
+            }),
+            SchemaKind::Map { key, value } => Ok(WriterNode::Map {
+                key: Box::new(self.plan_type(key, env)?),
+                value: Box::new(self.plan_type(value, env)?),
+            }),
+            SchemaKind::Array {
+                dimensions,
+                element,
+            } => Ok(WriterNode::Array {
+                dimensions: dimensions.clone(),
+                element: Box::new(self.plan_type(element, env)?),
+            }),
+            SchemaKind::Option { element } => Ok(WriterNode::Option {
+                element: Box::new(self.plan_type(element, env)?),
+            }),
+            SchemaKind::Dynamic => Ok(WriterNode::Dynamic),
+            SchemaKind::External { .. } => Ok(WriterNode::External),
+        }
+    }
+
+    // r[impl binette.aggregate.struct.compact]
+    fn plan_struct(
+        &mut self,
+        schema_fields: &[Field],
+        env: &Env,
+    ) -> Result<WriterNode, EncodeError> {
+        Ok(WriterNode::Struct {
+            fields: schema_fields
+                .iter()
+                .enumerate()
+                .map(|(local_index, field)| {
+                    Ok(WriterFieldPlan {
+                        local_index,
+                        name: field.name.clone(),
+                        node: self.plan_type(&field.type_ref, env)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, EncodeError>>()?,
+        })
+    }
+
+    // r[impl binette.aggregate.enum.compact]
+    fn plan_enum(
+        &mut self,
+        schema_variants: &[Variant],
+        env: &Env,
+    ) -> Result<WriterNode, EncodeError> {
+        Ok(WriterNode::Enum {
+            variants: schema_variants
+                .iter()
+                .enumerate()
+                .map(|(local_index, variant)| {
+                    Ok(WriterVariantPlan {
+                        local_index,
+                        wire_index: variant.index,
+                        payload: self.plan_variant_payload(&variant.payload, env)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, EncodeError>>()?,
+        })
+    }
+
+    fn plan_variant_payload(
+        &mut self,
+        payload: &VariantPayload,
+        env: &Env,
+    ) -> Result<WriterVariantPayloadPlan, EncodeError> {
+        match payload {
+            VariantPayload::Unit => Ok(WriterVariantPayloadPlan::Unit),
+            VariantPayload::Newtype { type_ref } => {
+                Ok(WriterVariantPayloadPlan::Newtype(WriterTupleElementPlan {
+                    local_index: 0,
+                    node: self.plan_type(type_ref, env)?,
+                }))
+            }
+            VariantPayload::Tuple { elements } => Ok(WriterVariantPayloadPlan::Tuple(
+                self.plan_tuple_elements(elements, env)?,
+            )),
+            VariantPayload::Struct { fields } => Ok(WriterVariantPayloadPlan::Struct(
+                self.plan_struct_fields(fields, env)?,
+            )),
+        }
+    }
+
+    fn plan_tuple(&mut self, elements: &[TypeRef], env: &Env) -> Result<WriterNode, EncodeError> {
+        Ok(WriterNode::Tuple {
+            elements: self.plan_tuple_elements(elements, env)?,
+        })
+    }
+
+    fn plan_tuple_elements(
+        &mut self,
+        elements: &[TypeRef],
+        env: &Env,
+    ) -> Result<Vec<WriterTupleElementPlan>, EncodeError> {
+        elements
+            .iter()
+            .enumerate()
+            .map(|(local_index, element)| {
+                Ok(WriterTupleElementPlan {
+                    local_index,
+                    node: self.plan_type(element, env)?,
+                })
+            })
+            .collect()
+    }
+
+    fn plan_struct_fields(
+        &mut self,
+        schema_fields: &[Field],
+        env: &Env,
+    ) -> Result<Vec<WriterFieldPlan>, EncodeError> {
+        schema_fields
+            .iter()
+            .enumerate()
+            .map(|(local_index, field)| {
+                Ok(WriterFieldPlan {
+                    local_index,
+                    name: field.name.clone(),
+                    node: self.plan_type(&field.type_ref, env)?,
+                })
+            })
+            .collect()
     }
 }
 

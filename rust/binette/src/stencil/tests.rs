@@ -1,7 +1,7 @@
 use facet::Facet;
 
 use super::*;
-use crate::encode::{encode_to_vec_with_plan, writer_plan_for};
+use crate::encode::{encode_to_vec_with_plan, writer_plan_for, writer_plan_for_bundle};
 use crate::hash::primitive_type_id;
 use crate::local_access::{
     LocalAccess, LocalAccessExport, LocalBackend, LocalDescriptorExport, LocalDescriptorImport,
@@ -487,6 +487,41 @@ fn exported_swift_descriptor_drives_hybrid_local_string_stencils() {
     assert_eq!(decoded.id, value.id);
     assert_eq!(decoded.title, value.title);
     assert_eq!(decoded.code, value.code);
+}
+
+// r[verify binette.local-access.boundary]
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn schema_only_writer_plan_drives_swift_local_encode_stencil() {
+    let value = SwiftText {
+        id: 0x3132_3334_3536_3738,
+        title: "schema-only writer plan".to_owned(),
+        code: 0x7788,
+    };
+    let facet_plan = writer_plan_for::<SwiftText>().unwrap();
+    let schema_plan = writer_plan_for_bundle(facet_plan.schema_bundle()).unwrap();
+    let descriptor = swift_text_export_descriptor(schema_plan.root());
+    let thunks = swift_string_thunk_bindings();
+
+    let encoder =
+        hybrid_local_stencil_encoder_from_plan(&schema_plan, &descriptor, &thunks).unwrap();
+    assert_eq!(encoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(encoder.report().helper_paths, vec!["$.title".to_owned()]);
+
+    let actual = unsafe { encoder.encode_raw_to_vec((&value as *const SwiftText).cast()) }.unwrap();
+    assert_eq!(
+        actual,
+        encode_to_vec_with_plan(&value, &facet_plan).unwrap()
+    );
+
+    let err = encode_to_vec_with_plan(&value, &schema_plan).unwrap_err();
+    assert!(matches!(
+        err,
+        crate::EncodeError::InvalidPlan {
+            reason: "schema-only writer plans require a local access descriptor",
+        }
+    ));
 }
 
 // r[verify binette.local-access.descriptor]

@@ -76,6 +76,13 @@ inside the current process.
 > local byte buffer cannot satisfy a string plan node merely because both use
 > length-prefixed bytes on the wire.
 >
+> A local encode plan may be built from a binette schema bundle alone. In that
+> case, field, tuple element, and variant indices are schema declaration
+> indices, and the local descriptor supplies the runtime access facts for those
+> indices. Such a schema-only writer plan is not a source-language reflection
+> plan and cannot be used by a reflection-based interpreter without a local
+> access descriptor.
+>
 > Decode-side fallback thunks construct or write the local representation for
 > the unsupported subtree. Encode-side fallback thunks project local bytes or
 > elements from the same subtree. Both directions are explicit backend calls.

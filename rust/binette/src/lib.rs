@@ -35,7 +35,7 @@ pub use dump::{
 };
 pub use encode::{
     EncodeError, WriterPlan, encode_peek_to_vec_with_plan, encode_peek_with_plan, encode_to_vec,
-    encode_to_vec_with_plan, writer_plan_for, writer_plan_for_shape,
+    encode_to_vec_with_plan, writer_plan_for, writer_plan_for_bundle, writer_plan_for_shape,
 };
 pub use error::SchemaError;
 pub use facet::{canonicalize_schema_bundle, schema_bundle_for, schema_bundle_for_shape};
