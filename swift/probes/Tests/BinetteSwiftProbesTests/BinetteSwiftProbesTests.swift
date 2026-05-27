@@ -32,6 +32,11 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertEqual(string.kind.storage?.tag, "thunk")
         XCTAssertEqual(string.kind.storage?.count, "Swift.String.utf8.count")
         XCTAssertEqual(string.kind.storage?.write, "Swift.String.init.utf8")
+
+        let taggedOptional = try XCTUnwrap(exports.first { $0.schemaName == "tagged-option<u16>" })
+        XCTAssertEqual(taggedOptional.kind.tag, "option")
+        XCTAssertEqual(taggedOptional.kind.storage?.tag, "direct-tag")
+        XCTAssertEqual(taggedOptional.kind.storage?.optionTagWidth, MemoryLayout<UInt8>.size)
     }
 
     func testStoredStructFieldsUseDirectOffsets() throws {
@@ -141,6 +146,36 @@ final class BinetteSwiftProbesTests: XCTestCase {
                 writeNone: "Swift.Optional.init.none",
                 writeSomeBytes: "Swift.Optional<String>.init.some.utf8"
             )
+        )
+    }
+
+    func testDirectOptionalDescriptorExportsTagWidthAndPayloadOffset() throws {
+        let descriptor = try XCTUnwrap(
+            makeProbeDescriptors().first { $0.schemaName == "tagged-option<u16>" }
+        )
+
+        guard case let .optional(some, storage) = descriptor.kind else {
+            return XCTFail("expected optional descriptor")
+        }
+        XCTAssertEqual(some.schemaName, "u16")
+        XCTAssertEqual(
+            storage,
+            .directTag(
+                offset: MemoryLayout<ProbeTaggedMaybeU16>.offset(of: \ProbeTaggedMaybeU16.tag)!,
+                width: MemoryLayout<UInt8>.size,
+                noneValue: 0,
+                someValue: 1,
+                someOffset: MemoryLayout<ProbeTaggedMaybeU16>.offset(of: \ProbeTaggedMaybeU16.value)!
+            )
+        )
+
+        let export = try XCTUnwrap(
+            exportProbeDescriptors().first { $0.schemaName == "tagged-option<u16>" }
+        )
+        XCTAssertEqual(export.kind.storage?.optionTagWidth, MemoryLayout<UInt8>.size)
+        XCTAssertEqual(
+            export.kind.storage?.someOffset,
+            MemoryLayout<ProbeTaggedMaybeU16>.offset(of: \ProbeTaggedMaybeU16.value)!
         )
     }
 }

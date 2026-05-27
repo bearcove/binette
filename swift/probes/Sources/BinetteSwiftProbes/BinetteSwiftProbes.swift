@@ -110,6 +110,7 @@ public struct BinetteStorageExport: Codable, Equatable {
     public var element: String?
     public var write: String?
     public var optionTagOffset: Int?
+    public var optionTagWidth: Int?
     public var noneValue: UInt?
     public var someValue: UInt?
     public var someOffset: Int?
@@ -127,6 +128,7 @@ public struct BinetteStorageExport: Codable, Equatable {
         element: String? = nil,
         write: String? = nil,
         optionTagOffset: Int? = nil,
+        optionTagWidth: Int? = nil,
         noneValue: UInt? = nil,
         someValue: UInt? = nil,
         someOffset: Int? = nil,
@@ -143,6 +145,7 @@ public struct BinetteStorageExport: Codable, Equatable {
         self.element = element
         self.write = write
         self.optionTagOffset = optionTagOffset
+        self.optionTagWidth = optionTagWidth
         self.noneValue = noneValue
         self.someValue = someValue
         self.someOffset = someOffset
@@ -193,7 +196,7 @@ public enum BinetteSequenceStorage: Equatable {
 }
 
 public enum BinetteOptionalStorage: Equatable {
-    case directTag(offset: Int, noneValue: UInt, someValue: UInt, someOffset: Int)
+    case directTag(offset: Int, width: Int, noneValue: UInt, someValue: UInt, someOffset: Int)
     case thunk(isSome: String, some: String, writeNone: String?, writeSomeBytes: String?)
 }
 
@@ -225,14 +228,26 @@ public enum ProbeEnum {
     case nested(ProbeLeaf)
 }
 
+public struct ProbeTaggedMaybeU16 {
+    public var tag: UInt8
+    public var value: UInt16
+
+    public init(tag: UInt8, value: UInt16) {
+        self.tag = tag
+        self.value = value
+    }
+}
+
 public func makeProbeDescriptors() -> [BinetteLocalDescriptor] {
     let bool = scalarDescriptor("bool", Bool.self)
     let uint8 = scalarDescriptor("u8", UInt8.self)
+    let uint16 = scalarDescriptor("u16", UInt16.self)
     let int32 = scalarDescriptor("i32", Int32.self)
     let int64 = scalarDescriptor("i64", Int64.self)
     let string = stringDescriptor()
     let array = arrayDescriptor(element: int64)
     let optionalString = optionalDescriptor("option<string>", String?.self, some: string)
+    let taggedOptional = taggedOptionalDescriptor(some: uint16)
     let leaf = leafDescriptor(count: int32, flag: bool)
     let nested = nestedDescriptor(title: string, leaf: leaf, values: array)
     let enumPayloads = enumDescriptor()
@@ -245,6 +260,7 @@ public func makeProbeDescriptors() -> [BinetteLocalDescriptor] {
         string,
         array,
         optionalString,
+        taggedOptional,
         leaf,
         nested,
         enumPayloads,
@@ -264,6 +280,7 @@ public func validateProbeDescriptors(_ descriptors: [BinetteLocalDescriptor]) ->
         "string",
         "array<i64>",
         "option<string>",
+        "tagged-option<u16>",
     ].allSatisfy(names.contains)
 }
 
@@ -403,10 +420,11 @@ private extension BinetteSequenceStorage {
 private extension BinetteOptionalStorage {
     var export: BinetteStorageExport {
         switch self {
-        case let .directTag(offset, noneValue, someValue, someOffset):
+        case let .directTag(offset, width, noneValue, someValue, someOffset):
             BinetteStorageExport(
                 tag: "direct-tag",
                 optionTagOffset: offset,
+                optionTagWidth: width,
                 noneValue: noneValue,
                 someValue: someValue,
                 someOffset: someOffset
@@ -481,6 +499,24 @@ private func optionalDescriptor<T>(
                 some: "Swift.Optional.some",
                 writeNone: "Swift.Optional.init.none",
                 writeSomeBytes: "Swift.Optional<String>.init.some.utf8"
+            )
+        )
+    )
+}
+
+private func taggedOptionalDescriptor(some: BinetteLocalDescriptor) -> BinetteLocalDescriptor {
+    BinetteLocalDescriptor(
+        schemaName: "tagged-option<u16>",
+        backend: .swiftProbe,
+        layout: BinetteLocalLayout(of: ProbeTaggedMaybeU16.self),
+        kind: .optional(
+            some: some,
+            storage: .directTag(
+                offset: MemoryLayout<ProbeTaggedMaybeU16>.offset(of: \ProbeTaggedMaybeU16.tag)!,
+                width: MemoryLayout<UInt8>.size,
+                noneValue: 0,
+                someValue: 1,
+                someOffset: MemoryLayout<ProbeTaggedMaybeU16>.offset(of: \ProbeTaggedMaybeU16.value)!
             )
         )
     )

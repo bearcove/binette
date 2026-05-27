@@ -135,6 +135,38 @@
   {
     "backend" : "swift-probe",
     "kind" : {
+      "some" : {
+        "backend" : "swift-probe",
+        "kind" : {
+          "tag" : "scalar"
+        },
+        "layout" : {
+          "alignment" : 2,
+          "size" : 2,
+          "stride" : 2
+        },
+        "schema_name" : "u16"
+      },
+      "storage" : {
+        "none_value" : 0,
+        "option_tag_offset" : 0,
+        "option_tag_width" : 1,
+        "some_offset" : 2,
+        "some_value" : 1,
+        "tag" : "direct-tag"
+      },
+      "tag" : "option"
+    },
+    "layout" : {
+      "alignment" : 2,
+      "size" : 4,
+      "stride" : 4
+    },
+    "schema_name" : "tagged-option<u16>"
+  },
+  {
+    "backend" : "swift-probe",
+    "kind" : {
       "fields" : [
         {
           "access" : {
