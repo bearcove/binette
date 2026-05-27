@@ -53,11 +53,11 @@ use self::runtime::{
     stencil_enum_variant_index, stencil_list_element, stencil_list_len, stencil_option_parts,
 };
 use self::types::{
-    CopyOp, CopyWidth, EncodeBytesKind, EncodeEnumCase, EncodeEnumSelector, EncodeListLayout,
-    EncodeOptionLayout, EncodeStencilOp, EnumCase, FixedEncodeCompiler, FixedEncodeSegment,
-    HybridStencilOp, LengthCheck, LocalEnumDecodeCase, LocalEnumDecodePayload, LocalEnumEncodeCase,
-    LocalEnumEncodePayload, StencilEncodeHelper, StencilEncodeRuntime, StencilFailure,
-    StencilHelper, StencilOp, StencilRuntime, TaggedLength,
+    ByteTaggedLength, CopyOp, CopyWidth, EncodeBytesKind, EncodeEnumCase, EncodeEnumSelector,
+    EncodeListLayout, EncodeOptionLayout, EncodeStencilOp, EnumCase, FixedEncodeCompiler,
+    FixedEncodeSegment, HybridStencilOp, LengthCheck, LocalEnumDecodeCase, LocalEnumDecodePayload,
+    LocalEnumEncodeCase, LocalEnumEncodePayload, StencilEncodeHelper, StencilEncodeRuntime,
+    StencilFailure, StencilHelper, StencilOp, StencilRuntime, TaggedLength,
 };
 
 type FixedStencilFn = unsafe extern "C" fn(input: *const u8, len: usize, out: *mut u8) -> u32;
@@ -178,6 +178,13 @@ pub enum StencilError {
 
     #[error("invalid bool byte {value:#04x} at {path} byte {position}")]
     InvalidBool {
+        path: String,
+        position: usize,
+        value: u8,
+    },
+
+    #[error("invalid option tag byte {value:#04x} at {path} byte {position}")]
+    InvalidOptionTag {
         path: String,
         position: usize,
         value: u8,
@@ -930,6 +937,7 @@ fn fixed_decode_native_op_count(ops: &[StencilOp]) -> usize {
     ops.iter()
         .map(|op| match op {
             StencilOp::Copy(_) | StencilOp::Bool { .. } => 1,
+            StencilOp::RootOption { body, .. } => 1 + fixed_decode_native_op_count(body),
             StencilOp::RootEnum { bodies, .. } => {
                 1 + bodies
                     .iter()
@@ -961,6 +969,11 @@ fn failure_for_status(failures: &[StencilFailure], status: u32, input: &[u8]) ->
     };
     match failure {
         StencilFailure::InvalidBool { path, position } => StencilError::InvalidBool {
+            path: path.clone(),
+            position: *position,
+            value: input[*position],
+        },
+        StencilFailure::InvalidOptionTag { path, position } => StencilError::InvalidOptionTag {
             path: path.clone(),
             position: *position,
             value: input[*position],
@@ -1080,6 +1093,9 @@ pub fn decode_from_slice_with_stencil<T: Facet<'static>>(
         StencilError::InvalidBool {
             position, value, ..
         } => CompactError::InvalidBool { position, value }.into(),
+        StencilError::InvalidOptionTag {
+            position, value, ..
+        } => CompactError::InvalidOptionTag { position, value }.into(),
         StencilError::UnknownVariantIndex {
             position,
             variant_index,
@@ -1106,6 +1122,7 @@ pub fn decode_from_slice_with_stencil<T: Facet<'static>>(
                 StencilError::Plan(_) => "stencil plan failed",
                 StencilError::Encode(_) => "stencil encode plan failed",
                 StencilError::InvalidBool { .. } => unreachable!(),
+                StencilError::InvalidOptionTag { .. } => unreachable!(),
                 StencilError::UnknownStatus { .. } => "stencil returned an unknown status",
                 StencilError::UnknownVariantIndex { .. } => unreachable!(),
                 StencilError::UnreadableWriterVariant { .. } => unreachable!(),

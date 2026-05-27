@@ -507,6 +507,66 @@ fn strict_local_encode_stencil_accepts_direct_tag_option_descriptor() {
 // r[verify binette.local-access.descriptor]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
+fn strict_local_decode_stencil_accepts_direct_tag_option_descriptor() {
+    type Wire = Option<u16>;
+
+    let writer_plan = writer_plan_for::<Wire>().unwrap();
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        writer_plan.root(),
+        &writer_registry,
+    )
+    .unwrap();
+    let descriptor = swift_direct_tag_option_u16_descriptor(reader_plan.reader_root());
+    let decoder =
+        strict_local_stencil_decoder_from_plan(&reader_plan, &writer_registry, &descriptor)
+            .unwrap();
+
+    assert_eq!(decoder.report().mode, StencilMode::Strict);
+    assert_eq!(decoder.report().helper_count, 0);
+    assert!(decoder.report().helper_paths.is_empty());
+
+    let some_bytes = encode_to_vec_with_plan(&Some(0x1122_u16), &writer_plan).unwrap();
+    let mut some = SwiftTaggedMaybeU16 { tag: 0, value: 0 };
+    unsafe { decoder.decode_raw_into(&some_bytes, (&mut some as *mut SwiftTaggedMaybeU16).cast()) }
+        .unwrap();
+    assert_eq!(
+        some,
+        SwiftTaggedMaybeU16 {
+            tag: 1,
+            value: 0x1122,
+        }
+    );
+
+    let none_bytes = encode_to_vec_with_plan(&None::<u16>, &writer_plan).unwrap();
+    let mut none = SwiftTaggedMaybeU16 {
+        tag: 0xff,
+        value: 0x7788,
+    };
+    unsafe { decoder.decode_raw_into(&none_bytes, (&mut none as *mut SwiftTaggedMaybeU16).cast()) }
+        .unwrap();
+    assert_eq!(none.tag, 0);
+    assert_eq!(none.value, 0x7788);
+
+    let mut invalid = SwiftTaggedMaybeU16 { tag: 0, value: 0 };
+    assert!(matches!(
+        unsafe { decoder.decode_raw_into(&[2], (&mut invalid as *mut SwiftTaggedMaybeU16).cast()) },
+        Err(StencilError::InvalidOptionTag {
+            position: 0,
+            value: 2,
+            ..
+        })
+    ));
+}
+
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
 fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_array_subtree() {
     let value = SwiftNumbers {
         id: 0x0102_0304_0506_0708,
@@ -1177,6 +1237,7 @@ fn swift_direct_tag_option_u16_descriptor(root: &TypeRef) -> LocalTypeDescriptor
                     offset: std::mem::offset_of!(SwiftTaggedMaybeU16, tag),
                 },
                 none_value: 0,
+                some_value: 1,
                 some: LocalAccess::Direct {
                     offset: std::mem::offset_of!(SwiftTaggedMaybeU16, value),
                 },

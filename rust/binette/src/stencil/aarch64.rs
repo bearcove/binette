@@ -353,6 +353,25 @@ fn emit_op(
             *unknown_failure_index,
             branches,
         ),
+        StencilOp::RootOption {
+            input_offset,
+            tag_output_offset,
+            none_value,
+            some_value,
+            body,
+            invalid_failure_index,
+        } => emit_root_option_op(
+            code,
+            RootOptionEmit {
+                input_offset: *input_offset,
+                tag_output_offset: *tag_output_offset,
+                none_value: *none_value,
+                some_value: *some_value,
+                body,
+                invalid_failure_index: *invalid_failure_index,
+            },
+            branches,
+        ),
     }
 }
 
@@ -423,6 +442,72 @@ const AARCH64_LDUR_W9_X0: u32 = 0xB840_0009;
 const AARCH64_STURB_W9_X2: u32 = 0x3800_0049;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 const AARCH64_STURB_W10_X2: u32 = 0x3800_004A;
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+struct RootOptionEmit<'a> {
+    input_offset: usize,
+    tag_output_offset: usize,
+    none_value: usize,
+    some_value: usize,
+    body: &'a [StencilOp],
+    invalid_failure_index: usize,
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_root_option_op(
+    code: &mut Vec<u8>,
+    option: RootOptionEmit<'_>,
+    branches: &mut Vec<BranchFixup>,
+) -> Result<(), StencilError> {
+    push_u32(
+        code,
+        patch_ldur_stur_imm9(AARCH64_LDURB_W9_X0, option.input_offset, "$option")?,
+    );
+    push_u32(code, AARCH64_CMP_W9_1);
+    let invalid_branch = code.len();
+    push_u32(code, 0);
+    branches.push(BranchFixup {
+        offset: invalid_branch,
+        failure_index: option.invalid_failure_index,
+        kind: BranchKind::CondHi,
+    });
+
+    push_u32(code, cmp_w9_immediate(STENCIL_OPTION_NONE as u32)?);
+    let none_branch = code.len();
+    push_u32(code, 0);
+
+    emit_store_local_option_tag(code, option.tag_output_offset, option.some_value)?;
+    for op in option.body {
+        emit_op(code, op, branches)?;
+    }
+    let some_done_branch = code.len();
+    push_u32(code, 0);
+
+    let none_offset = code.len();
+    emit_store_local_option_tag(code, option.tag_output_offset, option.none_value)?;
+
+    let done = code.len();
+    let none_word = patch_cond_branch_imm19(AARCH64_B_EQ, none_branch, none_offset)?;
+    code[none_branch..none_branch + 4].copy_from_slice(&none_word.to_le_bytes());
+    let some_done_word = patch_uncond_branch_imm26(AARCH64_B, some_done_branch, done)?;
+    code[some_done_branch..some_done_branch + 4].copy_from_slice(&some_done_word.to_le_bytes());
+    Ok(())
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_store_local_option_tag(
+    code: &mut Vec<u8>,
+    tag_output_offset: usize,
+    value: usize,
+) -> Result<(), StencilError> {
+    let value = u32::try_from(value).map_err(|_| StencilError::Unsupported {
+        path: "$option".to_owned(),
+        reason: "local option tag value exceeds u32",
+    })?;
+    push_u32(code, mov_w10_immediate(value)?);
+    push_u32(code, stur_b_register(10, 2, tag_output_offset, "$option")?);
+    Ok(())
+}
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn emit_root_enum_op(

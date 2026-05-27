@@ -589,6 +589,9 @@ impl LocalDecodeStencilCompiler<'_> {
         if let PlanNode::Enum { variants } = root {
             return self.compile_enum_root(reader, variants, "$");
         }
+        if let PlanNode::Option { element } = root {
+            return self.compile_option_root(reader, element, "$");
+        }
         self.compile_node(reader, root, 0, "$")?;
         Ok(LengthCheck::Exact(self.input_offset))
     }
@@ -641,6 +644,62 @@ impl LocalDecodeStencilCompiler<'_> {
                 reason: "direct local decode stencil only supports fixed-width roots",
             }),
         }
+    }
+
+    fn compile_option_root(
+        &mut self,
+        reader: &LocalTypeDescriptor,
+        element: &PlanNode,
+        path: &str,
+    ) -> Result<LengthCheck, StencilError> {
+        if self.input_offset != 0 || !self.ops.is_empty() {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "local direct option decode only supports options at the root",
+            });
+        }
+
+        let (some_descriptor, tag_output_offset, none_value, some_value, some_output_offset) =
+            local_direct_option_parts(reader, path)?;
+        let input_offset = self.input_offset;
+        self.input_offset = checked_offset(self.input_offset, 1, path)?;
+        let invalid_failure_index = self.failures.len();
+        self.failures.push(StencilFailure::InvalidOptionTag {
+            path: path.to_owned(),
+            position: input_offset,
+        });
+
+        let (body, expected_some) = self.compile_branch_body(input_offset + 1, |compiler| {
+            compiler.compile_node(
+                some_descriptor,
+                element,
+                some_output_offset,
+                &format!("{path}.some"),
+            )
+        })?;
+
+        self.ops.push(StencilOp::RootOption {
+            input_offset,
+            tag_output_offset,
+            none_value,
+            some_value,
+            body,
+            invalid_failure_index,
+        });
+
+        Ok(LengthCheck::RootU8Tag {
+            position: input_offset,
+            cases: vec![
+                ByteTaggedLength {
+                    tag: STENCIL_OPTION_NONE as u8,
+                    expected: input_offset + 1,
+                },
+                ByteTaggedLength {
+                    tag: STENCIL_OPTION_SOME as u8,
+                    expected: expected_some,
+                },
+            ],
+        })
     }
 
     // r[impl binette.compat.enum]
@@ -2831,7 +2890,7 @@ impl LocalEncodeStencilCompiler<'_> {
         input_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
-        let (some_descriptor, tag_offset, none_value, some_offset) =
+        let (some_descriptor, tag_offset, none_value, _some_value, some_offset) =
             local_direct_option_parts(descriptor, path)?;
         let mut compiler = LocalEncodeStencilCompiler {
             ops: Vec::new(),
@@ -3750,11 +3809,12 @@ fn local_option_descriptor<'a>(
 fn local_direct_option_parts<'a>(
     descriptor: &'a LocalTypeDescriptor,
     path: &str,
-) -> Result<(&'a LocalTypeDescriptor, usize, usize, usize), StencilError> {
+) -> Result<(&'a LocalTypeDescriptor, usize, usize, usize, usize), StencilError> {
     let (some, representation) = local_option_descriptor(descriptor, path)?;
     let LocalOptionRepresentation::Tag {
         tag,
         none_value,
+        some_value,
         some: some_access,
     } = representation
     else {
@@ -3767,6 +3827,7 @@ fn local_direct_option_parts<'a>(
         some,
         local_direct_offset(tag, path)?,
         *none_value,
+        *some_value,
         local_direct_offset(some_access, &format!("{path}.some"))?,
     ))
 }
@@ -4232,7 +4293,9 @@ fn copy_ops_from_stencil_ops(ops: &[StencilOp]) -> Option<Vec<CopyOp>> {
     ops.iter()
         .map(|op| match op {
             StencilOp::Copy(op) => Some(*op),
-            StencilOp::Bool { .. } | StencilOp::RootEnum { .. } => None,
+            StencilOp::Bool { .. } | StencilOp::RootEnum { .. } | StencilOp::RootOption { .. } => {
+                None
+            }
         })
         .collect()
 }

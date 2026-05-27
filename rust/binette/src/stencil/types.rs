@@ -32,6 +32,10 @@ pub(super) enum StencilFailure {
         path: String,
         position: usize,
     },
+    InvalidOptionTag {
+        path: String,
+        position: usize,
+    },
     UnknownVariantIndex {
         position: usize,
     },
@@ -59,6 +63,14 @@ pub(super) enum StencilOp {
         cases: Vec<EnumCase>,
         bodies: Vec<Vec<StencilOp>>,
         unknown_failure_index: usize,
+    },
+    RootOption {
+        input_offset: usize,
+        tag_output_offset: usize,
+        none_value: usize,
+        some_value: usize,
+        body: Vec<StencilOp>,
+        invalid_failure_index: usize,
     },
 }
 
@@ -310,16 +322,27 @@ pub(super) struct TaggedLength {
 
 pub(super) enum LengthCheck {
     Exact(usize),
+    RootU8Tag {
+        position: usize,
+        cases: Vec<ByteTaggedLength>,
+    },
     RootU32Tag {
         position: usize,
         cases: Vec<TaggedLength>,
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ByteTaggedLength {
+    pub(super) tag: u8,
+    pub(super) expected: usize,
+}
+
 impl LengthCheck {
     pub(super) fn fixed_expected_len(&self) -> Option<usize> {
         match self {
             LengthCheck::Exact(len) => Some(*len),
+            LengthCheck::RootU8Tag { .. } => None,
             LengthCheck::RootU32Tag { .. } => None,
         }
     }
@@ -330,6 +353,24 @@ impl LengthCheck {
                 if input.len() != *expected {
                     return Err(StencilError::InputLength {
                         expected: *expected,
+                        actual: input.len(),
+                    });
+                }
+            }
+            LengthCheck::RootU8Tag { position, cases } => {
+                let needed = position + 1;
+                if input.len() < needed {
+                    return Err(StencilError::InputLength {
+                        expected: needed,
+                        actual: input.len(),
+                    });
+                }
+                let tag = input[*position];
+                if let Some(case) = cases.iter().find(|case| case.tag == tag)
+                    && input.len() != case.expected
+                {
+                    return Err(StencilError::InputLength {
+                        expected: case.expected,
                         actual: input.len(),
                     });
                 }

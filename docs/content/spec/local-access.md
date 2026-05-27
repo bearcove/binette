@@ -81,10 +81,10 @@ inside the current process.
 > layout.
 > For an optional subtree, a backend may provide direct tag and payload access
 > facts, or presence/projector thunks for encode and construction thunks for
-> decode. Direct optional access identifies the tag location, the local none
-> value, and the payload location for the some case. Hybrid execution treats the
-> optional node as the fallback boundary unless the engine has proven direct
-> local layout facts for that optional representation.
+> decode. Direct optional access identifies the tag location, the local none and
+> some tag values, and the payload location for the some case. Hybrid execution
+> treats the optional node as the fallback boundary unless the engine has proven
+> direct local layout facts for that optional representation.
 > For an enum subtree, a backend may provide a tag thunk plus per-variant
 > payload projectors; hybrid execution writes the binette variant index and
 > encodes the projected payload using the variant payload descriptor.
