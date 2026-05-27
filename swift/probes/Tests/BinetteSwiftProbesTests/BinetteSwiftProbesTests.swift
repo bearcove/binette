@@ -41,6 +41,11 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertEqual(optionalUInt16.kind.tag, "option")
         XCTAssertEqual(optionalUInt16.kind.storage?.tag, "direct-tag")
         XCTAssertEqual(optionalUInt16.kind.storage?.optionTagWidth, MemoryLayout<UInt8>.size)
+
+        let optionalBool = try XCTUnwrap(exports.first { $0.schemaName == "option<bool>" })
+        XCTAssertEqual(optionalBool.kind.tag, "option")
+        XCTAssertEqual(optionalBool.kind.storage?.tag, "niche-tag")
+        XCTAssertEqual(optionalBool.kind.storage?.optionTagWidth, MemoryLayout<UInt8>.size)
     }
 
     func testStoredStructFieldsUseDirectOffsets() throws {
@@ -180,6 +185,37 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertEqual(export.kind.storage?.optionTagWidth, MemoryLayout<UInt8>.size)
         XCTAssertEqual(export.kind.storage?.someOffset, someOffset)
     }
+
+    func testSwiftOptionalBoolDescriptorExportsProbedNicheLayout() throws {
+        let descriptor = try XCTUnwrap(
+            makeProbeDescriptors().first { $0.schemaName == "option<bool>" }
+        )
+
+        guard case let .optional(some, storage) = descriptor.kind else {
+            return XCTFail("expected optional descriptor")
+        }
+        XCTAssertEqual(some.schemaName, "bool")
+        guard case let .nicheTag(offset, width, noneValue, someOffset) = storage else {
+            return XCTFail("expected niche optional descriptor")
+        }
+
+        let none: Bool? = nil
+        let someFalse: Bool? = false
+        let someTrue: Bool? = true
+        XCTAssertEqual(width, MemoryLayout<UInt8>.size)
+        XCTAssertEqual(loadByte(from: none, offset: offset), UInt8(noneValue))
+        XCTAssertNotEqual(loadByte(from: someFalse, offset: offset), UInt8(noneValue))
+        XCTAssertNotEqual(loadByte(from: someTrue, offset: offset), UInt8(noneValue))
+        XCTAssertFalse(loadBool(from: someFalse, offset: someOffset))
+        XCTAssertTrue(loadBool(from: someTrue, offset: someOffset))
+
+        let export = try XCTUnwrap(
+            exportProbeDescriptors().first { $0.schemaName == "option<bool>" }
+        )
+        XCTAssertEqual(export.kind.storage?.tag, "niche-tag")
+        XCTAssertEqual(export.kind.storage?.noneValue, noneValue)
+        XCTAssertNil(export.kind.storage?.someValue)
+    }
 }
 
 private func loadByte<T>(from value: T, offset: Int) -> UInt8 {
@@ -193,5 +229,12 @@ private func loadUInt16<T>(from value: T, offset: Int) -> UInt16 {
     var value = value
     return withUnsafeBytes(of: &value) { bytes in
         bytes.baseAddress!.advanced(by: offset).load(as: UInt16.self)
+    }
+}
+
+private func loadBool<T>(from value: T, offset: Int) -> Bool {
+    var value = value
+    return withUnsafeBytes(of: &value) { bytes in
+        bytes.baseAddress!.advanced(by: offset).load(as: Bool.self)
     }
 }

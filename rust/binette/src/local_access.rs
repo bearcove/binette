@@ -2014,7 +2014,7 @@ mod tests {
             "../tests/fixtures/swift-probe-descriptors.json"
         ))
         .unwrap();
-        assert_eq!(exports.len(), 11);
+        assert_eq!(exports.len(), 12);
         let descriptors = exports
             .into_iter()
             .map(|export| {
@@ -2026,6 +2026,7 @@ mod tests {
             .unwrap();
         let descriptor = descriptors.get("ProbeNested").unwrap();
         let option_descriptor = descriptors.get("option<string>").unwrap();
+        let option_bool_descriptor = descriptors.get("option<bool>").unwrap();
         let option_u16_descriptor = descriptors.get("option<u16>").unwrap();
         let enum_descriptor = descriptors.get("ProbeEnum").unwrap();
 
@@ -2098,6 +2099,29 @@ mod tests {
                 "Swift.Optional<String>.init.some.utf8"
             )
         );
+
+        assert_eq!(option_bool_descriptor.backend, LocalBackend::SwiftProbe);
+        let LocalTypeKind::Option {
+            some,
+            representation:
+                LocalOptionRepresentation::Niche {
+                    tag,
+                    tag_width,
+                    none_value,
+                    some: some_access,
+                },
+        } = &option_bool_descriptor.kind
+        else {
+            panic!("expected Swift niche-tag option descriptor");
+        };
+        assert!(matches!(
+            some.kind,
+            LocalTypeKind::Scalar(LocalScalarAccess::Plain)
+        ));
+        assert_eq!(*tag, LocalAccess::Direct { offset: 0 });
+        assert_eq!(*tag_width, 1);
+        assert_eq!(*none_value, 2);
+        assert_eq!(*some_access, LocalAccess::Direct { offset: 0 });
 
         assert_eq!(option_u16_descriptor.backend, LocalBackend::SwiftProbe);
         let LocalTypeKind::Option {
@@ -2196,6 +2220,7 @@ mod tests {
             "array<i64>" => TypeRef::concrete(TypeId(0x5E_AE_00_04)),
             "option<string>" => TypeRef::concrete(TypeId(0x5E_AE_00_05)),
             "option<u16>" => TypeRef::concrete(TypeId(0x5E_AE_00_06)),
+            "option<bool>" => TypeRef::concrete(TypeId(0x5E_AE_00_07)),
             _ => return None,
         };
         Some(LocalSchemaRef::Type(type_ref))

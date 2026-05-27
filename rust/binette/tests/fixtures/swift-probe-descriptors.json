@@ -141,6 +141,37 @@
           "tag" : "scalar"
         },
         "layout" : {
+          "alignment" : 1,
+          "size" : 1,
+          "stride" : 1
+        },
+        "schema_name" : "bool"
+      },
+      "storage" : {
+        "none_value" : 2,
+        "option_tag_offset" : 0,
+        "option_tag_width" : 1,
+        "some_offset" : 0,
+        "tag" : "niche-tag"
+      },
+      "tag" : "option"
+    },
+    "layout" : {
+      "alignment" : 1,
+      "size" : 1,
+      "stride" : 1
+    },
+    "schema_name" : "option<bool>"
+  },
+  {
+    "backend" : "swift-probe",
+    "kind" : {
+      "some" : {
+        "backend" : "swift-probe",
+        "kind" : {
+          "tag" : "scalar"
+        },
+        "layout" : {
           "alignment" : 2,
           "size" : 2,
           "stride" : 2

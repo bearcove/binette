@@ -197,6 +197,7 @@ public enum BinetteSequenceStorage: Equatable {
 
 public enum BinetteOptionalStorage: Equatable {
     case directTag(offset: Int, width: Int, noneValue: UInt, someValue: UInt, someOffset: Int)
+    case nicheTag(offset: Int, width: Int, noneValue: UInt, someOffset: Int)
     case thunk(isSome: String, some: String, writeNone: String?, writeSomeBytes: String?)
 }
 
@@ -237,6 +238,7 @@ public func makeProbeDescriptors() -> [BinetteLocalDescriptor] {
     let string = stringDescriptor()
     let array = arrayDescriptor(element: int64)
     let optionalString = optionalDescriptor("option<string>", String?.self, some: string)
+    let optionalBool = optionalBoolDescriptor(some: bool)
     let optionalUInt16 = optionalUInt16Descriptor(some: uint16)
     let leaf = leafDescriptor(count: int32, flag: bool)
     let nested = nestedDescriptor(title: string, leaf: leaf, values: array)
@@ -250,6 +252,7 @@ public func makeProbeDescriptors() -> [BinetteLocalDescriptor] {
         string,
         array,
         optionalString,
+        optionalBool,
         optionalUInt16,
         leaf,
         nested,
@@ -270,6 +273,7 @@ public func validateProbeDescriptors(_ descriptors: [BinetteLocalDescriptor]) ->
         "string",
         "array<i64>",
         "option<string>",
+        "option<bool>",
         "option<u16>",
     ].allSatisfy(names.contains)
 }
@@ -279,6 +283,7 @@ public func validateProbeRuntimeFacts() -> Bool {
     guard
         let leaf = descriptors.first(where: { $0.schemaName == "ProbeLeaf" }),
         let nested = descriptors.first(where: { $0.schemaName == "ProbeNested" }),
+        let optionalBool = descriptors.first(where: { $0.schemaName == "option<bool>" }),
         let optionalUInt16 = descriptors.first(where: { $0.schemaName == "option<u16>" })
     else {
         return false
@@ -304,7 +309,8 @@ public func validateProbeRuntimeFacts() -> Bool {
         return false
     }
 
-    return validateDirectOptionalUInt16(optionalUInt16)
+    return validateNicheOptionalBool(optionalBool)
+        && validateDirectOptionalUInt16(optionalUInt16)
 }
 
 private func loadStructField<Root, Field>(
@@ -380,6 +386,38 @@ private func directOptionalTagValues(
         return nil
     }
     return (none: noneValue, some: someValue)
+}
+
+private func nicheOptionalNoneValue(
+    _ descriptor: BinetteLocalDescriptor
+) -> UInt? {
+    guard
+        case let .optional(_, storage) = descriptor.kind,
+        case let .nicheTag(_, _, noneValue, _) = storage
+    else {
+        return nil
+    }
+    return noneValue
+}
+
+private func validateNicheOptionalBool(_ descriptor: BinetteLocalDescriptor) -> Bool {
+    let none: Bool? = nil
+    let someFalse: Bool? = false
+    let someTrue: Bool? = true
+    guard
+        case let .optional(_, storage) = descriptor.kind,
+        case let .nicheTag(tagOffset, width, noneValue, someOffset) = storage,
+        width == MemoryLayout<UInt8>.size,
+        nicheOptionalNoneValue(descriptor) == noneValue,
+        loadValue(from: none, offset: tagOffset, as: UInt8.self) == UInt8(noneValue),
+        loadValue(from: someFalse, offset: tagOffset, as: UInt8.self) != UInt8(noneValue),
+        loadValue(from: someTrue, offset: tagOffset, as: UInt8.self) != UInt8(noneValue),
+        loadValue(from: someFalse, offset: someOffset, as: Bool.self) == false,
+        loadValue(from: someTrue, offset: someOffset, as: Bool.self) == true
+    else {
+        return false
+    }
+    return true
 }
 
 private func validateDirectOptionalUInt16(_ descriptor: BinetteLocalDescriptor) -> Bool {
@@ -550,6 +588,14 @@ private extension BinetteOptionalStorage {
                 someValue: someValue,
                 someOffset: someOffset
             )
+        case let .nicheTag(offset, width, noneValue, someOffset):
+            BinetteStorageExport(
+                tag: "niche-tag",
+                optionTagOffset: offset,
+                optionTagWidth: width,
+                noneValue: noneValue,
+                someOffset: someOffset
+            )
         case let .thunk(isSome, some, writeNone, writeSomeBytes):
             BinetteStorageExport(
                 tag: "thunk",
@@ -622,6 +668,47 @@ private func optionalDescriptor<T>(
                 writeSomeBytes: "Swift.Optional<String>.init.some.utf8"
             )
         )
+    )
+}
+
+private func optionalBoolDescriptor(some: BinetteLocalDescriptor) -> BinetteLocalDescriptor {
+    let storage = probeOptionalBoolStorage()
+    return BinetteLocalDescriptor(
+        schemaName: "option<bool>",
+        backend: .swiftProbe,
+        layout: BinetteLocalLayout(of: Optional<Bool>.self),
+        kind: .optional(some: some, storage: storage)
+    )
+}
+
+private func probeOptionalBoolStorage() -> BinetteOptionalStorage {
+    let none: Bool? = nil
+    let someFalse: Bool? = false
+    let someTrue: Bool? = true
+    let noneBytes = bytes(of: none)
+    let falseBytes = bytes(of: someFalse)
+    let trueBytes = bytes(of: someTrue)
+
+    if
+        let tagOffset = noneBytes.indices.first(where: {
+            noneBytes[$0] != falseBytes[$0] && noneBytes[$0] != trueBytes[$0]
+        }),
+        loadValue(from: someFalse, offset: 0, as: Bool.self) == false,
+        loadValue(from: someTrue, offset: 0, as: Bool.self) == true
+    {
+        return .nicheTag(
+            offset: tagOffset,
+            width: MemoryLayout<UInt8>.size,
+            noneValue: UInt(noneBytes[tagOffset]),
+            someOffset: 0
+        )
+    }
+
+    return .thunk(
+        isSome: "Swift.Optional<Bool>.isSome",
+        some: "Swift.Optional<Bool>.some",
+        writeNone: "Swift.Optional<Bool>.init.none",
+        writeSomeBytes: "Swift.Optional<Bool>.init.some.bytes"
     )
 }
 

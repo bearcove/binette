@@ -61,6 +61,12 @@ struct SwiftOptionalU16 {
     tag: u8,
 }
 
+#[derive(Debug, PartialEq)]
+#[repr(C)]
+struct SwiftOptionalBool {
+    byte: u8,
+}
+
 #[derive(Debug, PartialEq, Facet)]
 #[repr(C)]
 struct SwiftNumbers {
@@ -399,6 +405,74 @@ fn swift_probe_fixture_direct_option_drives_strict_local_stencils() {
             value: 0x7788,
             tag: 0
         }
+    );
+}
+
+// r[verify binette.local-access.swift-probes]
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+// r[verify binette.aggregate.option]
+#[test]
+fn swift_probe_fixture_niche_option_drives_strict_local_stencils() {
+    let writer_plan = writer_plan_for::<Option<bool>>().unwrap();
+    let descriptor = swift_fixture_descriptor("option<bool>", writer_plan.root()).unwrap();
+
+    let some_true = SwiftOptionalBool { byte: 1 };
+    let some_false = SwiftOptionalBool { byte: 0 };
+    let none = SwiftOptionalBool { byte: 2 };
+    let encoder = strict_local_stencil_encoder_from_plan(&writer_plan, &descriptor).unwrap();
+    assert_eq!(encoder.report().mode, StencilMode::Strict);
+    assert_eq!(encoder.report().helper_count, 0);
+    assert!(encoder.report().helper_paths.is_empty());
+    assert_eq!(
+        unsafe { encoder.encode_raw_to_vec((&some_true as *const SwiftOptionalBool).cast()) }
+            .unwrap(),
+        encode_to_vec_with_plan(&Some(true), &writer_plan).unwrap()
+    );
+    assert_eq!(
+        unsafe { encoder.encode_raw_to_vec((&some_false as *const SwiftOptionalBool).cast()) }
+            .unwrap(),
+        encode_to_vec_with_plan(&Some(false), &writer_plan).unwrap()
+    );
+    assert_eq!(
+        unsafe { encoder.encode_raw_to_vec((&none as *const SwiftOptionalBool).cast()) }.unwrap(),
+        encode_to_vec_with_plan(&None::<bool>, &writer_plan).unwrap()
+    );
+
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        writer_plan.root(),
+        &writer_registry,
+    )
+    .unwrap();
+    let reader_descriptor =
+        swift_fixture_descriptor("option<bool>", reader_plan.reader_root()).unwrap();
+    let decoder =
+        strict_local_stencil_decoder_from_plan(&reader_plan, &writer_registry, &reader_descriptor)
+            .unwrap();
+    assert_eq!(decoder.report().mode, StencilMode::Strict);
+    assert_eq!(decoder.report().helper_count, 0);
+    assert!(decoder.report().helper_paths.is_empty());
+
+    let some_bytes = encode_to_vec_with_plan(&Some(true), &writer_plan).unwrap();
+    let mut decoded_some = std::mem::MaybeUninit::<SwiftOptionalBool>::uninit();
+    unsafe { decoder.decode_raw_into(&some_bytes, decoded_some.as_mut_ptr().cast()) }.unwrap();
+    assert_eq!(
+        unsafe { decoded_some.assume_init() },
+        SwiftOptionalBool { byte: 1 }
+    );
+
+    let none_bytes = encode_to_vec_with_plan(&None::<bool>, &writer_plan).unwrap();
+    let mut decoded_none = std::mem::MaybeUninit::<SwiftOptionalBool>::uninit();
+    unsafe { decoder.decode_raw_into(&none_bytes, decoded_none.as_mut_ptr().cast()) }.unwrap();
+    assert_eq!(
+        unsafe { decoded_none.assume_init() },
+        SwiftOptionalBool { byte: 2 }
     );
 }
 
@@ -1413,6 +1487,10 @@ fn swift_fixture_descriptor(
     .unwrap_or_else(|| panic!("missing Swift fixture descriptor {schema_name}"));
     LocalTypeDescriptor::from_export(export, |schema_name| match schema_name {
         "option<u16>" => Some(crate::local_access::LocalSchemaRef::Type(root.clone())),
+        "option<bool>" => Some(crate::local_access::LocalSchemaRef::Type(root.clone())),
+        "bool" => Some(crate::local_access::LocalSchemaRef::Type(
+            TypeRef::concrete(primitive_type_id(Primitive::Bool)),
+        )),
         "u16" => Some(crate::local_access::LocalSchemaRef::Type(
             TypeRef::concrete(primitive_type_id(Primitive::U16)),
         )),
