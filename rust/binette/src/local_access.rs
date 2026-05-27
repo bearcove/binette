@@ -550,7 +550,7 @@ mod rust_layout {
     use std::collections::HashMap;
 
     use super::*;
-    use facet_core::{Def, Shape, StructKind, Type, UserType};
+    use facet_core::{Def, Facet, Shape, StructKind, Type, UserType};
 
     use crate::error::SchemaError;
     use crate::facet::schema_bundle_for_shape;
@@ -587,6 +587,13 @@ mod rust_layout {
             stack: Vec::new(),
         }
         .build(shape, &bundle.root)
+    }
+
+    // r[impl binette.local-access.backends]
+    // r[impl binette.local-access.descriptor]
+    pub fn rust_facet_descriptor_for<T: Facet<'static>>()
+    -> Result<LocalTypeDescriptor, LocalAccessError> {
+        rust_facet_descriptor_for_shape(T::SHAPE)
     }
 
     struct RustFacetDescriptorBuilder<'schema> {
@@ -1101,7 +1108,9 @@ mod rust_layout {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use rust_layout::{LocalAccessError, rust_facet_descriptor_for_shape};
+pub use rust_layout::{
+    LocalAccessError, rust_facet_descriptor_for, rust_facet_descriptor_for_shape,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use rust_layout::{rust_option_string_descriptor, rust_string_descriptor, rust_vec_descriptor};
 #[cfg(not(target_arch = "wasm32"))]

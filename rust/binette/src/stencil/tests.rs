@@ -9,7 +9,7 @@ use crate::local_access::{
     LocalOptionSequenceDecodeThunks, LocalScalarAccess, LocalSequenceDecodeThunks,
     LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks,
     LocalSequenceStorage, LocalThunk, LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout,
-    LocalVariantConstructThunks, LocalVariantProjectThunks,
+    LocalVariantConstructThunks, LocalVariantProjectThunks, rust_facet_descriptor_for,
 };
 use crate::reader_plan_for_bundle;
 
@@ -82,6 +82,69 @@ struct SwiftEventEnvelope {
     id: u64,
     event: SwiftProbeEvent,
     code: u16,
+}
+
+// r[verify binette.local-access.backends]
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn rust_facet_descriptor_drives_strict_local_encode_stencil() {
+    let value = SwiftFixed {
+        id: 0x0102_0304_0506_0708,
+        active: true,
+        code: 0x1122,
+    };
+    let plan = writer_plan_for::<SwiftFixed>().unwrap();
+    let descriptor = rust_facet_descriptor_for::<SwiftFixed>().unwrap();
+    let encoder = strict_local_stencil_encoder_from_plan(&plan, &descriptor).unwrap();
+
+    assert_eq!(descriptor.backend, LocalBackend::RustFacet);
+    assert_eq!(encoder.report().mode, StencilMode::Strict);
+    assert_eq!(encoder.report().helper_count, 0);
+    assert!(encoder.report().helper_paths.is_empty());
+    let actual =
+        unsafe { encoder.encode_raw_to_vec((&value as *const SwiftFixed).cast()) }.unwrap();
+    assert_eq!(actual, encode_to_vec_with_plan(&value, &plan).unwrap());
+}
+
+// r[verify binette.local-access.backends]
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn rust_facet_descriptor_drives_strict_local_decode_stencil() {
+    let value = SwiftFixed {
+        id: 0x1112_1314_1516_1718,
+        active: false,
+        code: 0x3344,
+    };
+    let writer_plan = writer_plan_for::<SwiftFixed>().unwrap();
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        writer_plan.root(),
+        &writer_registry,
+    )
+    .unwrap();
+    let descriptor = rust_facet_descriptor_for::<SwiftFixed>().unwrap();
+    let decoder =
+        strict_local_stencil_decoder_from_plan(&reader_plan, &writer_registry, &descriptor)
+            .unwrap();
+    let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+
+    assert_eq!(descriptor.backend, LocalBackend::RustFacet);
+    assert_eq!(decoder.report().mode, StencilMode::Strict);
+    assert_eq!(decoder.report().helper_count, 0);
+    assert!(decoder.report().helper_paths.is_empty());
+    assert_eq!(decoder.expected_len(), bytes.len());
+
+    let mut decoded = std::mem::MaybeUninit::<SwiftFixed>::uninit();
+    unsafe { decoder.decode_raw_into(&bytes, decoded.as_mut_ptr().cast()) }.unwrap();
+    let decoded = unsafe { decoded.assume_init() };
+    assert_eq!(decoded, value);
 }
 
 // r[verify binette.local-access.descriptor]
