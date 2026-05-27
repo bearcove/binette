@@ -22,7 +22,10 @@ let package = Package(
                 ]),
             ]
         ),
-        .target(name: "BinetteSwiftProbes"),
+        .target(
+            name: "BinetteSwiftProbes",
+            dependencies: ["CBinette"]
+        ),
         .testTarget(
             name: "BinetteSwiftProbesTests",
             dependencies: ["BinetteSwiftProbes", "CBinette"]
