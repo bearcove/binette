@@ -228,16 +228,6 @@ public enum ProbeEnum {
     case nested(ProbeLeaf)
 }
 
-public struct ProbeTaggedMaybeU16 {
-    public var tag: UInt8
-    public var value: UInt16
-
-    public init(tag: UInt8, value: UInt16) {
-        self.tag = tag
-        self.value = value
-    }
-}
-
 public func makeProbeDescriptors() -> [BinetteLocalDescriptor] {
     let bool = scalarDescriptor("bool", Bool.self)
     let uint8 = scalarDescriptor("u8", UInt8.self)
@@ -247,7 +237,7 @@ public func makeProbeDescriptors() -> [BinetteLocalDescriptor] {
     let string = stringDescriptor()
     let array = arrayDescriptor(element: int64)
     let optionalString = optionalDescriptor("option<string>", String?.self, some: string)
-    let taggedOptional = taggedOptionalDescriptor(some: uint16)
+    let optionalUInt16 = optionalUInt16Descriptor(some: uint16)
     let leaf = leafDescriptor(count: int32, flag: bool)
     let nested = nestedDescriptor(title: string, leaf: leaf, values: array)
     let enumPayloads = enumDescriptor()
@@ -260,7 +250,7 @@ public func makeProbeDescriptors() -> [BinetteLocalDescriptor] {
         string,
         array,
         optionalString,
-        taggedOptional,
+        optionalUInt16,
         leaf,
         nested,
         enumPayloads,
@@ -280,7 +270,7 @@ public func validateProbeDescriptors(_ descriptors: [BinetteLocalDescriptor]) ->
         "string",
         "array<i64>",
         "option<string>",
-        "tagged-option<u16>",
+        "option<u16>",
     ].allSatisfy(names.contains)
 }
 
@@ -289,7 +279,7 @@ public func validateProbeRuntimeFacts() -> Bool {
     guard
         let leaf = descriptors.first(where: { $0.schemaName == "ProbeLeaf" }),
         let nested = descriptors.first(where: { $0.schemaName == "ProbeNested" }),
-        let taggedOptional = descriptors.first(where: { $0.schemaName == "tagged-option<u16>" })
+        let optionalUInt16 = descriptors.first(where: { $0.schemaName == "option<u16>" })
     else {
         return false
     }
@@ -314,16 +304,7 @@ public func validateProbeRuntimeFacts() -> Bool {
         return false
     }
 
-    let taggedValue = ProbeTaggedMaybeU16(tag: 1, value: 0xCAFE)
-    guard
-        let tagValues = directOptionalTagValues(taggedOptional),
-        tagValues.none == 0,
-        tagValues.some == 1
-    else {
-        return false
-    }
-    return loadDirectOptionalTag(taggedOptional, from: taggedValue) == taggedValue.tag
-        && loadDirectOptionalPayload(taggedOptional, from: taggedValue, as: UInt16.self) == taggedValue.value
+    return validateDirectOptionalUInt16(optionalUInt16)
 }
 
 private func loadStructField<Root, Field>(
@@ -363,7 +344,7 @@ private func loadNestedLeafField<Field>(
 
 private func loadDirectOptionalTag(
     _ descriptor: BinetteLocalDescriptor,
-    from value: ProbeTaggedMaybeU16
+    from value: UInt16?
 ) -> UInt8? {
     guard
         case let .optional(_, storage) = descriptor.kind,
@@ -377,7 +358,7 @@ private func loadDirectOptionalTag(
 
 private func loadDirectOptionalPayload<Field>(
     _ descriptor: BinetteLocalDescriptor,
-    from value: ProbeTaggedMaybeU16,
+    from value: UInt16?,
     as _: Field.Type
 ) -> Field? {
     guard
@@ -399,6 +380,22 @@ private func directOptionalTagValues(
         return nil
     }
     return (none: noneValue, some: someValue)
+}
+
+private func validateDirectOptionalUInt16(_ descriptor: BinetteLocalDescriptor) -> Bool {
+    let none: UInt16? = nil
+    let some: UInt16? = 0xCAFE
+    guard
+        let tagValues = directOptionalTagValues(descriptor),
+        let noneTag = loadDirectOptionalTag(descriptor, from: none),
+        let someTag = loadDirectOptionalTag(descriptor, from: some),
+        tagValues.none == UInt(noneTag),
+        tagValues.some == UInt(someTag),
+        loadDirectOptionalPayload(descriptor, from: some, as: UInt16.self) == 0xCAFE
+    else {
+        return false
+    }
+    return noneTag != someTag
 }
 
 private func loadValue<Root, Field>(from value: Root, offset: Int, as _: Field.Type) -> Field {
@@ -628,22 +625,51 @@ private func optionalDescriptor<T>(
     )
 }
 
-private func taggedOptionalDescriptor(some: BinetteLocalDescriptor) -> BinetteLocalDescriptor {
-    BinetteLocalDescriptor(
-        schemaName: "tagged-option<u16>",
+private func optionalUInt16Descriptor(some: BinetteLocalDescriptor) -> BinetteLocalDescriptor {
+    let storage = probeOptionalUInt16Storage()
+    return BinetteLocalDescriptor(
+        schemaName: "option<u16>",
         backend: .swiftProbe,
-        layout: BinetteLocalLayout(of: ProbeTaggedMaybeU16.self),
-        kind: .optional(
-            some: some,
-            storage: .directTag(
-                offset: MemoryLayout<ProbeTaggedMaybeU16>.offset(of: \ProbeTaggedMaybeU16.tag)!,
-                width: MemoryLayout<UInt8>.size,
-                noneValue: 0,
-                someValue: 1,
-                someOffset: MemoryLayout<ProbeTaggedMaybeU16>.offset(of: \ProbeTaggedMaybeU16.value)!
-            )
-        )
+        layout: BinetteLocalLayout(of: Optional<UInt16>.self),
+        kind: .optional(some: some, storage: storage)
     )
+}
+
+private func probeOptionalUInt16Storage() -> BinetteOptionalStorage {
+    let none: UInt16? = nil
+    let zero: UInt16? = 0
+    let some: UInt16? = 0xCAFE
+    let noneBytes = bytes(of: none)
+    let zeroBytes = bytes(of: zero)
+    let someBytes = bytes(of: some)
+
+    if
+        let tagOffset = noneBytes.indices.first(where: {
+            noneBytes[$0] != someBytes[$0] && zeroBytes[$0] == someBytes[$0]
+        }),
+        loadValue(from: some, offset: 0, as: UInt16.self) == 0xCAFE,
+        loadValue(from: zero, offset: 0, as: UInt16.self) == 0
+    {
+        return .directTag(
+            offset: tagOffset,
+            width: MemoryLayout<UInt8>.size,
+            noneValue: UInt(noneBytes[tagOffset]),
+            someValue: UInt(someBytes[tagOffset]),
+            someOffset: 0
+        )
+    }
+
+    return .thunk(
+        isSome: "Swift.Optional<UInt16>.isSome",
+        some: "Swift.Optional<UInt16>.some",
+        writeNone: "Swift.Optional<UInt16>.init.none",
+        writeSomeBytes: "Swift.Optional<UInt16>.init.some.bytes"
+    )
+}
+
+private func bytes<T>(of value: T) -> [UInt8] {
+    var value = value
+    return withUnsafeBytes(of: &value) { Array($0) }
 }
 
 private func leafDescriptor(

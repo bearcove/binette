@@ -37,10 +37,10 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertEqual(string.kind.storage?.count, "Swift.String.utf8.count")
         XCTAssertEqual(string.kind.storage?.write, "Swift.String.init.utf8")
 
-        let taggedOptional = try XCTUnwrap(exports.first { $0.schemaName == "tagged-option<u16>" })
-        XCTAssertEqual(taggedOptional.kind.tag, "option")
-        XCTAssertEqual(taggedOptional.kind.storage?.tag, "direct-tag")
-        XCTAssertEqual(taggedOptional.kind.storage?.optionTagWidth, MemoryLayout<UInt8>.size)
+        let optionalUInt16 = try XCTUnwrap(exports.first { $0.schemaName == "option<u16>" })
+        XCTAssertEqual(optionalUInt16.kind.tag, "option")
+        XCTAssertEqual(optionalUInt16.kind.storage?.tag, "direct-tag")
+        XCTAssertEqual(optionalUInt16.kind.storage?.optionTagWidth, MemoryLayout<UInt8>.size)
     }
 
     func testStoredStructFieldsUseDirectOffsets() throws {
@@ -153,33 +153,45 @@ final class BinetteSwiftProbesTests: XCTestCase {
         )
     }
 
-    func testDirectOptionalDescriptorExportsTagWidthAndPayloadOffset() throws {
+    func testSwiftOptionalUInt16DescriptorExportsProbedDirectTagLayout() throws {
         let descriptor = try XCTUnwrap(
-            makeProbeDescriptors().first { $0.schemaName == "tagged-option<u16>" }
+            makeProbeDescriptors().first { $0.schemaName == "option<u16>" }
         )
 
         guard case let .optional(some, storage) = descriptor.kind else {
             return XCTFail("expected optional descriptor")
         }
         XCTAssertEqual(some.schemaName, "u16")
-        XCTAssertEqual(
-            storage,
-            .directTag(
-                offset: MemoryLayout<ProbeTaggedMaybeU16>.offset(of: \ProbeTaggedMaybeU16.tag)!,
-                width: MemoryLayout<UInt8>.size,
-                noneValue: 0,
-                someValue: 1,
-                someOffset: MemoryLayout<ProbeTaggedMaybeU16>.offset(of: \ProbeTaggedMaybeU16.value)!
-            )
-        )
+        guard case let .directTag(offset, width, noneValue, someValue, someOffset) = storage else {
+            return XCTFail("expected direct optional descriptor")
+        }
+
+        let none: UInt16? = nil
+        let someOptional: UInt16? = 0xCAFE
+        XCTAssertEqual(width, MemoryLayout<UInt8>.size)
+        XCTAssertNotEqual(noneValue, someValue)
+        XCTAssertEqual(loadByte(from: none, offset: offset), UInt8(noneValue))
+        XCTAssertEqual(loadByte(from: someOptional, offset: offset), UInt8(someValue))
+        XCTAssertEqual(loadUInt16(from: someOptional, offset: someOffset), 0xCAFE)
 
         let export = try XCTUnwrap(
-            exportProbeDescriptors().first { $0.schemaName == "tagged-option<u16>" }
+            exportProbeDescriptors().first { $0.schemaName == "option<u16>" }
         )
         XCTAssertEqual(export.kind.storage?.optionTagWidth, MemoryLayout<UInt8>.size)
-        XCTAssertEqual(
-            export.kind.storage?.someOffset,
-            MemoryLayout<ProbeTaggedMaybeU16>.offset(of: \ProbeTaggedMaybeU16.value)!
-        )
+        XCTAssertEqual(export.kind.storage?.someOffset, someOffset)
+    }
+}
+
+private func loadByte<T>(from value: T, offset: Int) -> UInt8 {
+    var value = value
+    return withUnsafeBytes(of: &value) { bytes in
+        bytes.baseAddress!.advanced(by: offset).load(as: UInt8.self)
+    }
+}
+
+private func loadUInt16<T>(from value: T, offset: Int) -> UInt16 {
+    var value = value
+    return withUnsafeBytes(of: &value) { bytes in
+        bytes.baseAddress!.advanced(by: offset).load(as: UInt16.self)
     }
 }

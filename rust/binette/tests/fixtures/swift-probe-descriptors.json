@@ -148,21 +148,21 @@
         "schema_name" : "u16"
       },
       "storage" : {
-        "none_value" : 0,
-        "option_tag_offset" : 0,
+        "none_value" : 1,
+        "option_tag_offset" : 2,
         "option_tag_width" : 1,
-        "some_offset" : 2,
-        "some_value" : 1,
+        "some_offset" : 0,
+        "some_value" : 0,
         "tag" : "direct-tag"
       },
       "tag" : "option"
     },
     "layout" : {
       "alignment" : 2,
-      "size" : 4,
+      "size" : 3,
       "stride" : 4
     },
-    "schema_name" : "tagged-option<u16>"
+    "schema_name" : "option<u16>"
   },
   {
     "backend" : "swift-probe",

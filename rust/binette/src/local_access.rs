@@ -2026,7 +2026,7 @@ mod tests {
             .unwrap();
         let descriptor = descriptors.get("ProbeNested").unwrap();
         let option_descriptor = descriptors.get("option<string>").unwrap();
-        let tagged_option_descriptor = descriptors.get("tagged-option<u16>").unwrap();
+        let option_u16_descriptor = descriptors.get("option<u16>").unwrap();
         let enum_descriptor = descriptors.get("ProbeEnum").unwrap();
 
         assert_eq!(descriptor.backend, LocalBackend::SwiftProbe);
@@ -2099,7 +2099,7 @@ mod tests {
             )
         );
 
-        assert_eq!(tagged_option_descriptor.backend, LocalBackend::SwiftProbe);
+        assert_eq!(option_u16_descriptor.backend, LocalBackend::SwiftProbe);
         let LocalTypeKind::Option {
             some,
             representation:
@@ -2110,7 +2110,7 @@ mod tests {
                     some_value,
                     some: some_access,
                 },
-        } = &tagged_option_descriptor.kind
+        } = &option_u16_descriptor.kind
         else {
             panic!("expected Swift direct-tag option descriptor");
         };
@@ -2118,11 +2118,11 @@ mod tests {
             some.kind,
             LocalTypeKind::Scalar(LocalScalarAccess::Plain)
         ));
-        assert_eq!(*tag, LocalAccess::Direct { offset: 0 });
+        assert_eq!(*tag, LocalAccess::Direct { offset: 2 });
         assert_eq!(*tag_width, 1);
-        assert_eq!(*none_value, 0);
-        assert_eq!(*some_value, 1);
-        assert_eq!(*some_access, LocalAccess::Direct { offset: 2 });
+        assert_eq!(*none_value, 1);
+        assert_eq!(*some_value, 0);
+        assert_eq!(*some_access, LocalAccess::Direct { offset: 0 });
 
         assert_eq!(enum_descriptor.backend, LocalBackend::SwiftProbe);
         let LocalTypeKind::Enum { tag, variants } = &enum_descriptor.kind else {
@@ -2195,7 +2195,7 @@ mod tests {
             "ProbeEnum" => TypeRef::concrete(TypeId(0x5E_AE_00_03)),
             "array<i64>" => TypeRef::concrete(TypeId(0x5E_AE_00_04)),
             "option<string>" => TypeRef::concrete(TypeId(0x5E_AE_00_05)),
-            "tagged-option<u16>" => TypeRef::concrete(TypeId(0x5E_AE_00_06)),
+            "option<u16>" => TypeRef::concrete(TypeId(0x5E_AE_00_06)),
             _ => return None,
         };
         Some(LocalSchemaRef::Type(type_ref))

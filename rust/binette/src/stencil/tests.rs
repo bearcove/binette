@@ -54,6 +54,13 @@ struct SwiftTaggedMaybeU16 {
     value: u16,
 }
 
+#[derive(Debug, PartialEq)]
+#[repr(C)]
+struct SwiftOptionalU16 {
+    value: u16,
+    tag: u8,
+}
+
 #[derive(Debug, PartialEq, Facet)]
 #[repr(C)]
 struct SwiftNumbers {
@@ -345,19 +352,18 @@ fn strict_local_decode_stencil_accepts_swift_imported_fixed_descriptor() {
 #[test]
 fn swift_probe_fixture_direct_option_drives_strict_local_stencils() {
     let writer_plan = writer_plan_for::<Option<u16>>().unwrap();
-    let descriptor = swift_fixture_descriptor("tagged-option<u16>", writer_plan.root()).unwrap();
+    let descriptor = swift_fixture_descriptor("option<u16>", writer_plan.root()).unwrap();
 
-    let value = SwiftTaggedMaybeU16 {
-        tag: 1,
+    let value = SwiftOptionalU16 {
         value: 0x3344,
+        tag: 0,
     };
     let encoder = strict_local_stencil_encoder_from_plan(&writer_plan, &descriptor).unwrap();
     assert_eq!(encoder.report().mode, StencilMode::Strict);
     assert_eq!(encoder.report().helper_count, 0);
     assert!(encoder.report().helper_paths.is_empty());
     let actual =
-        unsafe { encoder.encode_raw_to_vec((&value as *const SwiftTaggedMaybeU16).cast()) }
-            .unwrap();
+        unsafe { encoder.encode_raw_to_vec((&value as *const SwiftOptionalU16).cast()) }.unwrap();
     assert_eq!(
         actual,
         encode_to_vec_with_plan(&Some(0x3344_u16), &writer_plan).unwrap()
@@ -375,7 +381,7 @@ fn swift_probe_fixture_direct_option_drives_strict_local_stencils() {
     )
     .unwrap();
     let reader_descriptor =
-        swift_fixture_descriptor("tagged-option<u16>", reader_plan.reader_root()).unwrap();
+        swift_fixture_descriptor("option<u16>", reader_plan.reader_root()).unwrap();
     let decoder =
         strict_local_stencil_decoder_from_plan(&reader_plan, &writer_registry, &reader_descriptor)
             .unwrap();
@@ -384,14 +390,14 @@ fn swift_probe_fixture_direct_option_drives_strict_local_stencils() {
     assert!(decoder.report().helper_paths.is_empty());
 
     let bytes = encode_to_vec_with_plan(&Some(0x7788_u16), &writer_plan).unwrap();
-    let mut decoded = std::mem::MaybeUninit::<SwiftTaggedMaybeU16>::uninit();
+    let mut decoded = std::mem::MaybeUninit::<SwiftOptionalU16>::uninit();
     unsafe { decoder.decode_raw_into(&bytes, decoded.as_mut_ptr().cast()) }.unwrap();
     let decoded = unsafe { decoded.assume_init() };
     assert_eq!(
         decoded,
-        SwiftTaggedMaybeU16 {
-            tag: 1,
-            value: 0x7788
+        SwiftOptionalU16 {
+            value: 0x7788,
+            tag: 0
         }
     );
 }
@@ -1406,7 +1412,7 @@ fn swift_fixture_descriptor(
     .find(|export| export.schema_name == schema_name)
     .unwrap_or_else(|| panic!("missing Swift fixture descriptor {schema_name}"));
     LocalTypeDescriptor::from_export(export, |schema_name| match schema_name {
-        "tagged-option<u16>" => Some(crate::local_access::LocalSchemaRef::Type(root.clone())),
+        "option<u16>" => Some(crate::local_access::LocalSchemaRef::Type(root.clone())),
         "u16" => Some(crate::local_access::LocalSchemaRef::Type(
             TypeRef::concrete(primitive_type_id(Primitive::U16)),
         )),
