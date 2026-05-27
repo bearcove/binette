@@ -10,11 +10,13 @@ mod encode;
 mod error;
 mod facet;
 mod hash;
+#[cfg(not(target_arch = "wasm32"))]
 mod layout;
 mod plan;
 mod registry;
 mod schema;
 mod schema_format;
+#[cfg(not(target_arch = "wasm32"))]
 mod stencil;
 mod value;
 
@@ -53,6 +55,7 @@ pub use schema_format::{
     encode_schema_bundle_to_vec, encode_schema_to_vec, schema_bundle_from_value,
     schema_bundle_to_value, schema_from_value, schema_to_value,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use stencil::{
     StencilDecoder, StencilEncoder, StencilError, StencilMode, StencilReport,
     decode_from_slice_with_stencil, encode_to_vec_with_stencil, hybrid_stencil_decoder_for,

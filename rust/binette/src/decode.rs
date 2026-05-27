@@ -1,6 +1,8 @@
 use std::{borrow::Cow, collections::HashMap};
 
-use facet_core::{Facet, OpaqueDeserialize, PtrUninit, ScalarType, Shape};
+use facet_core::{Facet, OpaqueDeserialize, ScalarType};
+#[cfg(not(target_arch = "wasm32"))]
+use facet_core::{PtrUninit, Shape};
 use facet_reflect::{AllocError, Partial, ReflectError, ShapeMismatchError};
 use thiserror::Error;
 
@@ -89,6 +91,7 @@ pub fn decode_from_slice_with_plan<T: Facet<'static>>(
     Ok(partial.build()?.materialize::<T>()?)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn decode_plan_node_into_raw(
     input: &[u8],
     node: &PlanNode,
