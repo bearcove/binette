@@ -1,8 +1,11 @@
 use super::*;
+use crate::hash::primitive_type_id;
 use crate::local_access::{
-    LocalAccess, LocalFieldDescriptor, LocalOptionRepresentation, LocalSequenceStorage,
-    LocalTypeDescriptor, LocalTypeKind, rust_facet_descriptor_for_shape,
+    LocalAccess, LocalFieldDescriptor, LocalOptionRepresentation, LocalScalarAccess,
+    LocalSchemaRef, LocalSequenceStorage, LocalTypeDescriptor, LocalTypeKind,
+    rust_facet_descriptor_for_shape,
 };
+use crate::schema::TypeRef;
 
 pub(super) struct StencilCompiler<'registry> {
     pub(super) writer_registry: &'registry SchemaRegistry,
@@ -1693,6 +1696,16 @@ impl FixedEncodeCompiler {
         Ok(self.output_offset)
     }
 
+    // r[impl binette.local-access.descriptor]
+    pub(super) fn compile_descriptor_root(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        root: &WriterNode,
+    ) -> Result<usize, StencilError> {
+        self.compile_descriptor_node(descriptor, root, 0, "$")?;
+        Ok(self.output_offset)
+    }
+
     fn compile_node(
         &mut self,
         shape: &'static Shape,
@@ -1731,6 +1744,146 @@ impl FixedEncodeCompiler {
                 reason: "direct encode stencil only supports fixed-width roots",
             }),
         }
+    }
+
+    fn compile_descriptor_node(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        node: &WriterNode,
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        match node {
+            WriterNode::Ref { .. } => Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "direct local encode stencil does not support recursive writer refs",
+            }),
+            WriterNode::Primitive(primitive) => {
+                validate_descriptor_primitive(descriptor, *primitive, path)?;
+                self.compile_primitive(*primitive, input_offset, path)
+            }
+            WriterNode::Struct { fields } => {
+                self.compile_descriptor_struct(descriptor, fields, input_offset, path)
+            }
+            WriterNode::Tuple { elements } => {
+                self.compile_descriptor_tuple(descriptor, elements, input_offset, path)
+            }
+            WriterNode::Array {
+                dimensions,
+                element,
+            } => self.compile_descriptor_array(descriptor, dimensions, element, input_offset, path),
+            WriterNode::External => Ok(()),
+            WriterNode::Enum { .. }
+            | WriterNode::Result { .. }
+            | WriterNode::List { .. }
+            | WriterNode::Set { .. }
+            | WriterNode::Map { .. }
+            | WriterNode::Option { .. }
+            | WriterNode::Dynamic => Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "direct local encode stencil only supports fixed-width roots",
+            }),
+        }
+    }
+
+    fn compile_descriptor_struct(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        fields: &[WriterFieldPlan],
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let descriptor_fields = local_struct_fields(descriptor, path)?;
+        for field in fields {
+            let field_descriptor = descriptor_fields.get(field.facet_index).ok_or_else(|| {
+                StencilError::Unsupported {
+                    path: format!("{path}.{}", field.name),
+                    reason: "writer descriptor field index is out of range",
+                }
+            })?;
+            let field_offset = checked_offset(
+                input_offset,
+                local_direct_offset(&field_descriptor.access, path)?,
+                path,
+            )?;
+            self.compile_descriptor_node(
+                &field_descriptor.descriptor,
+                &field.node,
+                field_offset,
+                &format!("{path}.{}", field.name),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn compile_descriptor_tuple(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        elements: &[WriterTupleElementPlan],
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let descriptor_fields = local_struct_fields(descriptor, path)?;
+        if descriptor_fields.len() != elements.len() {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "writer tuple arity differs from local descriptor",
+            });
+        }
+        for element in elements {
+            let element_descriptor =
+                descriptor_fields.get(element.facet_index).ok_or_else(|| {
+                    StencilError::Unsupported {
+                        path: path.to_owned(),
+                        reason: "writer tuple descriptor field index is out of range",
+                    }
+                })?;
+            let field_offset = checked_offset(
+                input_offset,
+                local_direct_offset(&element_descriptor.access, path)?,
+                path,
+            )?;
+            self.compile_descriptor_node(
+                &element_descriptor.descriptor,
+                &element.node,
+                field_offset,
+                &format!("{path}.{}", element.facet_index),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn compile_descriptor_array(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        dimensions: &[u64],
+        element: &WriterNode,
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let expected_count = dimensions_element_count(dimensions, path)?;
+        let (element_descriptor, element_count, element_stride) =
+            local_inline_fixed_array(descriptor, path)?;
+        if element_count != expected_count {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "writer array dimensions differ from local descriptor",
+            });
+        }
+        for index in 0..element_count {
+            let element_input_offset = checked_offset(
+                input_offset,
+                checked_mul(index, element_stride, path)?,
+                path,
+            )?;
+            self.compile_descriptor_node(
+                element_descriptor,
+                element,
+                element_input_offset,
+                &format!("{path}[{index}]"),
+            )?;
+        }
+        Ok(())
     }
 
     // r[impl binette.aggregate.struct.compact]
@@ -2005,6 +2158,28 @@ fn rust_facet_descriptor(
         path: path.to_owned(),
         reason: "failed to build Rust local access descriptor for stencil compilation",
     })
+}
+
+fn validate_descriptor_primitive(
+    descriptor: &LocalTypeDescriptor,
+    primitive: Primitive,
+    path: &str,
+) -> Result<(), StencilError> {
+    let LocalTypeKind::Scalar(LocalScalarAccess::Plain) = &descriptor.kind else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor is not a plain scalar layout",
+        });
+    };
+
+    let expected = TypeRef::concrete(primitive_type_id(primitive));
+    match &descriptor.schema {
+        LocalSchemaRef::Type(type_ref) if type_ref == &expected => Ok(()),
+        _ => Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor primitive schema differs from writer primitive",
+        }),
+    }
 }
 
 fn local_struct_fields<'a>(

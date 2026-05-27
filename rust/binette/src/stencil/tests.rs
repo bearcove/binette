@@ -2,6 +2,11 @@ use facet::Facet;
 
 use super::*;
 use crate::encode::{encode_to_vec_with_plan, writer_plan_for};
+use crate::hash::primitive_type_id;
+use crate::local_access::{
+    LocalAccess, LocalBackend, LocalDescriptorImport, LocalDescriptorImportKind, LocalFieldImport,
+    LocalScalarAccess, LocalTypeDescriptor, LocalValueLayout,
+};
 
 #[derive(Facet)]
 struct Fixed {
@@ -9,6 +14,73 @@ struct Fixed {
     active: bool,
     code: u16,
     marker: char,
+}
+
+#[derive(Facet)]
+#[repr(C)]
+struct SwiftFixed {
+    id: u64,
+    active: bool,
+    code: u16,
+}
+
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn strict_local_encode_stencil_accepts_swift_imported_fixed_descriptor() {
+    let value = SwiftFixed {
+        id: 0x0102_0304_0506_0708,
+        active: true,
+        code: 0x1122,
+    };
+    let plan = writer_plan_for::<SwiftFixed>().unwrap();
+    let descriptor = LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
+        plan.root().clone(),
+        LocalValueLayout::of::<SwiftFixed>(),
+        LocalDescriptorImportKind::Struct {
+            fields: vec![
+                LocalFieldImport {
+                    name: "id".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftFixed, id),
+                    },
+                    descriptor: primitive_import(Primitive::U64, LocalValueLayout::of::<u64>()),
+                },
+                LocalFieldImport {
+                    name: "active".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftFixed, active),
+                    },
+                    descriptor: primitive_import(Primitive::Bool, LocalValueLayout::of::<bool>()),
+                },
+                LocalFieldImport {
+                    name: "code".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftFixed, code),
+                    },
+                    descriptor: primitive_import(Primitive::U16, LocalValueLayout::of::<u16>()),
+                },
+            ],
+        },
+    ))
+    .unwrap();
+    let encoder = strict_local_stencil_encoder_from_plan(&plan, &descriptor).unwrap();
+
+    assert_eq!(encoder.report().mode, StencilMode::Strict);
+    assert_eq!(encoder.report().helper_count, 0);
+    assert!(encoder.report().helper_paths.is_empty());
+    let actual =
+        unsafe { encoder.encode_raw_to_vec((&value as *const SwiftFixed).cast()) }.unwrap();
+    assert_eq!(actual, encode_to_vec_with_plan(&value, &plan).unwrap());
+}
+
+fn primitive_import(primitive: Primitive, layout: LocalValueLayout) -> LocalDescriptorImport {
+    LocalDescriptorImport {
+        schema: TypeRef::concrete(primitive_type_id(primitive)).into(),
+        backend: LocalBackend::SwiftProbe,
+        layout,
+        kind: LocalDescriptorImportKind::Scalar(LocalScalarAccess::Plain),
+    }
 }
 
 #[test]

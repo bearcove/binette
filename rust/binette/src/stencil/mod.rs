@@ -15,6 +15,7 @@ use crate::encode::{
     WriterVariantPayloadPlan, WriterVariantPlan, encode_node_with_writer_node, writer_plan_for,
 };
 use crate::hash::primitive_for_type_id;
+use crate::local_access::LocalTypeDescriptor;
 use crate::plan::{
     EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, ReaderPlan, StructFieldPlan,
     reader_plan_for,
@@ -77,6 +78,12 @@ pub struct StencilEncoder<T> {
     entry: EncodeStencilEntry,
     report: StencilReport,
     _marker: PhantomData<fn() -> T>,
+}
+
+pub struct LocalStencilEncoder {
+    code: ExecutableMemory,
+    func: DirectEncodeStencilFn,
+    report: StencilReport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,6 +282,35 @@ impl<T> StencilEncoder<T> {
     }
 }
 
+impl LocalStencilEncoder {
+    pub fn code_len(&self) -> usize {
+        self.code.len()
+    }
+
+    pub fn report(&self) -> &StencilReport {
+        &self.report
+    }
+
+    /// Encode a local value through this descriptor-compiled strict stencil.
+    ///
+    /// # Safety
+    ///
+    /// `value` must point to a live object whose process-local layout matches
+    /// the [`LocalTypeDescriptor`] used to build this encoder. The pointer must
+    /// remain valid for the duration of the call.
+    pub unsafe fn encode_raw_to_vec(&self, value: *const u8) -> Result<Vec<u8>, StencilError> {
+        let mut out = Vec::new();
+        // SAFETY: the caller promises that `value` points to a live local value
+        // matching the descriptor used to compile this encoder.
+        let status = unsafe { (self.func)(value, &mut out) };
+        if status == STENCIL_OK {
+            Ok(out)
+        } else {
+            Err(StencilError::UnknownStatus { status })
+        }
+    }
+}
+
 impl<T: Facet<'static>> StencilEncoder<T> {
     pub fn encode_to_vec(&self, value: &T) -> Result<Vec<u8>, EncodeError> {
         let mut out = Vec::new();
@@ -415,6 +451,39 @@ pub fn hybrid_stencil_encoder_from_plan<T: Facet<'static>>(
             Err(fixed_error)
         }
     }
+}
+
+// r[impl binette.local-access.descriptor]
+// r[impl binette.local-access.strict-hybrid]
+// r[impl binette.mode.compact]
+pub fn strict_local_stencil_encoder_from_plan(
+    plan: &WriterPlan,
+    descriptor: &LocalTypeDescriptor,
+) -> Result<LocalStencilEncoder, StencilError> {
+    if !matches!(&descriptor.schema, crate::local_access::LocalSchemaRef::Type(type_ref) if type_ref == plan.root())
+    {
+        return Err(StencilError::Unsupported {
+            path: "$".to_owned(),
+            reason: "local descriptor root schema differs from writer plan root",
+        });
+    }
+
+    let mut compiler = FixedEncodeCompiler {
+        ops: Vec::new(),
+        output_offset: 0,
+    };
+    let output_len = compiler.compile_descriptor_root(descriptor, plan.root_node())?;
+
+    let code = generate_direct_encode_code(&compiler.ops, output_len)?;
+    let report = StencilReport {
+        mode: StencilMode::Strict,
+        code_len: code.len(),
+        native_ops: compiler.ops.len(),
+        helper_count: 0,
+        helper_paths: Vec::new(),
+    };
+    let func = code.as_direct_encode_fn();
+    Ok(LocalStencilEncoder { code, func, report })
 }
 
 fn fixed_encode_stencil_encoder_from_plan<T: Facet<'static>>(

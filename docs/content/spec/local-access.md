@@ -81,6 +81,11 @@ inside the current process.
 > needs a backend helper, accessor thunk, or interpreter call, strict optimized
 > construction fails before execution.
 >
+> A strict engine may be built from a compatibility or writer plan plus a local
+> descriptor without requiring the descriptor producer's reflection API at code
+> generation time. Executing such code is only valid for live values that match
+> the descriptor used to compile it.
+>
 > Hybrid optimized execution is recursive non-strict execution. It attempts to
 > compile each node or subtree normally. If a subtree cannot be compiled from
 > direct descriptor facts, the engine may emit one explicit backend-provided
