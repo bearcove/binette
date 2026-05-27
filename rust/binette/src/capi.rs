@@ -1,15 +1,14 @@
 use facet::Facet;
 
 use crate::local_access::{
-    BinetteLocalDescriptorAbi, LocalDescriptorAbiImport, LocalScalarAccess, LocalSchemaRef,
-    LocalTypeDescriptor, LocalTypeKind,
+    BinetteLocalDescriptorAbi, LocalDescriptorAbiImport, LocalTypeDescriptor,
+    synthetic_schema_bundle_for_local_descriptor,
 };
 use crate::{
-    Field, Primitive, Schema, SchemaBundle, SchemaKind, SchemaRegistry, TypeId, TypeRef, Value,
-    Variant, VariantPayload, decode_schema_bundle_from_slice, encode_schema_bundle_to_vec,
+    Primitive, SchemaRegistry, TypeRef, decode_schema_bundle_from_slice, encode_schema_bundle_to_vec,
     encode_to_vec, hybrid_local_stencil_decoder_from_plan, hybrid_local_stencil_encoder_from_plan,
-    primitive_for_type_id, primitive_type_id, reader_plan_for_bundle, reader_plan_for_bundles,
-    schema_type_id, writer_plan_for, writer_plan_for_bundle,
+    primitive_type_id, reader_plan_for_bundle, reader_plan_for_bundles, writer_plan_for,
+    writer_plan_for_bundle,
 };
 
 pub const BINETTE_STATUS_OK: i32 = 0;
@@ -183,9 +182,9 @@ pub extern "C" fn binette_local_descriptor_synthetic_schema_bundle(
         return BINETTE_STATUS_NULL_POINTER;
     };
     *out = BinetteByteBuffer::empty();
-    let bundle = match synthetic_schema_bundle_for_descriptor(&mut handle.import.descriptor) {
+    let bundle = match synthetic_schema_bundle_for_local_descriptor(&mut handle.import.descriptor) {
         Ok(bundle) => bundle,
-        Err(()) => return BINETTE_STATUS_SCHEMA,
+        Err(_) => return BINETTE_STATUS_SCHEMA,
     };
     match encode_schema_bundle_to_vec(&bundle) {
         Ok(bytes) => {
@@ -432,128 +431,4 @@ fn ffi_slice<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
         return None;
     }
     Some(unsafe { std::slice::from_raw_parts(ptr, len) })
-}
-
-fn synthetic_schema_bundle_for_descriptor(
-    descriptor: &mut LocalTypeDescriptor,
-) -> Result<SchemaBundle, ()> {
-    let mut schemas = Vec::new();
-    let root = canonicalize_descriptor_schema(descriptor, &mut schemas)?;
-    Ok(SchemaBundle {
-        schemas,
-        root,
-        attachments: Vec::new(),
-    })
-}
-
-fn canonicalize_descriptor_schema(
-    descriptor: &mut LocalTypeDescriptor,
-    schemas: &mut Vec<Schema>,
-) -> Result<TypeRef, ()> {
-    let type_ref = match &mut descriptor.kind {
-        LocalTypeKind::Scalar(LocalScalarAccess::Plain) => {
-            let type_ref = descriptor_type_ref(descriptor)?;
-            let TypeRef::Concrete { type_id, args } = &type_ref else {
-                return Err(());
-            };
-            if !args.is_empty() || primitive_for_type_id(*type_id).is_none() {
-                return Err(());
-            }
-            type_ref
-        }
-        LocalTypeKind::Scalar(LocalScalarAccess::String(_)) => {
-            TypeRef::concrete(primitive_type_id(Primitive::String))
-        }
-        LocalTypeKind::Scalar(LocalScalarAccess::Bytes(_)) => {
-            TypeRef::concrete(primitive_type_id(Primitive::Bytes))
-        }
-        LocalTypeKind::Struct { fields } => {
-            let fields = fields
-                .iter_mut()
-                .map(|field| {
-                    Ok(Field {
-                        name: field.name.clone(),
-                        type_ref: canonicalize_descriptor_schema(&mut field.descriptor, schemas)?,
-                        required: true,
-                    })
-                })
-                .collect::<Result<Vec<_>, ()>>()?;
-            push_synthetic_schema(
-                schemas,
-                SchemaKind::Struct {
-                    name: "local.struct".to_owned(),
-                    fields,
-                },
-            )?
-        }
-        LocalTypeKind::Enum { variants, .. } => {
-            let variants = variants
-                .iter_mut()
-                .map(|variant| {
-                    let payload = match &mut variant.payload {
-                        Some(payload) => VariantPayload::Newtype {
-                            type_ref: canonicalize_descriptor_schema(payload, schemas)?,
-                        },
-                        None => VariantPayload::Unit,
-                    };
-                    Ok(Variant {
-                        name: variant.name.clone(),
-                        index: variant.index,
-                        payload,
-                    })
-                })
-                .collect::<Result<Vec<_>, ()>>()?;
-            push_synthetic_schema(
-                schemas,
-                SchemaKind::Enum {
-                    name: "local.enum".to_owned(),
-                    variants,
-                },
-            )?
-        }
-        LocalTypeKind::Sequence { element, .. } => {
-            let element = canonicalize_descriptor_schema(element, schemas)?;
-            push_synthetic_schema(schemas, SchemaKind::List { element })?
-        }
-        LocalTypeKind::Option { some, .. } => {
-            let element = canonicalize_descriptor_schema(some, schemas)?;
-            push_synthetic_schema(schemas, SchemaKind::Option { element })?
-        }
-        LocalTypeKind::ExternalAttachment { kind } => push_synthetic_schema(
-            schemas,
-            SchemaKind::External {
-                kind: kind.clone(),
-                metadata: Value::Unit,
-            },
-        )?,
-        LocalTypeKind::Opaque { .. } => return Err(()),
-    };
-    descriptor.schema = LocalSchemaRef::Type(type_ref.clone());
-    Ok(type_ref)
-}
-
-fn descriptor_type_ref(descriptor: &LocalTypeDescriptor) -> Result<TypeRef, ()> {
-    match &descriptor.schema {
-        LocalSchemaRef::Type(type_ref) => Ok(type_ref.clone()),
-        LocalSchemaRef::Position { .. } => Err(()),
-    }
-}
-
-fn push_synthetic_schema(schemas: &mut Vec<Schema>, kind: SchemaKind) -> Result<TypeRef, ()> {
-    let schema = schema_with_canonical_id(kind)?;
-    let type_ref = TypeRef::concrete(schema.id);
-    if !schemas.iter().any(|existing| existing.id == schema.id) {
-        schemas.push(schema);
-    }
-    Ok(type_ref)
-}
-
-fn schema_with_canonical_id(kind: SchemaKind) -> Result<Schema, ()> {
-    let mut schema = Schema {
-        id: TypeId(0),
-        type_params: Vec::new(),
-        kind,
-    };
-    schema.id = schema_type_id(&schema).map_err(|_| ())?;
-    Ok(schema)
 }

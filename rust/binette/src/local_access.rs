@@ -1,7 +1,11 @@
 use std::ffi::c_void;
 use std::mem::{align_of, size_of};
 
-use crate::schema::TypeRef;
+use crate::hash::{primitive_for_type_id, primitive_type_id, schema_type_id};
+use crate::schema::{
+    Field, Primitive, Schema, SchemaBundle, SchemaKind, TypeId, TypeRef, Variant, VariantPayload,
+};
+use crate::value::Value;
 
 mod c_abi;
 mod import;
@@ -63,6 +67,34 @@ pub struct LocalTypeDescriptor {
     pub backend: LocalBackend,
     pub layout: LocalValueLayout,
     pub kind: LocalTypeKind,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LocalSchemaBundleError {
+    #[error("local descriptor schema reference cannot be used as a concrete type")]
+    InvalidSchemaRef,
+
+    #[error("local descriptor plain scalar does not name a primitive type")]
+    InvalidPlainScalar,
+
+    #[error("local opaque descriptors do not have a synthetic schema")]
+    Opaque,
+
+    #[error("failed to compute local descriptor schema id")]
+    TypeId,
+}
+
+// r[impl binette.local-access.descriptor+2]
+pub fn synthetic_schema_bundle_for_local_descriptor(
+    descriptor: &mut LocalTypeDescriptor,
+) -> Result<SchemaBundle, LocalSchemaBundleError> {
+    let mut schemas = Vec::new();
+    let root = canonicalize_descriptor_schema(descriptor, &mut schemas)?;
+    Ok(SchemaBundle {
+        schemas,
+        root,
+        attachments: Vec::new(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1599,6 +1631,123 @@ pub use rust_layout::{
 pub use rust_layout::{rust_option_string_descriptor, rust_string_descriptor, rust_vec_descriptor};
 #[cfg(not(target_arch = "wasm32"))]
 pub use rust_layout::{rust_option_string_representation, rust_string_storage, rust_vec_storage};
+
+fn canonicalize_descriptor_schema(
+    descriptor: &mut LocalTypeDescriptor,
+    schemas: &mut Vec<Schema>,
+) -> Result<TypeRef, LocalSchemaBundleError> {
+    let type_ref = match &mut descriptor.kind {
+        LocalTypeKind::Scalar(LocalScalarAccess::Plain) => {
+            let type_ref = descriptor_type_ref(descriptor)?;
+            let TypeRef::Concrete { type_id, args } = &type_ref else {
+                return Err(LocalSchemaBundleError::InvalidSchemaRef);
+            };
+            if !args.is_empty() || primitive_for_type_id(*type_id).is_none() {
+                return Err(LocalSchemaBundleError::InvalidPlainScalar);
+            }
+            type_ref
+        }
+        LocalTypeKind::Scalar(LocalScalarAccess::String(_)) => {
+            TypeRef::concrete(primitive_type_id(Primitive::String))
+        }
+        LocalTypeKind::Scalar(LocalScalarAccess::Bytes(_)) => {
+            TypeRef::concrete(primitive_type_id(Primitive::Bytes))
+        }
+        LocalTypeKind::Struct { fields } => {
+            let fields = fields
+                .iter_mut()
+                .map(|field| {
+                    Ok(Field {
+                        name: field.name.clone(),
+                        type_ref: canonicalize_descriptor_schema(&mut field.descriptor, schemas)?,
+                        required: true,
+                    })
+                })
+                .collect::<Result<Vec<_>, LocalSchemaBundleError>>()?;
+            push_synthetic_schema(
+                schemas,
+                SchemaKind::Struct {
+                    name: "local.struct".to_owned(),
+                    fields,
+                },
+            )?
+        }
+        LocalTypeKind::Enum { variants, .. } => {
+            let variants = variants
+                .iter_mut()
+                .map(|variant| {
+                    let payload = match &mut variant.payload {
+                        Some(payload) => VariantPayload::Newtype {
+                            type_ref: canonicalize_descriptor_schema(payload, schemas)?,
+                        },
+                        None => VariantPayload::Unit,
+                    };
+                    Ok(Variant {
+                        name: variant.name.clone(),
+                        index: variant.index,
+                        payload,
+                    })
+                })
+                .collect::<Result<Vec<_>, LocalSchemaBundleError>>()?;
+            push_synthetic_schema(
+                schemas,
+                SchemaKind::Enum {
+                    name: "local.enum".to_owned(),
+                    variants,
+                },
+            )?
+        }
+        LocalTypeKind::Sequence { element, .. } => {
+            let element = canonicalize_descriptor_schema(element, schemas)?;
+            push_synthetic_schema(schemas, SchemaKind::List { element })?
+        }
+        LocalTypeKind::Option { some, .. } => {
+            let element = canonicalize_descriptor_schema(some, schemas)?;
+            push_synthetic_schema(schemas, SchemaKind::Option { element })?
+        }
+        LocalTypeKind::ExternalAttachment { kind } => push_synthetic_schema(
+            schemas,
+            SchemaKind::External {
+                kind: kind.clone(),
+                metadata: Value::Unit,
+            },
+        )?,
+        LocalTypeKind::Opaque { .. } => return Err(LocalSchemaBundleError::Opaque),
+    };
+    descriptor.schema = LocalSchemaRef::Type(type_ref.clone());
+    Ok(type_ref)
+}
+
+fn descriptor_type_ref(
+    descriptor: &LocalTypeDescriptor,
+) -> Result<TypeRef, LocalSchemaBundleError> {
+    match &descriptor.schema {
+        LocalSchemaRef::Type(type_ref) => Ok(type_ref.clone()),
+        LocalSchemaRef::Position { .. } => Err(LocalSchemaBundleError::InvalidSchemaRef),
+    }
+}
+
+fn push_synthetic_schema(
+    schemas: &mut Vec<Schema>,
+    kind: SchemaKind,
+) -> Result<TypeRef, LocalSchemaBundleError> {
+    let schema = schema_with_canonical_id(kind)?;
+    let type_ref = TypeRef::concrete(schema.id);
+    if !schemas.iter().any(|existing| existing.id == schema.id) {
+        schemas.push(schema);
+    }
+    Ok(type_ref)
+}
+
+fn schema_with_canonical_id(kind: SchemaKind) -> Result<Schema, LocalSchemaBundleError> {
+    let mut schema = Schema {
+        id: TypeId(0),
+        type_params: Vec::new(),
+        kind,
+    };
+    schema.id = schema_type_id(&schema).map_err(|_| LocalSchemaBundleError::TypeId)?;
+    Ok(schema)
+}
 
 #[cfg(test)]
 mod tests {
