@@ -1021,7 +1021,7 @@ fn emit_encode_op(
             element_ops,
         } => emit_encode_list_op(
             code,
-            shape,
+            *shape,
             *input_offset,
             *layout,
             element_ops,
@@ -1471,7 +1471,7 @@ fn emit_encode_niche_string_option_op(
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn emit_encode_list_op(
     code: &mut Vec<u8>,
-    shape: &'static Shape,
+    shape: Option<&'static Shape>,
     input_offset: usize,
     layout: EncodeListLayout,
     element_ops: &[EncodeStencilOp],
@@ -1497,6 +1497,11 @@ fn emit_encode_list_op(
             error_branches,
         );
     }
+
+    let shape = shape.ok_or_else(|| StencilError::Unsupported {
+        path: "$list".to_owned(),
+        reason: "Facet list stencil is missing its shape",
+    })?;
 
     if input_offset == 0 {
         push_u32(code, mov_x_register(0, value_base_reg)?);

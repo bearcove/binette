@@ -180,7 +180,7 @@ pub(super) enum EncodeStencilOp {
         some_ops: Vec<EncodeStencilOp>,
     },
     List {
-        shape: &'static Shape,
+        shape: Option<&'static Shape>,
         input_offset: usize,
         layout: EncodeListLayout,
         element_ops: Vec<EncodeStencilOp>,

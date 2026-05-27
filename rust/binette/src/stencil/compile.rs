@@ -2327,7 +2327,7 @@ impl StencilEncodeCompiler {
         };
 
         self.ops.push(EncodeStencilOp::List {
-            shape,
+            shape: Some(shape),
             input_offset,
             layout,
             element_ops: compiler.ops,
@@ -2722,7 +2722,13 @@ impl LocalEncodeStencilCompiler<'_> {
             }
             WriterNode::List { element } => {
                 self.flush_direct_segment(pending);
-                self.push_sequence_fixed_elements(descriptor, element, input_offset, path)
+                match self.push_direct_list(descriptor, element, input_offset, path) {
+                    Ok(()) => Ok(()),
+                    Err(StencilError::Unsupported { .. }) => {
+                        self.push_sequence_fixed_elements(descriptor, element, input_offset, path)
+                    }
+                    Err(err) => Err(err),
+                }
             }
         }
     }
@@ -2926,6 +2932,64 @@ impl LocalEncodeStencilCompiler<'_> {
                 some_offset,
             },
             some_ops: compiler.ops,
+        });
+        Ok(())
+    }
+
+    fn push_direct_list(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        element: &WriterNode,
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let (element_descriptor, element_stride) = local_sequence_element(descriptor, path)?;
+        let LocalSequenceStorage::DirectContiguous {
+            pointer: LocalAccess::Direct { offset: ptr_offset },
+            length: LocalAccess::Direct { offset: len_offset },
+            ..
+        } = local_sequence_storage(descriptor, path)?
+        else {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "local sequence descriptor does not use direct contiguous storage",
+            });
+        };
+
+        let mut compiler = LocalEncodeStencilCompiler {
+            ops: Vec::new(),
+            helpers: Vec::new(),
+            failures: Vec::new(),
+            thunks: self.thunks,
+        };
+        let mut pending = FixedEncodeSegment {
+            ops: Vec::new(),
+            output_len: 0,
+        };
+        compiler.compile_node(
+            element_descriptor,
+            element,
+            0,
+            &format!("{path}[]"),
+            &mut pending,
+        )?;
+        compiler.flush_direct_segment(&mut pending);
+        if !compiler.helpers.is_empty() {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "direct local list element requires helper fallback",
+            });
+        }
+
+        self.ops.push(EncodeStencilOp::List {
+            shape: None,
+            input_offset,
+            layout: EncodeListLayout::Vec {
+                ptr_offset: *ptr_offset,
+                len_offset: *len_offset,
+                element_stride,
+            },
+            element_ops: compiler.ops,
         });
         Ok(())
     }
