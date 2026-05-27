@@ -7,6 +7,15 @@ private enum Message: Equatable {
     case Bye(UInt32)
 }
 
+private typealias CSequenceLen = @convention(c) (UnsafePointer<UInt8>?, UnsafeMutableRawPointer?) -> Int
+private typealias CSequenceU8 = @convention(c) (UnsafePointer<UInt8>?, Int, UnsafeMutableRawPointer?) -> UInt8
+private typealias CSequenceWriteBytes = @convention(c) (UnsafeMutablePointer<UInt8>?, UnsafePointer<UInt8>?, Int, UnsafeMutableRawPointer?) -> Bool
+private typealias CEnumTag = @convention(c) (UnsafePointer<UInt8>?, UnsafeMutableRawPointer?) -> UInt32
+private typealias CVariantProject = @convention(c) (UnsafePointer<UInt8>?, UnsafeMutableRawPointer?) -> UnsafePointer<UInt8>?
+private typealias CVariantProjectInto = @convention(c) (UnsafePointer<UInt8>?, UnsafeMutablePointer<UInt8>?, Int, UnsafeMutableRawPointer?) -> Bool
+private typealias CVariantDropProjected = @convention(c) (UnsafeMutablePointer<UInt8>?, UnsafeMutableRawPointer?) -> Void
+private typealias CVariantConstruct = @convention(c) (UnsafeMutablePointer<UInt8>?, UnsafePointer<UInt8>?, Int, UnsafeMutableRawPointer?) -> Bool
+
 final class BinetteCAbiCanaryTests: XCTestCase {
     // r[verify binette.local-access.boundary]
     // r[verify binette.local-access.descriptor+2]
@@ -58,15 +67,15 @@ private func importMessageDescriptor() throws -> OpaquePointer {
                     index: 0,
                     project: projectAccess(messageProjectHiBorrowed),
                     project_into: BinetteLocalVariantProjectIntoAbi(
-                        call: messageProjectHiInto,
+                        call: cFunction(messageProjectHiInto),
                         context: nil
                     ),
                     drop_projected: BinetteLocalVariantDropAbi(
-                        call: dropProjectedString,
+                        call: cFunction(dropProjectedString),
                         context: nil
                     ),
                     construct: BinetteLocalVariantConstructAbi(
-                        call: messageConstructHi,
+                        call: cFunction(messageConstructHi),
                         context: nil
                     ),
                     payload: stringPtr
@@ -76,7 +85,7 @@ private func importMessageDescriptor() throws -> OpaquePointer {
                     index: 1,
                     project: projectAccess(messageProjectByeBorrowed),
                     project_into: BinetteLocalVariantProjectIntoAbi(
-                        call: messageProjectByeInto,
+                        call: cFunction(messageProjectByeInto),
                         context: nil
                     ),
                     drop_projected: BinetteLocalVariantDropAbi(
@@ -84,7 +93,7 @@ private func importMessageDescriptor() throws -> OpaquePointer {
                         context: nil
                     ),
                     construct: BinetteLocalVariantConstructAbi(
-                        call: messageConstructBye,
+                        call: cFunction(messageConstructBye),
                         context: nil
                     ),
                     payload: u32Ptr
@@ -180,10 +189,10 @@ private func stringDescriptor() -> BinetteLocalDescriptorAbi {
                 capacity_offset: 0,
                 element_stride: 1,
                 thunks: BinetteLocalSequenceThunksAbi(
-                    len: swiftStringLen,
-                    element_u8: swiftStringElement,
+                    len: cFunction(swiftStringLen),
+                    element_u8: cFunction(swiftStringElement),
                     element_ptr: nil,
-                    write_bytes: swiftStringWrite,
+                    write_bytes: cFunction(swiftStringWrite),
                     write_fixed_elements: nil,
                     context: nil
                 )
@@ -211,7 +220,7 @@ private func enumKind(
         tag: BinetteLocalEnumTagAccessAbi(
             tag: UInt32(BINETTE_LOCAL_ACCESS_THUNK),
             direct_offset: 0,
-            thunk: BinetteLocalEnumTagThunkAbi(call: messageTag, context: nil)
+            thunk: BinetteLocalEnumTagThunkAbi(call: cFunction(messageTag), context: nil)
         ),
         variants: variants.baseAddress,
         variant_count: variants.count
@@ -282,14 +291,40 @@ private func emptySequenceStorage() -> BinetteLocalSequenceStorageAbi {
     )
 }
 
-private func projectAccess(
-    _ thunk: @escaping @convention(c) (UnsafePointer<UInt8>?, UnsafeMutableRawPointer?) -> UnsafePointer<UInt8>?
-) -> BinetteLocalVariantProjectAccessAbi {
+private func projectAccess(_ thunk: @escaping CVariantProject) -> BinetteLocalVariantProjectAccessAbi {
     BinetteLocalVariantProjectAccessAbi(
         tag: UInt32(BINETTE_LOCAL_ACCESS_THUNK),
         direct_offset: 0,
-        thunk: BinetteLocalVariantProjectThunkAbi(call: thunk, context: nil)
+        thunk: BinetteLocalVariantProjectThunkAbi(call: cFunction(thunk), context: nil)
     )
+}
+
+private func cFunction(_ function: CSequenceLen) -> UnsafeRawPointer {
+    unsafeBitCast(function, to: UnsafeRawPointer.self)
+}
+
+private func cFunction(_ function: CSequenceU8) -> UnsafeRawPointer {
+    unsafeBitCast(function, to: UnsafeRawPointer.self)
+}
+
+private func cFunction(_ function: CSequenceWriteBytes) -> UnsafeRawPointer {
+    unsafeBitCast(function, to: UnsafeRawPointer.self)
+}
+
+private func cFunction(_ function: CEnumTag) -> UnsafeRawPointer {
+    unsafeBitCast(function, to: UnsafeRawPointer.self)
+}
+
+private func cFunction(_ function: CVariantProject) -> UnsafeRawPointer {
+    unsafeBitCast(function, to: UnsafeRawPointer.self)
+}
+
+private func cFunction(_ function: CVariantProjectInto) -> UnsafeRawPointer {
+    unsafeBitCast(function, to: UnsafeRawPointer.self)
+}
+
+private func cFunction(_ function: CVariantDropProjected) -> UnsafeRawPointer {
+    unsafeBitCast(function, to: UnsafeRawPointer.self)
 }
 
 private func messageTag(

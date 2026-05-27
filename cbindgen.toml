@@ -1,0 +1,74 @@
+language = "C"
+pragma_once = true
+include_version = true
+cpp_compat = true
+usize_is_size_t = true
+style = "both"
+
+include_guard = "BINETTE_H"
+
+[export]
+include = [
+  "BinetteByteBuffer",
+  "BinetteLocalAccessTag",
+  "BinetteLocalBackendAbi",
+  "BinetteLocalDescriptorAbi",
+  "BinetteLocalDescriptorHandle",
+  "BinetteLocalEnumAbi",
+  "BinetteLocalEnumTagAccessAbi",
+  "BinetteLocalEnumTagThunkAbi",
+  "BinetteLocalFieldAbi",
+  "BinetteLocalKindAbi",
+  "BinetteLocalKindTag",
+  "BinetteLocalLayoutAbi",
+  "BinetteLocalOptionAbi",
+  "BinetteLocalOptionRepresentationAbi",
+  "BinetteLocalOptionRepresentationTag",
+  "BinetteLocalOptionThunksAbi",
+  "BinetteLocalScalarAbi",
+  "BinetteLocalScalarTag",
+  "BinetteLocalSchemaRefAbi",
+  "BinetteLocalSchemaRefTag",
+  "BinetteLocalSequenceAbi",
+  "BinetteLocalSequenceStorageAbi",
+  "BinetteLocalSequenceStorageTag",
+  "BinetteLocalSequenceThunksAbi",
+  "BinetteLocalStrAbi",
+  "BinetteLocalStructAbi",
+  "BinetteLocalVariantAbi",
+  "BinetteLocalVariantConstructAbi",
+  "BinetteLocalVariantDropAbi",
+  "BinetteLocalVariantProjectAccessAbi",
+  "BinetteLocalVariantProjectIntoAbi",
+  "BinetteLocalVariantProjectThunkAbi",
+  "LocalEnumTagThunk",
+  "LocalOptionIsSomeThunk",
+  "LocalOptionSomeThunk",
+  "LocalOptionWriteNoneThunk",
+  "LocalOptionWriteSomeBytesThunk",
+  "LocalSequenceElementPtrThunk",
+  "LocalSequenceLenThunk",
+  "LocalSequenceU8Thunk",
+  "LocalSequenceWriteBytesThunk",
+  "LocalSequenceWriteFixedElementsThunk",
+  "LocalVariantConstructThunk",
+  "LocalVariantDropProjectedThunk",
+  "LocalVariantProjectIntoThunk",
+  "LocalVariantProjectThunk",
+]
+
+[export.rename]
+"LocalEnumTagThunk" = "BinetteLocalEnumTagThunk"
+"LocalOptionIsSomeThunk" = "BinetteLocalOptionIsSomeThunk"
+"LocalOptionSomeThunk" = "BinetteLocalOptionSomeThunk"
+"LocalOptionWriteNoneThunk" = "BinetteLocalOptionWriteNoneThunk"
+"LocalOptionWriteSomeBytesThunk" = "BinetteLocalOptionWriteSomeBytesThunk"
+"LocalSequenceElementPtrThunk" = "BinetteLocalSequenceElementPtrThunk"
+"LocalSequenceLenThunk" = "BinetteLocalSequenceLenThunk"
+"LocalSequenceU8Thunk" = "BinetteLocalSequenceU8Thunk"
+"LocalSequenceWriteBytesThunk" = "BinetteLocalSequenceWriteBytesThunk"
+"LocalSequenceWriteFixedElementsThunk" = "BinetteLocalSequenceWriteFixedElementsThunk"
+"LocalVariantConstructThunk" = "BinetteLocalVariantConstructThunk"
+"LocalVariantDropProjectedThunk" = "BinetteLocalVariantDropProjectedThunk"
+"LocalVariantProjectIntoThunk" = "BinetteLocalVariantProjectIntoThunk"
+"LocalVariantProjectThunk" = "BinetteLocalVariantProjectThunk"

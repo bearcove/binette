@@ -175,35 +175,35 @@ pub struct BinetteLocalVariantProjectAccessAbi {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalEnumTagThunkAbi {
-    pub call: Option<super::LocalEnumTagThunk>,
+    pub call: *const c_void,
     pub context: *mut c_void,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalVariantProjectThunkAbi {
-    pub call: Option<super::LocalVariantProjectThunk>,
+    pub call: *const c_void,
     pub context: *mut c_void,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalVariantProjectIntoAbi {
-    pub call: Option<super::LocalVariantProjectIntoThunk>,
+    pub call: *const c_void,
     pub context: *mut c_void,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalVariantDropAbi {
-    pub call: Option<super::LocalVariantDropProjectedThunk>,
+    pub call: *const c_void,
     pub context: *mut c_void,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalVariantConstructAbi {
-    pub call: Option<super::LocalVariantConstructThunk>,
+    pub call: *const c_void,
     pub context: *mut c_void,
 }
 
@@ -236,11 +236,11 @@ pub struct BinetteLocalSequenceStorageAbi {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalSequenceThunksAbi {
-    pub len: Option<super::LocalSequenceLenThunk>,
-    pub element_u8: Option<super::LocalSequenceU8Thunk>,
-    pub element_ptr: Option<super::LocalSequenceElementPtrThunk>,
-    pub write_bytes: Option<super::LocalSequenceWriteBytesThunk>,
-    pub write_fixed_elements: Option<super::LocalSequenceWriteFixedElementsThunk>,
+    pub len: *const c_void,
+    pub element_u8: *const c_void,
+    pub element_ptr: *const c_void,
+    pub write_bytes: *const c_void,
+    pub write_fixed_elements: *const c_void,
     pub context: *mut c_void,
 }
 
@@ -273,10 +273,10 @@ pub struct BinetteLocalOptionRepresentationAbi {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalOptionThunksAbi {
-    pub is_some: Option<super::LocalOptionIsSomeThunk>,
-    pub some: Option<super::LocalOptionSomeThunk>,
-    pub write_none: Option<super::LocalOptionWriteNoneThunk>,
-    pub write_some_bytes: Option<super::LocalOptionWriteSomeBytesThunk>,
+    pub is_some: *const c_void,
+    pub some: *const c_void,
+    pub write_none: *const c_void,
+    pub write_some_bytes: *const c_void,
     pub context: *mut c_void,
 }
 
@@ -528,14 +528,12 @@ impl AbiImporter {
                 offset: access.direct_offset,
             }),
             BINETTE_LOCAL_ACCESS_THUNK => {
-                let call =
-                    access
-                        .thunk
-                        .call
-                        .ok_or_else(|| LocalDescriptorAbiError::MissingThunk {
-                            path: path.to_owned(),
-                            field: "enum.tag",
-                        })?;
+                let call = function_ptr(access.thunk.call).ok_or_else(|| {
+                    LocalDescriptorAbiError::MissingThunk {
+                        path: path.to_owned(),
+                        field: "enum.tag",
+                    }
+                })?;
                 let thunk = LocalThunk::new(backend, format!("{path}.$tag"));
                 self.thunks = std::mem::take(&mut self.thunks).with_enum_tag(
                     thunk.clone(),
@@ -565,14 +563,12 @@ impl AbiImporter {
                 offset: access.direct_offset,
             }),
             BINETTE_LOCAL_ACCESS_THUNK => {
-                let call =
-                    access
-                        .thunk
-                        .call
-                        .ok_or_else(|| LocalDescriptorAbiError::MissingThunk {
-                            path: path.to_owned(),
-                            field: "variant.project",
-                        })?;
+                let call = function_ptr(access.thunk.call).ok_or_else(|| {
+                    LocalDescriptorAbiError::MissingThunk {
+                        path: path.to_owned(),
+                        field: "variant.project",
+                    }
+                })?;
                 let thunk = LocalThunk::new(backend, format!("{path}.$project"));
                 self.thunks = std::mem::take(&mut self.thunks).with_variant_project(
                     thunk.clone(),
@@ -597,7 +593,7 @@ impl AbiImporter {
         backend: LocalBackend,
         path: &str,
     ) -> Option<LocalThunk> {
-        let call = construct.call?;
+        let call = function_ptr(construct.call)?;
         let thunk = LocalThunk::new(backend, format!("{path}.$construct"));
         self.thunks = std::mem::take(&mut self.thunks).with_variant_construct(
             thunk.clone(),
@@ -616,19 +612,19 @@ impl AbiImporter {
         backend: LocalBackend,
         path: &str,
     ) -> (Option<LocalThunk>, Option<LocalThunk>) {
-        let Some(call) = project_into.call else {
+        let Some(call) = function_ptr(project_into.call) else {
             return (None, None);
         };
         let project_thunk = LocalThunk::new(backend, format!("{path}.$project_into"));
-        let drop_thunk = drop_projected
-            .call
-            .map(|_| LocalThunk::new(backend, format!("{path}.$drop_projected")));
+        let drop_call = function_ptr(drop_projected.call);
+        let drop_thunk =
+            drop_call.map(|_| LocalThunk::new(backend, format!("{path}.$drop_projected")));
         self.thunks = std::mem::take(&mut self.thunks).with_variant_project_into(
             project_thunk.clone(),
             drop_thunk.clone(),
             LocalVariantProjectIntoThunks {
                 project_into: call,
-                drop_projected: drop_projected.call,
+                drop_projected: drop_call,
                 project_context: project_into.context as usize,
                 drop_context: drop_projected.context as usize,
             },
@@ -663,17 +659,15 @@ impl AbiImporter {
                 })
             }
             BINETTE_LOCAL_SEQUENCE_THUNK => {
-                let len =
-                    storage
-                        .thunks
-                        .len
-                        .ok_or_else(|| LocalDescriptorAbiError::MissingThunk {
-                            path: path.to_owned(),
-                            field: "sequence.len",
-                        })?;
+                let len = function_ptr(storage.thunks.len).ok_or_else(|| {
+                    LocalDescriptorAbiError::MissingThunk {
+                        path: path.to_owned(),
+                        field: "sequence.len",
+                    }
+                })?;
                 let len_thunk = LocalThunk::new(backend, format!("{path}.$len"));
                 let element_thunk = LocalThunk::new(backend, format!("{path}.$element"));
-                if let Some(element_u8) = storage.thunks.element_u8 {
+                if let Some(element_u8) = function_ptr(storage.thunks.element_u8) {
                     self.thunks = std::mem::take(&mut self.thunks).with_sequence_u8(
                         len_thunk.clone(),
                         element_thunk.clone(),
@@ -684,7 +678,7 @@ impl AbiImporter {
                         },
                     );
                 }
-                if let Some(element_ptr) = storage.thunks.element_ptr {
+                if let Some(element_ptr) = function_ptr(storage.thunks.element_ptr) {
                     self.thunks = std::mem::take(&mut self.thunks).with_sequence_element_ptr(
                         len_thunk.clone(),
                         element_thunk.clone(),
@@ -695,16 +689,14 @@ impl AbiImporter {
                         },
                     );
                 }
-                let write = if storage.thunks.write_bytes.is_some()
-                    || storage.thunks.write_fixed_elements.is_some()
-                {
+                let write_bytes = function_ptr(storage.thunks.write_bytes);
+                let write_fixed_elements = function_ptr(storage.thunks.write_fixed_elements);
+                let write = if write_bytes.is_some() || write_fixed_elements.is_some() {
                     Some(LocalThunk::new(backend, format!("{path}.$write")))
                 } else {
                     None
                 };
-                if let (Some(write_thunk), Some(write_bytes)) =
-                    (write.as_ref(), storage.thunks.write_bytes)
-                {
+                if let (Some(write_thunk), Some(write_bytes)) = (write.as_ref(), write_bytes) {
                     self.thunks = std::mem::take(&mut self.thunks).with_sequence_decode(
                         write_thunk.clone(),
                         LocalSequenceDecodeThunks {
@@ -714,7 +706,7 @@ impl AbiImporter {
                     );
                 }
                 if let (Some(write_thunk), Some(write_elements)) =
-                    (write.as_ref(), storage.thunks.write_fixed_elements)
+                    (write.as_ref(), write_fixed_elements)
                 {
                     self.thunks = std::mem::take(&mut self.thunks).with_sequence_fixed_decode(
                         write_thunk.clone(),
@@ -778,22 +770,18 @@ impl AbiImporter {
                 })
             }
             BINETTE_LOCAL_OPTION_THUNK => {
-                let is_some =
-                    option
-                        .thunks
-                        .is_some
-                        .ok_or_else(|| LocalDescriptorAbiError::MissingThunk {
-                            path: path.to_owned(),
-                            field: "option.is_some",
-                        })?;
-                let some =
-                    option
-                        .thunks
-                        .some
-                        .ok_or_else(|| LocalDescriptorAbiError::MissingThunk {
-                            path: path.to_owned(),
-                            field: "option.some",
-                        })?;
+                let is_some = function_ptr(option.thunks.is_some).ok_or_else(|| {
+                    LocalDescriptorAbiError::MissingThunk {
+                        path: path.to_owned(),
+                        field: "option.is_some",
+                    }
+                })?;
+                let some = function_ptr(option.thunks.some).ok_or_else(|| {
+                    LocalDescriptorAbiError::MissingThunk {
+                        path: path.to_owned(),
+                        field: "option.some",
+                    }
+                })?;
                 let is_some_thunk = LocalThunk::new(backend, format!("{path}.$is_some"));
                 let some_thunk = LocalThunk::new(backend, format!("{path}.$some"));
                 self.thunks = std::mem::take(&mut self.thunks).with_option(
@@ -805,13 +793,11 @@ impl AbiImporter {
                         context: option.thunks.context as usize,
                     },
                 );
-                let write_none = option
-                    .thunks
-                    .write_none
+                let write_none_call = function_ptr(option.thunks.write_none);
+                let write_some_bytes_call = function_ptr(option.thunks.write_some_bytes);
+                let write_none = write_none_call
                     .map(|_| LocalThunk::new(backend, format!("{path}.$write_none")));
-                let write_some_bytes = option
-                    .thunks
-                    .write_some_bytes
+                let write_some_bytes = write_some_bytes_call
                     .map(|_| LocalThunk::new(backend, format!("{path}.$write_some_bytes")));
                 if let (
                     Some(write_none_thunk),
@@ -821,8 +807,8 @@ impl AbiImporter {
                 ) = (
                     write_none.as_ref(),
                     write_some_bytes.as_ref(),
-                    option.thunks.write_none,
-                    option.thunks.write_some_bytes,
+                    write_none_call,
+                    write_some_bytes_call,
                 ) {
                     self.thunks = std::mem::take(&mut self.thunks).with_option_sequence_decode(
                         write_none_thunk.clone(),
@@ -883,6 +869,20 @@ fn import_backend(
             tag,
         }),
     }
+}
+
+fn function_ptr<T>(ptr: *const c_void) -> Option<T>
+where
+    T: Copy,
+{
+    if ptr.is_null() {
+        return None;
+    }
+    assert_eq!(
+        std::mem::size_of::<T>(),
+        std::mem::size_of::<*const c_void>()
+    );
+    Some(unsafe { std::mem::transmute_copy(&ptr) })
 }
 
 unsafe fn read_str(

@@ -9,11 +9,11 @@ use crate::{
     writer_plan_for,
 };
 
-const BINETTE_STATUS_OK: i32 = 0;
-const BINETTE_STATUS_NULL_POINTER: i32 = 1;
-const BINETTE_STATUS_DESCRIPTOR: i32 = 2;
-const BINETTE_STATUS_PLAN: i32 = 3;
-const BINETTE_STATUS_STENCIL: i32 = 4;
+pub const BINETTE_STATUS_OK: i32 = 0;
+pub const BINETTE_STATUS_NULL_POINTER: i32 = 1;
+pub const BINETTE_STATUS_DESCRIPTOR: i32 = 2;
+pub const BINETTE_STATUS_PLAN: i32 = 3;
+pub const BINETTE_STATUS_STENCIL: i32 = 4;
 
 #[derive(Debug, Facet)]
 #[repr(C)]
