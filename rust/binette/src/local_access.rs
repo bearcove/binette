@@ -1601,19 +1601,22 @@ mod tests {
             "../tests/fixtures/swift-probe-descriptors.json"
         ))
         .unwrap();
-        assert_eq!(exports.len(), 3);
-        let mut descriptors = exports
+        assert_eq!(exports.len(), 10);
+        let descriptors = exports
             .into_iter()
-            .map(|export| LocalTypeDescriptor::from_export(export, resolve_swift_handoff_schema))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-            .into_iter();
-        let descriptor = descriptors.next().unwrap();
-        let option_descriptor = descriptors.next().unwrap();
-        let enum_descriptor = descriptors.next().unwrap();
+            .map(|export| {
+                let name = export.schema_name.clone();
+                LocalTypeDescriptor::from_export(export, resolve_swift_handoff_schema)
+                    .map(|descriptor| (name, descriptor))
+            })
+            .collect::<Result<std::collections::HashMap<_, _>, _>>()
+            .unwrap();
+        let descriptor = descriptors.get("ProbeNested").unwrap();
+        let option_descriptor = descriptors.get("option<string>").unwrap();
+        let enum_descriptor = descriptors.get("ProbeEnum").unwrap();
 
         assert_eq!(descriptor.backend, LocalBackend::SwiftProbe);
-        let LocalTypeKind::Struct { fields } = descriptor.kind else {
+        let LocalTypeKind::Struct { fields } = &descriptor.kind else {
             panic!("expected Swift handoff root struct");
         };
         assert_eq!(
@@ -1652,7 +1655,7 @@ mod tests {
                     write_none: Some(write_none),
                     write_some_bytes: Some(write_some_bytes),
                 },
-        } = option_descriptor.kind
+        } = &option_descriptor.kind
         else {
             panic!("expected Swift handoff option descriptor");
         };
@@ -1663,19 +1666,19 @@ mod tests {
             ))
         ));
         assert_eq!(
-            is_some,
+            *is_some,
             LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Optional.isSome")
         );
         assert_eq!(
-            some_thunk,
+            *some_thunk,
             LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Optional.some")
         );
         assert_eq!(
-            write_none,
+            *write_none,
             LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Optional.init.none")
         );
         assert_eq!(
-            write_some_bytes,
+            *write_some_bytes,
             LocalThunk::new(
                 LocalBackend::SwiftProbe,
                 "Swift.Optional<String>.init.some.utf8"
@@ -1683,11 +1686,11 @@ mod tests {
         );
 
         assert_eq!(enum_descriptor.backend, LocalBackend::SwiftProbe);
-        let LocalTypeKind::Enum { tag, variants } = enum_descriptor.kind else {
+        let LocalTypeKind::Enum { tag, variants } = &enum_descriptor.kind else {
             panic!("expected Swift handoff enum descriptor");
         };
         assert_eq!(
-            tag,
+            *tag,
             LocalAccess::Thunk(LocalThunk::new(
                 LocalBackend::SwiftProbe,
                 "ProbeEnum.discriminant"
@@ -1742,6 +1745,7 @@ mod tests {
     fn resolve_swift_handoff_schema(schema_name: &str) -> Option<LocalSchemaRef> {
         let type_ref = match schema_name {
             "bool" => TypeRef::concrete(primitive_type_id(Primitive::Bool)),
+            "u8" => TypeRef::concrete(primitive_type_id(Primitive::U8)),
             "i32" => TypeRef::concrete(primitive_type_id(Primitive::I32)),
             "i64" => TypeRef::concrete(primitive_type_id(Primitive::I64)),
             "u32" => TypeRef::concrete(primitive_type_id(Primitive::U32)),

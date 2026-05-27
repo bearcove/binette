@@ -1,201 +1,454 @@
 [
   {
-    "schema_name": "ProbeNested",
-    "backend": "swift-probe",
-    "layout": { "size": 40, "alignment": 8, "stride": 40 },
-    "kind": {
-      "tag": "struct",
-      "fields": [
-        {
-          "name": "title",
-          "access": { "tag": "direct", "offset": 0 },
-          "descriptor": {
-            "schema_name": "string",
-            "backend": "swift-probe",
-            "layout": { "size": 16, "alignment": 8, "stride": 16 },
-            "kind": {
-              "tag": "string",
-              "storage": {
-                "tag": "thunk",
-                "count": "Swift.String.utf8.count",
-                "element": "Swift.String.utf8.element",
-                "write": "Swift.String.init.utf8"
-              }
-            }
-          }
-        },
-        {
-          "name": "leaf",
-          "access": { "tag": "direct", "offset": 16 },
-          "descriptor": {
-            "schema_name": "ProbeLeaf",
-            "backend": "swift-probe",
-            "layout": { "size": 8, "alignment": 4, "stride": 8 },
-            "kind": {
-              "tag": "struct",
-              "fields": [
-                {
-                  "name": "count",
-                  "access": { "tag": "direct", "offset": 0 },
-                  "descriptor": {
-                    "schema_name": "i32",
-                    "backend": "swift-probe",
-                    "layout": { "size": 4, "alignment": 4, "stride": 4 },
-                    "kind": { "tag": "scalar" }
-                  }
-                },
-                {
-                  "name": "flag",
-                  "access": { "tag": "direct", "offset": 4 },
-                  "descriptor": {
-                    "schema_name": "bool",
-                    "backend": "swift-probe",
-                    "layout": { "size": 1, "alignment": 1, "stride": 1 },
-                    "kind": { "tag": "scalar" }
-                  }
-                }
-              ]
-            }
-          }
-        },
-        {
-          "name": "values",
-          "access": { "tag": "direct", "offset": 24 },
-          "descriptor": {
-            "schema_name": "array<i64>",
-            "backend": "swift-probe",
-            "layout": { "size": 8, "alignment": 8, "stride": 8 },
-            "kind": {
-              "tag": "sequence",
-              "element": {
-                "schema_name": "i64",
-                "backend": "swift-probe",
-                "layout": { "size": 8, "alignment": 8, "stride": 8 },
-                "kind": { "tag": "scalar" }
-              },
-              "storage": {
-                "tag": "thunk",
-                "count": "Swift.Array.count",
-                "element": "Swift.Array.element",
-                "write": "Swift.Array.init.elements"
-              }
-            }
-          }
-        }
-      ]
-    }
+    "backend" : "swift-probe",
+    "kind" : {
+      "tag" : "scalar"
+    },
+    "layout" : {
+      "alignment" : 1,
+      "size" : 1,
+      "stride" : 1
+    },
+    "schema_name" : "bool"
   },
   {
-    "schema_name": "option<string>",
-    "backend": "swift-probe",
-    "layout": { "size": 16, "alignment": 8, "stride": 16 },
-    "kind": {
-      "tag": "option",
-      "some": {
-        "schema_name": "string",
-        "backend": "swift-probe",
-        "layout": { "size": 16, "alignment": 8, "stride": 16 },
-        "kind": {
-          "tag": "string",
-          "storage": {
-            "tag": "thunk",
-            "count": "Swift.String.utf8.count",
-            "element": "Swift.String.utf8.element",
-            "write": "Swift.String.init.utf8"
-          }
-        }
+    "backend" : "swift-probe",
+    "kind" : {
+      "tag" : "scalar"
+    },
+    "layout" : {
+      "alignment" : 1,
+      "size" : 1,
+      "stride" : 1
+    },
+    "schema_name" : "u8"
+  },
+  {
+    "backend" : "swift-probe",
+    "kind" : {
+      "tag" : "scalar"
+    },
+    "layout" : {
+      "alignment" : 4,
+      "size" : 4,
+      "stride" : 4
+    },
+    "schema_name" : "i32"
+  },
+  {
+    "backend" : "swift-probe",
+    "kind" : {
+      "tag" : "scalar"
+    },
+    "layout" : {
+      "alignment" : 8,
+      "size" : 8,
+      "stride" : 8
+    },
+    "schema_name" : "i64"
+  },
+  {
+    "backend" : "swift-probe",
+    "kind" : {
+      "storage" : {
+        "count" : "Swift.String.utf8.count",
+        "element" : "Swift.String.utf8.element",
+        "tag" : "thunk",
+        "write" : "Swift.String.init.utf8"
       },
-      "storage": {
-        "tag": "thunk",
-        "is_some": "Swift.Optional.isSome",
-        "some": "Swift.Optional.some",
-        "write_none": "Swift.Optional.init.none",
-        "write_some_bytes": "Swift.Optional<String>.init.some.utf8"
-      }
-    }
+      "tag" : "string"
+    },
+    "layout" : {
+      "alignment" : 8,
+      "size" : 16,
+      "stride" : 16
+    },
+    "schema_name" : "string"
   },
   {
-    "schema_name": "ProbeEnum",
-    "backend": "swift-probe",
-    "layout": { "size": 24, "alignment": 8, "stride": 24 },
-    "kind": {
-      "tag": "enum",
-      "fields": [
+    "backend" : "swift-probe",
+    "kind" : {
+      "element" : {
+        "backend" : "swift-probe",
+        "kind" : {
+          "tag" : "scalar"
+        },
+        "layout" : {
+          "alignment" : 8,
+          "size" : 8,
+          "stride" : 8
+        },
+        "schema_name" : "i64"
+      },
+      "storage" : {
+        "count" : "Swift.Array.count",
+        "element" : "Swift.Array.element",
+        "tag" : "thunk",
+        "write" : "Swift.Array.init.elements"
+      },
+      "tag" : "sequence"
+    },
+    "layout" : {
+      "alignment" : 8,
+      "size" : 8,
+      "stride" : 8
+    },
+    "schema_name" : "array<i64>"
+  },
+  {
+    "backend" : "swift-probe",
+    "kind" : {
+      "some" : {
+        "backend" : "swift-probe",
+        "kind" : {
+          "storage" : {
+            "count" : "Swift.String.utf8.count",
+            "element" : "Swift.String.utf8.element",
+            "tag" : "thunk",
+            "write" : "Swift.String.init.utf8"
+          },
+          "tag" : "string"
+        },
+        "layout" : {
+          "alignment" : 8,
+          "size" : 16,
+          "stride" : 16
+        },
+        "schema_name" : "string"
+      },
+      "storage" : {
+        "is_some" : "Swift.Optional.isSome",
+        "some" : "Swift.Optional.some",
+        "tag" : "thunk",
+        "write_none" : "Swift.Optional.init.none",
+        "write_some_bytes" : "Swift.Optional<String>.init.some.utf8"
+      },
+      "tag" : "option"
+    },
+    "layout" : {
+      "alignment" : 8,
+      "size" : 16,
+      "stride" : 16
+    },
+    "schema_name" : "option<string>"
+  },
+  {
+    "backend" : "swift-probe",
+    "kind" : {
+      "fields" : [
         {
-          "name": "$tag",
-          "access": { "tag": "thunk", "thunk": "ProbeEnum.discriminant" },
-          "descriptor": {
-            "schema_name": "u32",
-            "backend": "swift-probe",
-            "layout": { "size": 4, "alignment": 4, "stride": 4 },
-            "kind": { "tag": "scalar" }
-          }
+          "access" : {
+            "offset" : 0,
+            "tag" : "direct"
+          },
+          "descriptor" : {
+            "backend" : "swift-probe",
+            "kind" : {
+              "tag" : "scalar"
+            },
+            "layout" : {
+              "alignment" : 4,
+              "size" : 4,
+              "stride" : 4
+            },
+            "schema_name" : "i32"
+          },
+          "name" : "count"
+        },
+        {
+          "access" : {
+            "offset" : 4,
+            "tag" : "direct"
+          },
+          "descriptor" : {
+            "backend" : "swift-probe",
+            "kind" : {
+              "tag" : "scalar"
+            },
+            "layout" : {
+              "alignment" : 1,
+              "size" : 1,
+              "stride" : 1
+            },
+            "schema_name" : "bool"
+          },
+          "name" : "flag"
         }
       ],
-      "variants": [
+      "tag" : "struct"
+    },
+    "layout" : {
+      "alignment" : 4,
+      "size" : 5,
+      "stride" : 8
+    },
+    "schema_name" : "ProbeLeaf"
+  },
+  {
+    "backend" : "swift-probe",
+    "kind" : {
+      "fields" : [
         {
-          "name": "empty",
-          "index": 0,
-          "access": { "tag": "thunk", "thunk": "ProbeEnum.project.empty" },
-          "construct": "ProbeEnum.init.empty"
+          "access" : {
+            "offset" : 0,
+            "tag" : "direct"
+          },
+          "descriptor" : {
+            "backend" : "swift-probe",
+            "kind" : {
+              "storage" : {
+                "count" : "Swift.String.utf8.count",
+                "element" : "Swift.String.utf8.element",
+                "tag" : "thunk",
+                "write" : "Swift.String.init.utf8"
+              },
+              "tag" : "string"
+            },
+            "layout" : {
+              "alignment" : 8,
+              "size" : 16,
+              "stride" : 16
+            },
+            "schema_name" : "string"
+          },
+          "name" : "title"
         },
         {
-          "name": "titled",
-          "index": 1,
-          "access": { "tag": "thunk", "thunk": "ProbeEnum.project.titled" },
-          "construct": "ProbeEnum.init.titled.utf8",
-          "payload": {
-            "schema_name": "string",
-            "backend": "swift-probe",
-            "layout": { "size": 16, "alignment": 8, "stride": 16 },
-            "kind": {
-              "tag": "string",
-              "storage": {
-                "tag": "thunk",
-                "count": "Swift.String.utf8.count",
-                "element": "Swift.String.utf8.element",
-                "write": "Swift.String.init.utf8"
-              }
-            }
+          "access" : {
+            "offset" : 16,
+            "tag" : "direct"
+          },
+          "descriptor" : {
+            "backend" : "swift-probe",
+            "kind" : {
+              "fields" : [
+                {
+                  "access" : {
+                    "offset" : 0,
+                    "tag" : "direct"
+                  },
+                  "descriptor" : {
+                    "backend" : "swift-probe",
+                    "kind" : {
+                      "tag" : "scalar"
+                    },
+                    "layout" : {
+                      "alignment" : 4,
+                      "size" : 4,
+                      "stride" : 4
+                    },
+                    "schema_name" : "i32"
+                  },
+                  "name" : "count"
+                },
+                {
+                  "access" : {
+                    "offset" : 4,
+                    "tag" : "direct"
+                  },
+                  "descriptor" : {
+                    "backend" : "swift-probe",
+                    "kind" : {
+                      "tag" : "scalar"
+                    },
+                    "layout" : {
+                      "alignment" : 1,
+                      "size" : 1,
+                      "stride" : 1
+                    },
+                    "schema_name" : "bool"
+                  },
+                  "name" : "flag"
+                }
+              ],
+              "tag" : "struct"
+            },
+            "layout" : {
+              "alignment" : 4,
+              "size" : 5,
+              "stride" : 8
+            },
+            "schema_name" : "ProbeLeaf"
+          },
+          "name" : "leaf"
+        },
+        {
+          "access" : {
+            "offset" : 24,
+            "tag" : "direct"
+          },
+          "descriptor" : {
+            "backend" : "swift-probe",
+            "kind" : {
+              "element" : {
+                "backend" : "swift-probe",
+                "kind" : {
+                  "tag" : "scalar"
+                },
+                "layout" : {
+                  "alignment" : 8,
+                  "size" : 8,
+                  "stride" : 8
+                },
+                "schema_name" : "i64"
+              },
+              "storage" : {
+                "count" : "Swift.Array.count",
+                "element" : "Swift.Array.element",
+                "tag" : "thunk",
+                "write" : "Swift.Array.init.elements"
+              },
+              "tag" : "sequence"
+            },
+            "layout" : {
+              "alignment" : 8,
+              "size" : 8,
+              "stride" : 8
+            },
+            "schema_name" : "array<i64>"
+          },
+          "name" : "values"
+        }
+      ],
+      "tag" : "struct"
+    },
+    "layout" : {
+      "alignment" : 8,
+      "size" : 32,
+      "stride" : 32
+    },
+    "schema_name" : "ProbeNested"
+  },
+  {
+    "backend" : "swift-probe",
+    "kind" : {
+      "fields" : [
+        {
+          "access" : {
+            "tag" : "thunk",
+            "thunk" : "ProbeEnum.discriminant"
+          },
+          "descriptor" : {
+            "backend" : "swift-probe",
+            "kind" : {
+              "tag" : "scalar"
+            },
+            "layout" : {
+              "alignment" : 4,
+              "size" : 4,
+              "stride" : 4
+            },
+            "schema_name" : "u32"
+          },
+          "name" : "$tag"
+        }
+      ],
+      "tag" : "enum",
+      "variants" : [
+        {
+          "access" : {
+            "tag" : "thunk",
+            "thunk" : "ProbeEnum.project.empty"
+          },
+          "construct" : "ProbeEnum.init.empty",
+          "index" : 0,
+          "name" : "empty"
+        },
+        {
+          "access" : {
+            "tag" : "thunk",
+            "thunk" : "ProbeEnum.project.titled"
+          },
+          "construct" : "ProbeEnum.init.titled.utf8",
+          "index" : 1,
+          "name" : "titled",
+          "payload" : {
+            "backend" : "swift-probe",
+            "kind" : {
+              "storage" : {
+                "count" : "Swift.String.utf8.count",
+                "element" : "Swift.String.utf8.element",
+                "tag" : "thunk",
+                "write" : "Swift.String.init.utf8"
+              },
+              "tag" : "string"
+            },
+            "layout" : {
+              "alignment" : 8,
+              "size" : 16,
+              "stride" : 16
+            },
+            "schema_name" : "string"
           }
         },
         {
-          "name": "nested",
-          "index": 2,
-          "access": { "tag": "thunk", "thunk": "ProbeEnum.project.nested" },
-          "construct": "ProbeEnum.init.nested",
-          "payload": {
-            "schema_name": "ProbeLeaf",
-            "backend": "swift-probe",
-            "layout": { "size": 8, "alignment": 4, "stride": 8 },
-            "kind": {
-              "tag": "struct",
-              "fields": [
+          "access" : {
+            "tag" : "thunk",
+            "thunk" : "ProbeEnum.project.nested"
+          },
+          "construct" : "ProbeEnum.init.nested",
+          "index" : 2,
+          "name" : "nested",
+          "payload" : {
+            "backend" : "swift-probe",
+            "kind" : {
+              "fields" : [
                 {
-                  "name": "count",
-                  "access": { "tag": "direct", "offset": 0 },
-                  "descriptor": {
-                    "schema_name": "i32",
-                    "backend": "swift-probe",
-                    "layout": { "size": 4, "alignment": 4, "stride": 4 },
-                    "kind": { "tag": "scalar" }
-                  }
+                  "access" : {
+                    "offset" : 0,
+                    "tag" : "direct"
+                  },
+                  "descriptor" : {
+                    "backend" : "swift-probe",
+                    "kind" : {
+                      "tag" : "scalar"
+                    },
+                    "layout" : {
+                      "alignment" : 4,
+                      "size" : 4,
+                      "stride" : 4
+                    },
+                    "schema_name" : "i32"
+                  },
+                  "name" : "count"
                 },
                 {
-                  "name": "flag",
-                  "access": { "tag": "direct", "offset": 4 },
-                  "descriptor": {
-                    "schema_name": "bool",
-                    "backend": "swift-probe",
-                    "layout": { "size": 1, "alignment": 1, "stride": 1 },
-                    "kind": { "tag": "scalar" }
-                  }
+                  "access" : {
+                    "offset" : 4,
+                    "tag" : "direct"
+                  },
+                  "descriptor" : {
+                    "backend" : "swift-probe",
+                    "kind" : {
+                      "tag" : "scalar"
+                    },
+                    "layout" : {
+                      "alignment" : 1,
+                      "size" : 1,
+                      "stride" : 1
+                    },
+                    "schema_name" : "bool"
+                  },
+                  "name" : "flag"
                 }
-              ]
-            }
+              ],
+              "tag" : "struct"
+            },
+            "layout" : {
+              "alignment" : 4,
+              "size" : 5,
+              "stride" : 8
+            },
+            "schema_name" : "ProbeLeaf"
           }
         }
       ]
-    }
+    },
+    "layout" : {
+      "alignment" : 8,
+      "size" : 17,
+      "stride" : 24
+    },
+    "schema_name" : "ProbeEnum"
   }
 ]
