@@ -5,8 +5,9 @@ use crate::schema::TypeRef;
 
 mod import;
 pub use import::{
-    LocalDescriptorImport, LocalDescriptorImportError, LocalDescriptorImportKind, LocalFieldImport,
-    LocalVariantImport,
+    LocalAccessExport, LocalDescriptorExport, LocalDescriptorExportError, LocalDescriptorImport,
+    LocalDescriptorImportError, LocalDescriptorImportKind, LocalFieldExport, LocalFieldImport,
+    LocalKindExport, LocalLayoutExport, LocalStorageExport, LocalVariantExport, LocalVariantImport,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1527,6 +1528,67 @@ mod tests {
             variants[2].payload.as_deref().map(|payload| &payload.kind),
             Some(LocalTypeKind::Struct { .. })
         ));
+    }
+
+    // r[verify binette.local-access.swift-probes]
+    // r[verify binette.local-access.descriptor]
+    #[test]
+    fn swift_probe_export_lowers_string_as_scalar_descriptor() {
+        let export = LocalDescriptorExport {
+            schema_name: "string".to_owned(),
+            backend: "swift-probe".to_owned(),
+            layout: LocalLayoutExport {
+                size: 16,
+                alignment: 8,
+                stride: 16,
+            },
+            kind: LocalKindExport {
+                tag: "string".to_owned(),
+                fields: None,
+                variants: None,
+                element: None,
+                some: None,
+                storage: Some(LocalStorageExport {
+                    tag: "thunk".to_owned(),
+                    count: Some("Swift.String.utf8.count".to_owned()),
+                    element: Some("Swift.String.utf8.element".to_owned()),
+                    write: Some("Swift.String.init.utf8".to_owned()),
+                    ..LocalStorageExport::default()
+                }),
+                reason: None,
+            },
+        };
+
+        let descriptor =
+            LocalTypeDescriptor::from_export(export, |schema_name| match schema_name {
+                "string" => Some(LocalSchemaRef::Type(TypeRef::concrete(primitive_type_id(
+                    Primitive::String,
+                )))),
+                _ => None,
+            })
+            .unwrap();
+
+        assert_eq!(descriptor.backend, LocalBackend::SwiftProbe);
+        let LocalTypeKind::Scalar(LocalScalarAccess::String(LocalSequenceStorage::Thunk {
+            len,
+            element,
+            write: Some(write),
+        })) = descriptor.kind
+        else {
+            panic!("expected imported Swift string scalar descriptor");
+        };
+        assert_eq!(
+            len,
+            LocalThunk::new(LocalBackend::SwiftProbe, "Swift.String.utf8.count")
+        );
+        assert_eq!(
+            element,
+            LocalThunk::new(LocalBackend::SwiftProbe, "Swift.String.utf8.element")
+        );
+        assert_eq!(
+            write,
+            LocalThunk::new(LocalBackend::SwiftProbe, "Swift.String.init.utf8")
+        );
     }
 
     // r[verify binette.local-access.swift-probes]

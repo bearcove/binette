@@ -54,6 +54,74 @@ pub struct LocalVariantImport {
     pub payload: Option<LocalDescriptorImport>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalDescriptorExport {
+    pub schema_name: String,
+    pub backend: String,
+    pub layout: LocalLayoutExport,
+    pub kind: LocalKindExport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalLayoutExport {
+    pub size: usize,
+    pub alignment: usize,
+    pub stride: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalKindExport {
+    pub tag: String,
+    pub fields: Option<Vec<LocalFieldExport>>,
+    pub variants: Option<Vec<LocalVariantExport>>,
+    pub element: Option<Box<LocalDescriptorExport>>,
+    pub some: Option<Box<LocalDescriptorExport>>,
+    pub storage: Option<LocalStorageExport>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalFieldExport {
+    pub name: String,
+    pub access: LocalAccessExport,
+    pub descriptor: Box<LocalDescriptorExport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalVariantExport {
+    pub name: String,
+    pub index: u32,
+    pub access: LocalAccessExport,
+    pub construct: Option<String>,
+    pub payload: Option<Box<LocalDescriptorExport>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalAccessExport {
+    pub tag: String,
+    pub offset: Option<usize>,
+    pub thunk: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LocalStorageExport {
+    pub tag: String,
+    pub pointer_offset: Option<usize>,
+    pub count_offset: Option<usize>,
+    pub element_stride: Option<usize>,
+    pub count: Option<String>,
+    pub element: Option<String>,
+    pub write: Option<String>,
+    pub option_tag_offset: Option<usize>,
+    pub none_value: Option<usize>,
+    pub some_value: Option<usize>,
+    pub some_offset: Option<usize>,
+    pub is_some: Option<String>,
+    pub some: Option<String>,
+    pub write_none: Option<String>,
+    pub write_some_bytes: Option<String>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum LocalDescriptorImportError {
     #[error("invalid local descriptor layout: {reason}")]
@@ -67,9 +135,42 @@ pub enum LocalDescriptorImportError {
     },
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum LocalDescriptorExportError {
+    #[error("unknown local descriptor schema name {schema_name:?} at {path}")]
+    UnknownSchema { path: String, schema_name: String },
+
+    #[error("unknown local descriptor backend {backend:?} at {path}")]
+    UnknownBackend { path: String, backend: String },
+
+    #[error("missing local descriptor export field {field} at {path}")]
+    MissingField { path: String, field: &'static str },
+
+    #[error("unknown local descriptor export tag {tag:?} for {field} at {path}")]
+    UnknownTag {
+        path: String,
+        field: &'static str,
+        tag: String,
+    },
+
+    #[error(transparent)]
+    Import(#[from] LocalDescriptorImportError),
+}
+
 impl LocalTypeDescriptor {
     pub fn from_import(import: LocalDescriptorImport) -> Result<Self, LocalDescriptorImportError> {
         import.into_descriptor("$")
+    }
+
+    pub fn from_export<F>(
+        export: LocalDescriptorExport,
+        resolve_schema: F,
+    ) -> Result<Self, LocalDescriptorExportError>
+    where
+        F: FnMut(&str) -> Option<LocalSchemaRef>,
+    {
+        let import = LocalDescriptorImport::from_export(export, resolve_schema)?;
+        Ok(Self::from_import(import)?)
     }
 }
 
@@ -101,6 +202,278 @@ impl LocalDescriptorImport {
             kind,
         ))
     }
+}
+
+impl LocalDescriptorImport {
+    pub fn from_export<F>(
+        export: LocalDescriptorExport,
+        mut resolve_schema: F,
+    ) -> Result<Self, LocalDescriptorExportError>
+    where
+        F: FnMut(&str) -> Option<LocalSchemaRef>,
+    {
+        export.into_import("$", &mut resolve_schema)
+    }
+}
+
+impl LocalDescriptorExport {
+    fn into_import<F>(
+        self,
+        path: &str,
+        resolve_schema: &mut F,
+    ) -> Result<LocalDescriptorImport, LocalDescriptorExportError>
+    where
+        F: FnMut(&str) -> Option<LocalSchemaRef>,
+    {
+        let schema = resolve_schema(&self.schema_name).ok_or_else(|| {
+            LocalDescriptorExportError::UnknownSchema {
+                path: path.to_owned(),
+                schema_name: self.schema_name.clone(),
+            }
+        })?;
+        let backend = parse_backend(&self.backend, path)?;
+        let kind = self.kind.into_import_kind(backend, path, resolve_schema)?;
+        Ok(LocalDescriptorImport {
+            schema,
+            backend,
+            layout: LocalValueLayout::new(
+                self.layout.size,
+                self.layout.alignment,
+                self.layout.stride,
+            ),
+            kind,
+        })
+    }
+}
+
+impl LocalKindExport {
+    fn into_import_kind<F>(
+        self,
+        backend: LocalBackend,
+        path: &str,
+        resolve_schema: &mut F,
+    ) -> Result<LocalDescriptorImportKind, LocalDescriptorExportError>
+    where
+        F: FnMut(&str) -> Option<LocalSchemaRef>,
+    {
+        match self.tag.as_str() {
+            "scalar" => Ok(LocalDescriptorImportKind::Scalar(LocalScalarAccess::Plain)),
+            "string" => Ok(LocalDescriptorImportKind::Scalar(
+                LocalScalarAccess::String(
+                    required(self.storage, path, "storage")?
+                        .into_sequence_storage(backend, path)?,
+                ),
+            )),
+            "bytes" => Ok(LocalDescriptorImportKind::Scalar(LocalScalarAccess::Bytes(
+                required(self.storage, path, "storage")?.into_sequence_storage(backend, path)?,
+            ))),
+            "struct" => Ok(LocalDescriptorImportKind::Struct {
+                fields: self
+                    .fields
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|field| field.into_import(backend, path, resolve_schema))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            "enum" => Ok(LocalDescriptorImportKind::Enum {
+                tag: self
+                    .fields
+                    .as_deref()
+                    .and_then(|fields| fields.iter().find(|field| field.name == "$tag"))
+                    .ok_or_else(|| LocalDescriptorExportError::MissingField {
+                        path: path.to_owned(),
+                        field: "fields.$tag",
+                    })?
+                    .access
+                    .clone()
+                    .into_access(backend, path)?,
+                variants: self
+                    .variants
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|variant| variant.into_import(backend, path, resolve_schema))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            "sequence" => Ok(LocalDescriptorImportKind::Sequence {
+                element: Box::new(
+                    required(self.element, path, "element")?
+                        .into_import(&format!("{path}[]"), resolve_schema)?,
+                ),
+                storage: required(self.storage, path, "storage")?
+                    .into_sequence_storage(backend, path)?,
+            }),
+            "option" => Ok(LocalDescriptorImportKind::Option {
+                some: Box::new(
+                    required(self.some, path, "some")?
+                        .into_import(&format!("{path}.some"), resolve_schema)?,
+                ),
+                representation: required(self.storage, path, "storage")?
+                    .into_option_representation(backend, path)?,
+            }),
+            "external-attachment" => Ok(LocalDescriptorImportKind::ExternalAttachment {
+                kind: required(self.reason, path, "reason")?,
+            }),
+            "opaque" => Ok(LocalDescriptorImportKind::Opaque {
+                reason: required(self.reason, path, "reason")?,
+            }),
+            _ => Err(LocalDescriptorExportError::UnknownTag {
+                path: path.to_owned(),
+                field: "kind.tag",
+                tag: self.tag,
+            }),
+        }
+    }
+}
+
+impl LocalFieldExport {
+    fn into_import<F>(
+        self,
+        backend: LocalBackend,
+        parent_path: &str,
+        resolve_schema: &mut F,
+    ) -> Result<LocalFieldImport, LocalDescriptorExportError>
+    where
+        F: FnMut(&str) -> Option<LocalSchemaRef>,
+    {
+        let path = format!("{parent_path}.{}", self.name);
+        Ok(LocalFieldImport {
+            name: self.name,
+            access: self.access.into_access(backend, &path)?,
+            descriptor: self.descriptor.into_import(&path, resolve_schema)?,
+        })
+    }
+}
+
+impl LocalVariantExport {
+    fn into_import<F>(
+        self,
+        backend: LocalBackend,
+        parent_path: &str,
+        resolve_schema: &mut F,
+    ) -> Result<LocalVariantImport, LocalDescriptorExportError>
+    where
+        F: FnMut(&str) -> Option<LocalSchemaRef>,
+    {
+        let path = format!("{parent_path}::{}", self.name);
+        Ok(LocalVariantImport {
+            name: self.name,
+            index: self.index,
+            access: self.access.into_access(backend, &path)?,
+            construct: self.construct.map(|name| LocalThunk::new(backend, name)),
+            payload: self
+                .payload
+                .map(|payload| payload.into_import(&path, resolve_schema))
+                .transpose()?,
+        })
+    }
+}
+
+impl LocalAccessExport {
+    fn into_access(
+        self,
+        backend: LocalBackend,
+        path: &str,
+    ) -> Result<LocalAccess, LocalDescriptorExportError> {
+        match self.tag.as_str() {
+            "direct" => Ok(LocalAccess::Direct {
+                offset: required(self.offset, path, "offset")?,
+            }),
+            "thunk" => Ok(LocalAccess::Thunk(LocalThunk::new(
+                backend,
+                required(self.thunk, path, "thunk")?,
+            ))),
+            _ => Err(LocalDescriptorExportError::UnknownTag {
+                path: path.to_owned(),
+                field: "access.tag",
+                tag: self.tag,
+            }),
+        }
+    }
+}
+
+impl LocalStorageExport {
+    fn into_sequence_storage(
+        self,
+        backend: LocalBackend,
+        path: &str,
+    ) -> Result<LocalSequenceStorage, LocalDescriptorExportError> {
+        match self.tag.as_str() {
+            "direct-contiguous" => Ok(LocalSequenceStorage::DirectContiguous {
+                pointer: LocalAccess::Direct {
+                    offset: required(self.pointer_offset, path, "pointer_offset")?,
+                },
+                length: LocalAccess::Direct {
+                    offset: required(self.count_offset, path, "count_offset")?,
+                },
+                capacity: None,
+                element_stride: required(self.element_stride, path, "element_stride")?,
+            }),
+            "thunk" => Ok(LocalSequenceStorage::Thunk {
+                len: LocalThunk::new(backend, required(self.count, path, "count")?),
+                element: LocalThunk::new(backend, required(self.element, path, "element")?),
+                write: self.write.map(|name| LocalThunk::new(backend, name)),
+            }),
+            _ => Err(LocalDescriptorExportError::UnknownTag {
+                path: path.to_owned(),
+                field: "storage.tag",
+                tag: self.tag,
+            }),
+        }
+    }
+
+    fn into_option_representation(
+        self,
+        backend: LocalBackend,
+        path: &str,
+    ) -> Result<LocalOptionRepresentation, LocalDescriptorExportError> {
+        match self.tag.as_str() {
+            "direct-tag" => Ok(LocalOptionRepresentation::Tag {
+                tag: LocalAccess::Direct {
+                    offset: required(self.option_tag_offset, path, "option_tag_offset")?,
+                },
+                none_value: required(self.none_value, path, "none_value")?,
+                some_value: required(self.some_value, path, "some_value")?,
+                some: LocalAccess::Direct {
+                    offset: required(self.some_offset, path, "some_offset")?,
+                },
+            }),
+            "thunk" => Ok(LocalOptionRepresentation::Thunk {
+                is_some: LocalThunk::new(backend, required(self.is_some, path, "is_some")?),
+                some: LocalThunk::new(backend, required(self.some, path, "some")?),
+                write_none: self.write_none.map(|name| LocalThunk::new(backend, name)),
+                write_some_bytes: self
+                    .write_some_bytes
+                    .map(|name| LocalThunk::new(backend, name)),
+            }),
+            _ => Err(LocalDescriptorExportError::UnknownTag {
+                path: path.to_owned(),
+                field: "storage.tag",
+                tag: self.tag,
+            }),
+        }
+    }
+}
+
+fn parse_backend(backend: &str, path: &str) -> Result<LocalBackend, LocalDescriptorExportError> {
+    match backend {
+        "swift-probe" => Ok(LocalBackend::SwiftProbe),
+        "rust-facet" => Ok(LocalBackend::RustFacet),
+        _ => Err(LocalDescriptorExportError::UnknownBackend {
+            path: path.to_owned(),
+            backend: backend.to_owned(),
+        }),
+    }
+}
+
+fn required<T>(
+    value: Option<T>,
+    path: &str,
+    field: &'static str,
+) -> Result<T, LocalDescriptorExportError> {
+    value.ok_or_else(|| LocalDescriptorExportError::MissingField {
+        path: path.to_owned(),
+        field,
+    })
 }
 
 impl LocalDescriptorImportKind {
