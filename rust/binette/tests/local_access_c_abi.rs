@@ -377,6 +377,10 @@ fn empty_c_abi_kind() -> BinetteLocalKindAbi {
             fields: std::ptr::null(),
             field_count: 0,
         },
+        tuple: BinetteLocalStructAbi {
+            fields: std::ptr::null(),
+            field_count: 0,
+        },
         enumeration: BinetteLocalEnumAbi {
             tag: BinetteLocalEnumTagAccessAbi {
                 tag: BINETTE_LOCAL_ACCESS_DIRECT,

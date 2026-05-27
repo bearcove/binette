@@ -83,6 +83,7 @@ pub const BINETTE_LOCAL_KIND_SEQUENCE: BinetteLocalKindTag = 4;
 pub const BINETTE_LOCAL_KIND_OPTION: BinetteLocalKindTag = 5;
 pub const BINETTE_LOCAL_KIND_EXTERNAL_ATTACHMENT: BinetteLocalKindTag = 6;
 pub const BINETTE_LOCAL_KIND_OPAQUE: BinetteLocalKindTag = 7;
+pub const BINETTE_LOCAL_KIND_TUPLE: BinetteLocalKindTag = 8;
 
 pub type BinetteLocalScalarTag = u32;
 pub const BINETTE_LOCAL_SCALAR_PLAIN: BinetteLocalScalarTag = 1;
@@ -104,6 +105,7 @@ pub struct BinetteLocalKindAbi {
     pub tag: BinetteLocalKindTag,
     pub scalar: BinetteLocalScalarAbi,
     pub structure: BinetteLocalStructAbi,
+    pub tuple: BinetteLocalStructAbi,
     pub enumeration: BinetteLocalEnumAbi,
     pub sequence: BinetteLocalSequenceAbi,
     pub option: BinetteLocalOptionAbi,
@@ -416,6 +418,7 @@ impl AbiImporter {
         match kind.tag {
             BINETTE_LOCAL_KIND_SCALAR => unsafe { self.import_scalar(kind.scalar, backend, path) },
             BINETTE_LOCAL_KIND_STRUCT => unsafe { self.import_struct(kind.structure, path) },
+            BINETTE_LOCAL_KIND_TUPLE => unsafe { self.import_tuple(kind.tuple, path) },
             BINETTE_LOCAL_KIND_ENUM => unsafe { self.import_enum(kind.enumeration, backend, path) },
             BINETTE_LOCAL_KIND_SEQUENCE => unsafe {
                 self.import_sequence(kind.sequence, backend, path)
@@ -488,6 +491,27 @@ impl AbiImporter {
             });
         }
         Ok(LocalDescriptorImportKind::Struct { fields: imports })
+    }
+
+    unsafe fn import_tuple(
+        &mut self,
+        tuple: BinetteLocalStructAbi,
+        path: &str,
+    ) -> Result<LocalDescriptorImportKind, LocalDescriptorAbiError> {
+        let fields = unsafe { read_slice(tuple.fields, tuple.field_count, path, "fields") }?;
+        let mut imports = Vec::with_capacity(fields.len());
+        for (index, field) in fields.iter().enumerate() {
+            let field_path = format!("{path}.{index}");
+            let descriptor = unsafe { self.import_descriptor_ptr(field.descriptor, &field_path) }?;
+            imports.push(super::LocalFieldImport {
+                name: index.to_string(),
+                access: LocalAccess::Direct {
+                    offset: field.offset,
+                },
+                descriptor,
+            });
+        }
+        Ok(LocalDescriptorImportKind::Tuple { fields: imports })
     }
 
     unsafe fn import_enum(

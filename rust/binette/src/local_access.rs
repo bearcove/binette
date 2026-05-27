@@ -13,15 +13,16 @@ pub use c_abi::{
     BINETTE_LOCAL_ACCESS_DIRECT, BINETTE_LOCAL_ACCESS_THUNK, BINETTE_LOCAL_BACKEND_RUST_FACET,
     BINETTE_LOCAL_BACKEND_SWIFT, BINETTE_LOCAL_KIND_ENUM, BINETTE_LOCAL_KIND_EXTERNAL_ATTACHMENT,
     BINETTE_LOCAL_KIND_OPAQUE, BINETTE_LOCAL_KIND_OPTION, BINETTE_LOCAL_KIND_SCALAR,
-    BINETTE_LOCAL_KIND_SEQUENCE, BINETTE_LOCAL_KIND_STRUCT, BINETTE_LOCAL_OPTION_DIRECT_TAG,
-    BINETTE_LOCAL_OPTION_NICHE, BINETTE_LOCAL_OPTION_THUNK, BINETTE_LOCAL_SCALAR_BYTES,
-    BINETTE_LOCAL_SCALAR_PLAIN, BINETTE_LOCAL_SCALAR_STRING, BINETTE_LOCAL_SCHEMA_REF_POSITION,
-    BINETTE_LOCAL_SCHEMA_REF_TYPE, BINETTE_LOCAL_SEQUENCE_DIRECT_CONTIGUOUS,
-    BINETTE_LOCAL_SEQUENCE_INLINE_FIXED, BINETTE_LOCAL_SEQUENCE_THUNK, BinetteLocalAccessTag,
-    BinetteLocalBackendAbi, BinetteLocalDescriptorAbi, BinetteLocalEnumAbi,
-    BinetteLocalEnumTagAccessAbi, BinetteLocalEnumTagThunk, BinetteLocalEnumTagThunkAbi,
-    BinetteLocalFieldAbi, BinetteLocalKindAbi, BinetteLocalKindTag, BinetteLocalLayoutAbi,
-    BinetteLocalOptionAbi, BinetteLocalOptionIsSomeThunk, BinetteLocalOptionRepresentationAbi,
+    BINETTE_LOCAL_KIND_SEQUENCE, BINETTE_LOCAL_KIND_STRUCT, BINETTE_LOCAL_KIND_TUPLE,
+    BINETTE_LOCAL_OPTION_DIRECT_TAG, BINETTE_LOCAL_OPTION_NICHE, BINETTE_LOCAL_OPTION_THUNK,
+    BINETTE_LOCAL_SCALAR_BYTES, BINETTE_LOCAL_SCALAR_PLAIN, BINETTE_LOCAL_SCALAR_STRING,
+    BINETTE_LOCAL_SCHEMA_REF_POSITION, BINETTE_LOCAL_SCHEMA_REF_TYPE,
+    BINETTE_LOCAL_SEQUENCE_DIRECT_CONTIGUOUS, BINETTE_LOCAL_SEQUENCE_INLINE_FIXED,
+    BINETTE_LOCAL_SEQUENCE_THUNK, BinetteLocalAccessTag, BinetteLocalBackendAbi,
+    BinetteLocalDescriptorAbi, BinetteLocalEnumAbi, BinetteLocalEnumTagAccessAbi,
+    BinetteLocalEnumTagThunk, BinetteLocalEnumTagThunkAbi, BinetteLocalFieldAbi,
+    BinetteLocalKindAbi, BinetteLocalKindTag, BinetteLocalLayoutAbi, BinetteLocalOptionAbi,
+    BinetteLocalOptionIsSomeThunk, BinetteLocalOptionRepresentationAbi,
     BinetteLocalOptionRepresentationTag, BinetteLocalOptionSomeThunk, BinetteLocalOptionThunksAbi,
     BinetteLocalOptionWriteNoneThunk, BinetteLocalOptionWriteSomeBytesThunk, BinetteLocalScalarAbi,
     BinetteLocalScalarTag, BinetteLocalSchemaRefAbi, BinetteLocalSchemaRefTag,
@@ -101,6 +102,9 @@ pub fn synthetic_schema_bundle_for_local_descriptor(
 pub enum LocalTypeKind {
     Scalar(LocalScalarAccess),
     Struct {
+        fields: Vec<LocalFieldDescriptor>,
+    },
+    Tuple {
         fields: Vec<LocalFieldDescriptor>,
     },
     Enum {
@@ -816,7 +820,7 @@ mod rust_layout {
                             })
                         })
                         .collect::<Result<Vec<_>, LocalAccessError>>()?;
-                    Ok(LocalTypeKind::Struct { fields })
+                    Ok(LocalTypeKind::Tuple { fields })
                 }
                 SchemaKind::Array {
                     dimensions,
@@ -1343,7 +1347,7 @@ mod rust_layout {
             | LocalTypeKind::Sequence { storage, .. } => {
                 collect_sequence_capacity_offset(storage, base, offsets);
             }
-            LocalTypeKind::Struct { fields } => {
+            LocalTypeKind::Struct { fields } | LocalTypeKind::Tuple { fields } => {
                 for field in fields {
                     let LocalAccess::Direct { offset } = field.access else {
                         continue;
@@ -1672,6 +1676,13 @@ fn canonicalize_descriptor_schema(
                 },
             )?
         }
+        LocalTypeKind::Tuple { fields } => {
+            let elements = fields
+                .iter_mut()
+                .map(|field| canonicalize_descriptor_schema(&mut field.descriptor, schemas))
+                .collect::<Result<Vec<_>, LocalSchemaBundleError>>()?;
+            push_synthetic_schema(schemas, SchemaKind::Tuple { elements })?
+        }
         LocalTypeKind::Enum { variants, .. } => {
             let variants = variants
                 .iter_mut()
@@ -1959,6 +1970,54 @@ mod tests {
         assert!(matches!(some_access, LocalAccess::Direct { .. }));
         assert!(matches!(tag_width, 1 | 2 | 4 | 8));
         assert_ne!(none_value, 0);
+    }
+
+    // r[verify binette.local-access.backends]
+    // r[verify binette.local-access.descriptor+2]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn rust_facet_tuple_descriptor_keeps_tuple_schema_kind() {
+        type Args = (u16, String);
+
+        let mut descriptor =
+            rust_facet_descriptor_for::<Args>().expect("tuple descriptor should be representable");
+
+        let LocalTypeKind::Tuple { fields } = &descriptor.kind else {
+            panic!("expected tuple descriptor, got {descriptor:?}");
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["0", "1"]
+        );
+
+        let bundle = synthetic_schema_bundle_for_local_descriptor(&mut descriptor)
+            .expect("tuple descriptor should synthesize a schema bundle");
+        let TypeRef::Concrete {
+            type_id: root_id, ..
+        } = bundle.root
+        else {
+            panic!("expected concrete root");
+        };
+        let root_schema = bundle
+            .schemas
+            .iter()
+            .find(|schema| schema.id == root_id)
+            .expect("root tuple schema should be present");
+        let SchemaKind::Tuple { elements } = &root_schema.kind else {
+            panic!("expected tuple schema, got {root_schema:?}");
+        };
+        assert_eq!(elements.len(), 2);
+        assert_eq!(
+            elements[0],
+            TypeRef::concrete(primitive_type_id(Primitive::U16))
+        );
+        assert_eq!(
+            elements[1],
+            TypeRef::concrete(primitive_type_id(Primitive::String))
+        );
     }
 
     #[test]

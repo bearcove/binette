@@ -227,6 +227,7 @@ typedef struct BinetteLocalKindAbi {
   BinetteLocalKindTag tag;
   struct BinetteLocalScalarAbi scalar;
   struct BinetteLocalStructAbi structure;
+  struct BinetteLocalStructAbi tuple;
   struct BinetteLocalEnumAbi enumeration;
   struct BinetteLocalSequenceAbi sequence;
   struct BinetteLocalOptionAbi option;
@@ -267,6 +268,8 @@ typedef struct BinetteByteBuffer {
 #define BINETTE_LOCAL_KIND_EXTERNAL_ATTACHMENT 6
 
 #define BINETTE_LOCAL_KIND_OPAQUE 7
+
+#define BINETTE_LOCAL_KIND_TUPLE 8
 
 #define BINETTE_LOCAL_SCALAR_PLAIN 1
 

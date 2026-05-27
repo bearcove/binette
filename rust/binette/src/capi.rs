@@ -5,10 +5,10 @@ use crate::local_access::{
     synthetic_schema_bundle_for_local_descriptor,
 };
 use crate::{
-    Primitive, SchemaRegistry, TypeRef, decode_schema_bundle_from_slice, encode_schema_bundle_to_vec,
-    encode_to_vec, hybrid_local_stencil_decoder_from_plan, hybrid_local_stencil_encoder_from_plan,
-    primitive_type_id, reader_plan_for_bundle, reader_plan_for_bundles, writer_plan_for,
-    writer_plan_for_bundle,
+    Primitive, SchemaRegistry, TypeRef, decode_schema_bundle_from_slice,
+    encode_schema_bundle_to_vec, encode_to_vec, hybrid_local_stencil_decoder_from_plan,
+    hybrid_local_stencil_encoder_from_plan, primitive_type_id, reader_plan_for_bundle,
+    reader_plan_for_bundles, writer_plan_for, writer_plan_for_bundle,
 };
 
 pub const BINETTE_STATUS_OK: i32 = 0;

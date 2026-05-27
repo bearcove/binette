@@ -17,6 +17,11 @@ private struct VoxLikeRequest: Equatable {
     var stream: VoxLikeChannel
 }
 
+private struct VoxLikeArgs: Equatable {
+    var title: String
+    var count: UInt32
+}
+
 private typealias CVariantProject = @convention(c) (UnsafePointer<UInt8>?, UnsafeMutableRawPointer?) -> UnsafePointer<UInt8>?
 
 final class BinetteCAbiCanaryTests: XCTestCase {
@@ -93,6 +98,48 @@ final class BinetteCAbiCanaryTests: XCTestCase {
             )
             XCTAssertEqual(decoded, value)
         }
+    }
+
+    // r[verify binette.local-access.boundary]
+    // r[verify binette.local-access.descriptor+2]
+    // r[verify binette.local-access.swift-probes+2]
+    func testSwiftTupleDescriptorUsesTupleSchemaThroughCAbi() throws {
+        let handle = try importVoxLikeArgsDescriptor()
+        defer { binette_local_descriptor_free(handle) }
+        let schemaBundle = try syntheticSchemaBundle(handle: handle)
+        defer { binette_byte_buffer_free(schemaBundle) }
+
+        var args = VoxLikeArgs(title: "tuple-shaped method args", count: 0xCAFE_BABE)
+        var encoded = BinetteByteBuffer()
+        let encodeStatus = withUnsafePointer(to: &args) { pointer in
+            binette_local_encode_with_schema_bundle(
+                handle,
+                UnsafePointer(schemaBundle.ptr),
+                schemaBundle.len,
+                UnsafeRawPointer(pointer).assumingMemoryBound(to: UInt8.self),
+                &encoded
+            )
+        }
+        XCTAssertEqual(encodeStatus, BINETTE_STATUS_OK)
+        defer { binette_byte_buffer_free(encoded) }
+
+        let out = UnsafeMutablePointer<VoxLikeArgs>.allocate(capacity: 1)
+        let decodeStatus = binette_local_decode_with_schema_bundles(
+            handle,
+            UnsafePointer(schemaBundle.ptr),
+            schemaBundle.len,
+            UnsafePointer(schemaBundle.ptr),
+            schemaBundle.len,
+            UnsafePointer(encoded.ptr),
+            encoded.len,
+            UnsafeMutableRawPointer(out).assumingMemoryBound(to: UInt8.self)
+        )
+        XCTAssertEqual(decodeStatus, BINETTE_STATUS_OK)
+        if decodeStatus == BINETTE_STATUS_OK {
+            let decoded = out.move()
+            XCTAssertEqual(decoded, args)
+        }
+        out.deallocate()
     }
 }
 
@@ -189,6 +236,29 @@ private func importVoxLikeRequestDescriptor() throws -> OpaquePointer {
                 name: binetteLocalStr("stream"),
                 offset: MemoryLayout<VoxLikeRequest>.offset(of: \VoxLikeRequest.stream)!,
                 descriptor: channelDescriptor
+            ),
+        ]
+    )
+    return try importDescriptor(descriptor)
+}
+
+private func importVoxLikeArgsDescriptor() throws -> OpaquePointer {
+    let arena = BinetteCAbiDescriptorArena()
+    let stringDescriptor = arena.string()
+    let u32Descriptor = arena.plain(typeID: binette_primitive_u32_type_id(), UInt32.self)
+    let descriptor = arena.tuple(
+        typeID: 0xB1_0000_0000_2000,
+        layout: binetteLayout(of: VoxLikeArgs.self),
+        fields: [
+            BinetteLocalFieldAbi(
+                name: binetteLocalStr("0"),
+                offset: MemoryLayout<VoxLikeArgs>.offset(of: \VoxLikeArgs.title)!,
+                descriptor: stringDescriptor
+            ),
+            BinetteLocalFieldAbi(
+                name: binetteLocalStr("1"),
+                offset: MemoryLayout<VoxLikeArgs>.offset(of: \VoxLikeArgs.count)!,
+                descriptor: u32Descriptor
             ),
         ]
     )

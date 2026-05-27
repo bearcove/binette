@@ -2282,13 +2282,13 @@ fn local_struct_fields<'a>(
     descriptor: &'a LocalTypeDescriptor,
     path: &str,
 ) -> Result<&'a [LocalFieldDescriptor], StencilError> {
-    let LocalTypeKind::Struct { fields } = &descriptor.kind else {
-        return Err(StencilError::Unsupported {
+    match &descriptor.kind {
+        LocalTypeKind::Struct { fields } | LocalTypeKind::Tuple { fields } => Ok(fields),
+        _ => Err(StencilError::Unsupported {
             path: path.to_owned(),
-            reason: "local descriptor is not a struct layout",
-        });
-    };
-    Ok(fields)
+            reason: "local descriptor is not a struct or tuple layout",
+        }),
+    }
 }
 
 fn local_writer_field_descriptor<'a>(

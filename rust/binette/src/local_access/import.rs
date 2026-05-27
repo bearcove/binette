@@ -19,6 +19,9 @@ pub enum LocalDescriptorImportKind {
     Struct {
         fields: Vec<LocalFieldImport>,
     },
+    Tuple {
+        fields: Vec<LocalFieldImport>,
+    },
     Enum {
         tag: LocalAccess,
         variants: Vec<LocalVariantImport>,
@@ -282,6 +285,14 @@ impl LocalKindExport {
                     .map(|field| field.into_import(backend, path, resolve_schema))
                     .collect::<Result<Vec<_>, _>>()?,
             }),
+            "tuple" => Ok(LocalDescriptorImportKind::Tuple {
+                fields: self
+                    .fields
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|field| field.into_import(backend, path, resolve_schema))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
             "enum" => Ok(LocalDescriptorImportKind::Enum {
                 tag: self
                     .fields
@@ -514,6 +525,13 @@ impl LocalDescriptorImportKind {
                     .map(|field| field.into_descriptor(backend, path))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(LocalTypeKind::Struct { fields })
+            }
+            Self::Tuple { fields } => {
+                let fields = fields
+                    .into_iter()
+                    .map(|field| field.into_descriptor(backend, path))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(LocalTypeKind::Tuple { fields })
             }
             Self::Enum { tag, variants } => {
                 tag.validate_backend(backend, path)?;

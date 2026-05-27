@@ -126,6 +126,28 @@ public final class BinetteCAbiDescriptorArena {
         )
     }
 
+    public func tuple(
+        typeID: UInt64,
+        layout: BinetteLocalLayoutAbi,
+        fields: [BinetteLocalFieldAbi]
+    ) -> UnsafePointer<BinetteLocalDescriptorAbi> {
+        let fieldPointer = storeFields(fields)
+        var kind = emptyKind()
+        kind.tag = UInt32(BINETTE_LOCAL_KIND_TUPLE)
+        kind.tuple = BinetteLocalStructAbi(
+            fields: UnsafePointer(fieldPointer),
+            field_count: fields.count
+        )
+        return store(
+            BinetteLocalDescriptorAbi(
+                schema: binetteTypeSchema(typeID),
+                backend: UInt32(BINETTE_LOCAL_BACKEND_SWIFT),
+                layout: layout,
+                kind: kind
+            )
+        )
+    }
+
     public func enumeration(
         typeID: UInt64,
         layout: BinetteLocalLayoutAbi,
@@ -311,6 +333,7 @@ private func emptyKind() -> BinetteLocalKindAbi {
             storage: emptySequenceStorage()
         ),
         structure: BinetteLocalStructAbi(fields: nil, field_count: 0),
+        tuple: BinetteLocalStructAbi(fields: nil, field_count: 0),
         enumeration: BinetteLocalEnumAbi(
             tag: BinetteLocalEnumTagAccessAbi(
                 tag: UInt32(BINETTE_LOCAL_ACCESS_DIRECT),
