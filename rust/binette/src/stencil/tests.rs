@@ -2644,11 +2644,11 @@ fn strict_encode_accepts_mixed_struct_with_list_option_and_strings() {
 }
 
 #[test]
-fn hybrid_decode_compiles_supported_siblings_around_subtree_helpers() {
+fn public_hybrid_decode_uses_local_rust_helpers_for_string_subtrees() {
     mod writer {
         use facet::Facet;
 
-        #[derive(Facet)]
+        #[derive(Debug, Facet, PartialEq)]
         pub struct Message {
             pub head: u32,
             pub title: String,
@@ -2656,12 +2656,22 @@ fn hybrid_decode_compiles_supported_siblings_around_subtree_helpers() {
             pub pair: (u8, String, u32),
             pub tail: u64,
         }
+
+        pub fn sample() -> Message {
+            Message {
+                head: 0x1122_3344,
+                title: "top-level string".to_owned(),
+                middle: 0x5566,
+                pair: (7, "tuple string".to_owned(), 0x7788_99aa),
+                tail: 0x0102_0304_0506_0708,
+            }
+        }
     }
 
     mod reader {
         use facet::Facet;
 
-        #[derive(Facet)]
+        #[derive(Debug, Facet, PartialEq)]
         pub struct Message {
             pub head: u32,
             pub title: String,
@@ -2676,58 +2686,52 @@ fn hybrid_decode_compiles_supported_siblings_around_subtree_helpers() {
     writer_registry
         .install_bundle(writer_plan.schema_bundle())
         .unwrap();
-    let reader_plan =
-        reader_plan_for::<reader::Message>(writer_plan.root(), &writer_registry).unwrap();
-
-    let mut compiler = CursorStencilCompiler {
-        writer_registry: &writer_registry,
-        plan_nodes: reader_plan.nodes(),
-        ops: Vec::new(),
-        helpers: Vec::new(),
-        failures: Vec::new(),
-        allow_helpers: true,
-    };
-    compiler
-        .compile_root::<reader::Message>(&reader_plan.root)
-        .unwrap();
-
-    let op_kinds: Vec<&'static str> = compiler
-        .ops
-        .iter()
-        .map(|op| match op {
-            HybridStencilOp::Copy { .. } => "copy",
-            HybridStencilOp::Helper { .. } => "helper",
-            HybridStencilOp::List { .. } => "list",
-        })
-        .collect();
-
+    let decoder =
+        hybrid_stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry)
+            .unwrap();
     assert_eq!(
-        op_kinds,
-        vec!["copy", "helper", "copy", "copy", "helper", "copy", "copy"]
+        decoder.report().helper_paths,
+        vec!["$.title".to_owned(), "$.pair.1".to_owned()]
     );
-    assert_eq!(compiler.helpers.len(), 2);
+
+    let value = writer::sample();
+    let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+    let decoded = decoder.decode(&bytes).unwrap();
+    assert_eq!(decoded.head, value.head);
+    assert_eq!(decoded.title, value.title);
+    assert_eq!(decoded.middle, value.middle);
+    assert_eq!(decoded.pair, value.pair);
+    assert_eq!(decoded.tail, value.tail);
 }
 
 #[test]
-fn hybrid_decode_compiles_list_element_siblings_around_subtree_helpers() {
+fn public_hybrid_decode_constructs_fixed_vec_through_rust_layout() {
     mod writer {
         use facet::Facet;
 
-        #[derive(Facet)]
+        #[derive(Debug, Facet, PartialEq)]
         pub struct Message {
             pub prefix: u16,
-            pub items: Vec<(u16, String, u32)>,
+            pub items: Vec<(u16, u32)>,
             pub tail: u64,
+        }
+
+        pub fn sample() -> Message {
+            Message {
+                prefix: 0x1122,
+                items: vec![(1, 10), (2, 20), (3, 30)],
+                tail: 0x0102_0304_0506_0708,
+            }
         }
     }
 
     mod reader {
         use facet::Facet;
 
-        #[derive(Facet)]
+        #[derive(Debug, Facet, PartialEq)]
         pub struct Message {
             pub prefix: u16,
-            pub items: Vec<(u16, String, u32)>,
+            pub items: Vec<(u16, u32)>,
             pub tail: u64,
         }
     }
@@ -2737,37 +2741,15 @@ fn hybrid_decode_compiles_list_element_siblings_around_subtree_helpers() {
     writer_registry
         .install_bundle(writer_plan.schema_bundle())
         .unwrap();
-    let reader_plan =
-        reader_plan_for::<reader::Message>(writer_plan.root(), &writer_registry).unwrap();
+    let decoder =
+        hybrid_stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry)
+            .unwrap();
+    assert_eq!(decoder.report().helper_paths, vec!["$.items".to_owned()]);
 
-    let mut compiler = CursorStencilCompiler {
-        writer_registry: &writer_registry,
-        plan_nodes: reader_plan.nodes(),
-        ops: Vec::new(),
-        helpers: Vec::new(),
-        failures: Vec::new(),
-        allow_helpers: true,
-    };
-    compiler
-        .compile_root::<reader::Message>(&reader_plan.root)
-        .unwrap();
-
-    assert_eq!(compiler.ops.len(), 3);
-    assert!(matches!(compiler.ops[0], HybridStencilOp::Copy { .. }));
-    let HybridStencilOp::List { element_ops, .. } = &compiler.ops[1] else {
-        panic!("expected a native list op");
-    };
-    assert!(matches!(compiler.ops[2], HybridStencilOp::Copy { .. }));
-
-    let element_kinds: Vec<&'static str> = element_ops
-        .iter()
-        .map(|op| match op {
-            HybridStencilOp::Copy { .. } => "copy",
-            HybridStencilOp::Helper { .. } => "helper",
-            HybridStencilOp::List { .. } => "list",
-        })
-        .collect();
-
-    assert_eq!(element_kinds, vec!["copy", "helper", "copy"]);
-    assert_eq!(compiler.helpers.len(), 1);
+    let value = writer::sample();
+    let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+    let decoded = decoder.decode(&bytes).unwrap();
+    assert_eq!(decoded.prefix, value.prefix);
+    assert_eq!(decoded.items, value.items);
+    assert_eq!(decoded.tail, value.tail);
 }

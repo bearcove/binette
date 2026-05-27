@@ -1,7 +1,6 @@
 use std::{borrow::Cow, collections::HashMap};
 
 #[cfg(not(target_arch = "wasm32"))]
-use facet_core::PtrUninit;
 use facet_core::{
     Facet, OpaqueDeserialize, ScalarType, Shape, StructKind, Type, UserType, alloc_for_layout,
     dealloc_for_layout,
@@ -92,27 +91,6 @@ pub fn decode_from_slice_with_plan<T: Facet<'static>>(
         });
     }
     Ok(partial.build()?.materialize::<T>()?)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn decode_plan_node_into_raw(
-    input: &[u8],
-    node: &PlanNode,
-    plan_nodes: &[PlanNode],
-    writer_registry: &SchemaRegistry,
-    reader_shape: &'static Shape,
-    out: *mut u8,
-) -> Result<usize, DecodeError> {
-    let mut executor = DecodeExecutor {
-        reader: CompactReader::new(input),
-        writer_registry,
-        plan_nodes,
-    };
-    let ptr = PtrUninit::new(out);
-    let partial = unsafe { Partial::<'static, false>::from_raw_with_shape(ptr, reader_shape)? };
-    let partial = executor.decode_node(partial, node)?;
-    partial.finish_in_place()?;
-    Ok(executor.reader.position())
 }
 
 struct DecodeExecutor<'input, 'registry> {

@@ -501,21 +501,6 @@ fn list_struct_hybrid_decode_fixture() -> DecodeStencilFixture<list_struct_reade
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-fn list_struct_jit_decode_fixture() -> DecodeStencilFixture<list_struct_reader::Message> {
-    let fixture = list_struct_fixture();
-    let stencil = strict_stencil_decoder_for::<list_struct_reader::Message>(
-        fixture.writer_plan.root(),
-        &fixture.writer_registry,
-    )
-    .unwrap();
-
-    DecodeStencilFixture {
-        bytes: fixture.bytes,
-        stencil,
-    }
-}
-
-#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn nested_hybrid_decode_fixture() -> DecodeStencilFixture<nested_reader::Message> {
     let fixture = nested_fixture();
     let stencil = hybrid_stencil_decoder_for::<nested_reader::Message>(
@@ -579,21 +564,6 @@ fn enum_jit_decode_fixture() -> DecodeStencilFixture<enum_reader::Event> {
 fn array_jit_decode_fixture() -> DecodeStencilFixture<aggregate::Array> {
     let fixture = same_fixture::<aggregate::Array>(aggregate::array_sample());
     let stencil = strict_stencil_decoder_for::<aggregate::Array>(
-        fixture.writer_plan.root(),
-        &fixture.writer_registry,
-    )
-    .unwrap();
-
-    DecodeStencilFixture {
-        bytes: fixture.bytes,
-        stencil,
-    }
-}
-
-#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-fn fixed_list_jit_decode_fixture() -> DecodeStencilFixture<aggregate::FixedList> {
-    let fixture = same_fixture::<aggregate::FixedList>(aggregate::fixed_list_sample());
-    let stencil = strict_stencil_decoder_for::<aggregate::FixedList>(
         fixture.writer_plan.root(),
         &fixture.writer_registry,
     )
@@ -1624,14 +1594,6 @@ mod list_struct {
 
         bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
     }
-
-    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-    #[divan::bench]
-    pub fn jit(bencher: Bencher) {
-        let fixture = list_struct_jit_decode_fixture();
-
-        bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
-    }
 }
 
 mod nested_struct {
@@ -1785,14 +1747,6 @@ mod fixed_list {
                     .unwrap(),
             )
         });
-    }
-
-    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-    #[divan::bench]
-    pub fn jit(bencher: Bencher) {
-        let fixture = fixed_list_jit_decode_fixture();
-
-        bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
     }
 }
 same_schema_decode_benches!(set, aggregate::Set, aggregate::set_sample());

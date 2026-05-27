@@ -84,24 +84,14 @@ pub(super) enum HybridStencilOp {
         input_len: usize,
         failure_index: usize,
     },
-    List {
-        shape: &'static Shape,
+    Bool {
         output_offset: usize,
-        element_ops: Vec<HybridStencilOp>,
-        element_stride: usize,
         failure_index: usize,
     },
 }
 
 #[derive(Debug, Clone)]
 pub(super) enum StencilHelper {
-    Decode {
-        plan: PlanNode,
-        plan_nodes: Vec<PlanNode>,
-        reader_shape: &'static Shape,
-        output_offset: usize,
-        failure_index: usize,
-    },
     LocalSequenceBytes {
         output_offset: usize,
         thunks: LocalSequenceDecodeThunks,
@@ -115,9 +105,26 @@ pub(super) enum StencilHelper {
         element_stride: usize,
         failure_index: usize,
     },
+    RustSequenceBytes {
+        output_offset: usize,
+        layout: RustSequenceDecodeLayout,
+        primitive: Primitive,
+        failure_index: usize,
+    },
+    RustSequenceFixedElements {
+        output_offset: usize,
+        layout: RustSequenceDecodeLayout,
+        element_ops: Vec<StencilOp>,
+        element_input_len: usize,
+        failure_index: usize,
+    },
     LocalOptionSequenceBytes {
         output_offset: usize,
         thunks: LocalOptionSequenceDecodeThunks,
+        failure_index: usize,
+    },
+    RustOptionStringBytes {
+        output_offset: usize,
         failure_index: usize,
     },
     LocalEnum {
@@ -129,6 +136,15 @@ pub(super) enum StencilHelper {
         writer_type: TypeRef,
         failure_index: usize,
     },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RustSequenceDecodeLayout {
+    pub(super) ptr_offset: usize,
+    pub(super) len_offset: usize,
+    pub(super) cap_offset: usize,
+    pub(super) element_stride: usize,
+    pub(super) element_align: usize,
 }
 
 #[derive(Debug, Clone)]

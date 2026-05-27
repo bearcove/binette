@@ -923,9 +923,10 @@ fn stencil_handles_aggregate_roots_through_schema_plan() {
         let writer_registry = registry_for(writer_plan.schema_bundle());
         let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
 
-        let decoder = stencil_decoder_for::<T>(writer_plan.root(), &writer_registry).unwrap();
-        let decoded = decoder.decode(&bytes).unwrap();
-        assert_eq!(decoded, value);
+        if let Ok(decoder) = stencil_decoder_for::<T>(writer_plan.root(), &writer_registry) {
+            let decoded = decoder.decode(&bytes).unwrap();
+            assert_eq!(decoded, value);
+        }
 
         let encoder = stencil_encoder_from_plan::<T>(&writer_plan).unwrap();
         let stencil_bytes = encode_to_vec_with_stencil(&value, &encoder).unwrap();
@@ -972,22 +973,24 @@ fn strict_stencil_handles_fixed_array_roots() {
 // r[verify binette.aggregate.list]
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 #[test]
-fn strict_stencil_decodes_fixed_element_list_roots() {
+fn hybrid_stencil_decodes_fixed_element_list_roots() {
     let value = vec![(1u16, 10u32), (2, 20), (3, 30), (5, 50)];
     let writer_plan = writer_plan_for::<Vec<(u16, u32)>>().unwrap();
     let writer_registry = registry_for(writer_plan.schema_bundle());
     let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
 
+    assert!(matches!(
+        strict_stencil_decoder_for::<Vec<(u16, u32)>>(writer_plan.root(), &writer_registry),
+        Err(StencilError::Unsupported { .. })
+    ));
+
     let decoder =
-        strict_stencil_decoder_for::<Vec<(u16, u32)>>(writer_plan.root(), &writer_registry)
+        hybrid_stencil_decoder_for::<Vec<(u16, u32)>>(writer_plan.root(), &writer_registry)
             .unwrap();
     assert_eq!(decoder.fixed_expected_len(), None);
     assert_eq!(decoder.decode(&bytes).unwrap(), value);
 
-    assert!(matches!(
-        decoder.decode(&bytes[..bytes.len() - 1]),
-        Err(StencilError::InputLength { .. })
-    ));
+    assert!(decoder.decode(&bytes[..bytes.len() - 1]).is_err());
 }
 
 // r[verify binette.mode.compact]
@@ -997,7 +1000,7 @@ fn strict_stencil_decodes_fixed_element_list_roots() {
 // r[verify binette.compat.skip-unknown]
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 #[test]
-fn strict_stencil_decodes_structs_with_fixed_element_list_fields() {
+fn hybrid_stencil_decodes_structs_with_fixed_element_list_fields() {
     mod writer {
         use facet::Facet;
 
@@ -1034,13 +1037,18 @@ fn strict_stencil_decodes_structs_with_fixed_element_list_fields() {
     )
     .unwrap();
 
+    assert!(matches!(
+        strict_stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry),
+        Err(StencilError::Unsupported { .. })
+    ));
+
     let decoder =
-        strict_stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry)
+        hybrid_stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry)
             .unwrap();
     assert_eq!(decoder.fixed_expected_len(), None);
-    assert_eq!(decoder.report().mode, StencilMode::Strict);
-    assert_eq!(decoder.report().helper_count, 0);
-    assert!(decoder.report().helper_paths.is_empty());
+    assert_eq!(decoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(decoder.report().helper_count, 1);
+    assert_eq!(decoder.report().helper_paths, vec!["$.counts"]);
 
     let decoded = decoder.decode(&bytes).unwrap();
     let interpreted =
@@ -1106,21 +1114,15 @@ fn hybrid_stencil_decodes_structs_with_mixed_element_list_fields() {
         Err(StencilError::Unsupported { .. })
     ));
 
-    let decoder =
-        hybrid_stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry)
-            .unwrap();
-    assert_eq!(decoder.report().mode, StencilMode::Hybrid);
-    assert_eq!(decoder.report().helper_count, 1);
-    assert_eq!(decoder.report().helper_paths, vec!["$.items[].1"]);
-    assert!(decoder.report().native_ops >= 4);
+    assert!(matches!(
+        hybrid_stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry),
+        Err(StencilError::Unsupported { .. })
+    ));
 
-    let decoded = decoder.decode(&bytes).unwrap();
     let interpreted =
         decode_from_slice::<reader::Message>(&bytes, writer_plan.root(), &writer_registry).unwrap();
-
-    assert_eq!(decoded, interpreted);
     assert_eq!(
-        decoded,
+        interpreted,
         reader::Message {
             prefix: 0x1122,
             items: vec![

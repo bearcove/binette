@@ -1,5 +1,5 @@
 use super::*;
-use facet_core::{PtrMut, PtrUninit};
+use crate::compact::CompactReader;
 
 pub(super) const STENCIL_OK: u32 = 0;
 pub(super) const HYBRID_ERROR_FLAG: usize = 1usize << (usize::BITS - 1);
@@ -39,28 +39,6 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
     let input = unsafe { slice::from_raw_parts(input, len) };
     let tail = &input[cursor..];
     let consumed = match helper {
-        StencilHelper::Decode {
-            plan,
-            plan_nodes,
-            reader_shape,
-            output_offset,
-            ..
-        } => {
-            let output = unsafe { out.add(*output_offset) };
-            match unsafe {
-                decode_plan_node_into_raw(
-                    tail,
-                    plan,
-                    plan_nodes,
-                    &runtime.writer_registry,
-                    reader_shape,
-                    output,
-                )
-            } {
-                Ok(consumed) => consumed,
-                Err(_) => return hybrid_error_for_helper(helper),
-            }
-        }
         StencilHelper::LocalSequenceBytes {
             output_offset,
             thunks,
@@ -134,6 +112,78 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
             }
             end
         }
+        StencilHelper::RustSequenceBytes {
+            output_offset,
+            layout,
+            primitive,
+            ..
+        } => {
+            if tail.len() < 4 {
+                return hybrid_error_for_helper(helper);
+            }
+            let len = u32::from_le_bytes(tail[..4].try_into().unwrap()) as usize;
+            let Some(end) = 4usize.checked_add(len) else {
+                return hybrid_error_for_helper(helper);
+            };
+            let Some(bytes) = tail.get(4..end) else {
+                return hybrid_error_for_helper(helper);
+            };
+            if *primitive == Primitive::String && std::str::from_utf8(bytes).is_err() {
+                return hybrid_error_for_helper(helper);
+            }
+            let output = unsafe { out.add(*output_offset) };
+            if !unsafe { write_rust_sequence(output, *layout, bytes, len) } {
+                return hybrid_error_for_helper(helper);
+            }
+            end
+        }
+        StencilHelper::RustSequenceFixedElements {
+            output_offset,
+            layout,
+            element_ops,
+            element_input_len,
+            ..
+        } => {
+            if tail.len() < 4 {
+                return hybrid_error_for_helper(helper);
+            }
+            let count = u32::from_le_bytes(tail[..4].try_into().unwrap()) as usize;
+            let Some(elements_input_len) = element_input_len.checked_mul(count) else {
+                return hybrid_error_for_helper(helper);
+            };
+            let Some(end) = 4usize.checked_add(elements_input_len) else {
+                return hybrid_error_for_helper(helper);
+            };
+            let Some(input_elements) = tail.get(4..end) else {
+                return hybrid_error_for_helper(helper);
+            };
+            let Some(output_len) = layout.element_stride.checked_mul(count) else {
+                return hybrid_error_for_helper(helper);
+            };
+            let mut elements = vec![0u8; output_len];
+            for index in 0..count {
+                let input_base = index * element_input_len;
+                let output_base = index * layout.element_stride;
+                let Some(input_element) =
+                    input_elements.get(input_base..input_base + element_input_len)
+                else {
+                    return hybrid_error_for_helper(helper);
+                };
+                let Some(output_element) =
+                    elements.get_mut(output_base..output_base + layout.element_stride)
+                else {
+                    return hybrid_error_for_helper(helper);
+                };
+                if !run_fixed_decode_ops(element_ops, input_element, output_element) {
+                    return hybrid_error_for_helper(helper);
+                }
+            }
+            let output = unsafe { out.add(*output_offset) };
+            if !unsafe { write_rust_sequence(output, *layout, &elements, count) } {
+                return hybrid_error_for_helper(helper);
+            }
+            end
+        }
         StencilHelper::LocalOptionSequenceBytes {
             output_offset,
             thunks,
@@ -167,6 +217,38 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
                     } {
                         return hybrid_error_for_helper(helper);
                     }
+                    end
+                }
+                _ => return hybrid_error_for_helper(helper),
+            }
+        }
+        StencilHelper::RustOptionStringBytes { output_offset, .. } => {
+            let Some(tag) = tail.first().copied() else {
+                return hybrid_error_for_helper(helper);
+            };
+            let output = unsafe { out.add(*output_offset) };
+            match tag {
+                STENCIL_OPTION_NONE_U8 => {
+                    unsafe { std::ptr::write(output.cast::<Option<String>>(), None) };
+                    1
+                }
+                STENCIL_OPTION_SOME_U8 => {
+                    if tail.len() < 5 {
+                        return hybrid_error_for_helper(helper);
+                    }
+                    let len = u32::from_le_bytes(tail[1..5].try_into().unwrap()) as usize;
+                    let Some(end) = 5usize.checked_add(len) else {
+                        return hybrid_error_for_helper(helper);
+                    };
+                    let Some(bytes) = tail.get(5..end) else {
+                        return hybrid_error_for_helper(helper);
+                    };
+                    let Ok(value) = std::str::from_utf8(bytes) else {
+                        return hybrid_error_for_helper(helper);
+                    };
+                    unsafe {
+                        std::ptr::write(output.cast::<Option<String>>(), Some(value.to_owned()))
+                    };
                     end
                 }
                 _ => return hybrid_error_for_helper(helper),
@@ -266,13 +348,52 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
 
 fn hybrid_error_for_helper(helper: &StencilHelper) -> usize {
     match helper {
-        StencilHelper::Decode { failure_index, .. }
-        | StencilHelper::LocalSequenceBytes { failure_index, .. }
+        StencilHelper::LocalSequenceBytes { failure_index, .. }
         | StencilHelper::LocalSequenceFixedElements { failure_index, .. }
+        | StencilHelper::RustSequenceBytes { failure_index, .. }
+        | StencilHelper::RustSequenceFixedElements { failure_index, .. }
         | StencilHelper::LocalOptionSequenceBytes { failure_index, .. }
+        | StencilHelper::RustOptionStringBytes { failure_index, .. }
         | StencilHelper::LocalEnum { failure_index, .. }
         | StencilHelper::Skip { failure_index, .. } => hybrid_error_for_failure(*failure_index),
     }
+}
+
+unsafe fn write_rust_sequence(
+    output: *mut u8,
+    layout: RustSequenceDecodeLayout,
+    bytes: &[u8],
+    element_count: usize,
+) -> bool {
+    let Some(expected_len) = layout.element_stride.checked_mul(element_count) else {
+        return false;
+    };
+    if expected_len != bytes.len() {
+        return false;
+    }
+
+    let ptr_value = if bytes.is_empty() {
+        layout.element_align
+    } else {
+        let Ok(alloc_layout) =
+            std::alloc::Layout::from_size_align(bytes.len(), layout.element_align)
+        else {
+            return false;
+        };
+        let ptr = unsafe { std::alloc::alloc(alloc_layout) };
+        if ptr.is_null() {
+            return false;
+        }
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()) };
+        ptr as usize
+    };
+
+    unsafe {
+        std::ptr::write(output.add(layout.ptr_offset).cast::<usize>(), ptr_value);
+        std::ptr::write(output.add(layout.len_offset).cast::<usize>(), element_count);
+        std::ptr::write(output.add(layout.cap_offset).cast::<usize>(), element_count);
+    }
+    true
 }
 
 fn run_fixed_decode_ops(ops: &[StencilOp], input: &[u8], output: &mut [u8]) -> bool {
@@ -697,47 +818,4 @@ pub(super) unsafe extern "C" fn stencil_encode_reserve(out: *mut Vec<u8>, len: u
         out.set_len(end);
     }
     ptr
-}
-
-pub(super) unsafe extern "C" fn stencil_decode_list_begin(
-    value: *mut u8,
-    shape: *const Shape,
-    count: usize,
-) -> *mut u8 {
-    let Some(shape) = (unsafe { shape.as_ref() }) else {
-        return std::ptr::null_mut();
-    };
-    let Def::List(list) = shape.def else {
-        return std::ptr::null_mut();
-    };
-    let Some(init) = list.init_in_place_with_capacity() else {
-        return std::ptr::null_mut();
-    };
-    let Some(as_mut_ptr) = list.as_mut_ptr_typed() else {
-        return std::ptr::null_mut();
-    };
-
-    let list_ptr = unsafe { init(PtrUninit::new(value), count) };
-    unsafe { as_mut_ptr(list_ptr) }
-}
-
-pub(super) unsafe extern "C" fn stencil_decode_list_finish(
-    value: *mut u8,
-    shape: *const Shape,
-    count: usize,
-) -> u32 {
-    let Some(shape) = (unsafe { shape.as_ref() }) else {
-        return 1;
-    };
-    let Def::List(list) = shape.def else {
-        return 1;
-    };
-    let Some(set_len) = list.set_len() else {
-        return 1;
-    };
-
-    unsafe {
-        set_len(PtrMut::new(value), count);
-    }
-    STENCIL_OK
 }

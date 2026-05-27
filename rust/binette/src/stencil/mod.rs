@@ -4,12 +4,12 @@ use std::mem::MaybeUninit;
 use std::ptr::{NonNull, copy_nonoverlapping};
 use std::slice;
 
-use facet_core::{Def, EnumRepr, EnumType, Facet, PtrConst, Shape, StructKind, Type, UserType};
+use facet_core::{Def, Facet, PtrConst, Shape, StructKind, Type, UserType};
 use facet_reflect::Peek;
 use thiserror::Error;
 
-use crate::compact::{CompactError, CompactReader};
-use crate::decode::{DecodeError, decode_plan_node_into_raw};
+use crate::compact::CompactError;
+use crate::decode::DecodeError;
 use crate::encode::{
     EncodeError, WriterFieldPlan, WriterNode, WriterPlan, WriterTupleElementPlan,
     WriterVariantPayloadPlan, WriterVariantPlan, encode_node_with_writer_node, writer_plan_for,
@@ -41,14 +41,13 @@ use self::aarch64::{
     status_for_failure,
 };
 use self::compile::{
-    CursorStencilCompiler, LocalDecodeStencilCompiler, LocalEncodeStencilCompiler,
-    LocalHybridDecodeStencilCompiler, StencilEncodeCompiler,
+    LocalDecodeStencilCompiler, LocalEncodeStencilCompiler, LocalHybridDecodeStencilCompiler,
+    StencilEncodeCompiler,
 };
 use self::memory::ExecutableMemory;
 use self::runtime::{
-    HYBRID_ERROR_FLAG, STENCIL_ENCODE_BYTES_BYTES, STENCIL_ENCODE_BYTES_STRING, STENCIL_OK,
-    STENCIL_OPTION_NONE, STENCIL_OPTION_SOME, hybrid_error_status, stencil_copy_bytes,
-    stencil_decode_helper, stencil_decode_list_begin, stencil_decode_list_finish,
+    STENCIL_ENCODE_BYTES_BYTES, STENCIL_ENCODE_BYTES_STRING, STENCIL_OK, STENCIL_OPTION_NONE,
+    STENCIL_OPTION_SOME, hybrid_error_status, stencil_copy_bytes, stencil_decode_helper,
     stencil_encode_byte_parts, stencil_encode_helper, stencil_encode_reserve,
     stencil_enum_variant_index, stencil_list_element, stencil_list_len, stencil_option_parts,
 };
@@ -56,8 +55,9 @@ use self::types::{
     ByteTaggedLength, CopyOp, CopyWidth, EncodeBytesKind, EncodeBytesLayout, EncodeEnumCase,
     EncodeEnumSelector, EncodeListLayout, EncodeOptionLayout, EncodeStencilOp, EnumCase,
     FixedEncodeCompiler, FixedEncodeSegment, HybridStencilOp, LengthCheck, LocalEnumDecodeCase,
-    LocalEnumDecodePayload, LocalEnumEncodeCase, LocalEnumEncodePayload, StencilEncodeHelper,
-    StencilEncodeRuntime, StencilFailure, StencilHelper, StencilOp, StencilRuntime, TaggedLength,
+    LocalEnumDecodePayload, LocalEnumEncodeCase, LocalEnumEncodePayload, RustSequenceDecodeLayout,
+    StencilEncodeHelper, StencilEncodeRuntime, StencilFailure, StencilHelper, StencilOp,
+    StencilRuntime, TaggedLength,
 };
 
 type FixedStencilFn = unsafe extern "C" fn(input: *const u8, len: usize, out: *mut u8) -> u32;
@@ -488,15 +488,7 @@ pub fn strict_stencil_decoder_from_plan<T: Facet<'static>>(
     plan: &ReaderPlan,
     writer_registry: &SchemaRegistry,
 ) -> Result<StencilDecoder<T>, StencilError> {
-    match fixed_stencil_decoder_from_plan(plan, writer_registry) {
-        Ok(decoder) => Ok(decoder),
-        Err(fixed_error) => {
-            if matches!(&fixed_error, StencilError::Unsupported { .. }) {
-                return cursor_stencil_decoder_from_plan(plan, writer_registry, false);
-            }
-            Err(fixed_error)
-        }
-    }
+    fixed_stencil_decoder_from_plan(plan, writer_registry)
 }
 
 // r[impl binette.compat.plan]
@@ -505,15 +497,13 @@ pub fn hybrid_stencil_decoder_from_plan<T: Facet<'static>>(
     plan: &ReaderPlan,
     writer_registry: &SchemaRegistry,
 ) -> Result<StencilDecoder<T>, StencilError> {
-    match strict_stencil_decoder_from_plan(plan, writer_registry) {
-        Ok(decoder) => Ok(decoder),
-        Err(strict_error) => {
-            if matches!(&strict_error, StencilError::Unsupported { .. }) {
-                return cursor_stencil_decoder_from_plan(plan, writer_registry, true);
-            }
-            Err(strict_error)
-        }
-    }
+    let descriptor = rust_facet_descriptor_for::<T>().map_err(|_| StencilError::Unsupported {
+        path: "$".to_owned(),
+        reason: "failed to build Rust local access descriptor for stencil compilation",
+    })?;
+    let empty_thunks = LocalThunkBindings::new();
+    hybrid_local_stencil_decoder_from_plan(plan, writer_registry, &descriptor, &empty_thunks)
+        .map(StencilDecoder::from_local)
 }
 
 // r[impl binette.mode.compact]
@@ -902,10 +892,12 @@ fn decode_helper_paths(helpers: &[StencilHelper], failures: &[StencilFailure]) -
     helpers
         .iter()
         .filter_map(|helper| match helper {
-            StencilHelper::Decode { failure_index, .. }
-            | StencilHelper::LocalSequenceBytes { failure_index, .. }
+            StencilHelper::LocalSequenceBytes { failure_index, .. }
             | StencilHelper::LocalSequenceFixedElements { failure_index, .. }
+            | StencilHelper::RustSequenceBytes { failure_index, .. }
+            | StencilHelper::RustSequenceFixedElements { failure_index, .. }
             | StencilHelper::LocalOptionSequenceBytes { failure_index, .. }
+            | StencilHelper::RustOptionStringBytes { failure_index, .. }
             | StencilHelper::LocalEnum { failure_index, .. }
             | StencilHelper::Skip { failure_index, .. } => helper_path(failures, *failure_index),
         })
@@ -956,10 +948,7 @@ fn hybrid_decode_native_op_count(ops: &[HybridStencilOp]) -> usize {
     ops.iter()
         .map(|op| match op {
             HybridStencilOp::Helper { .. } => 0,
-            HybridStencilOp::Copy { .. } => 1,
-            HybridStencilOp::List { element_ops, .. } => {
-                1 + hybrid_decode_native_op_count(element_ops)
-            }
+            HybridStencilOp::Copy { .. } | HybridStencilOp::Bool { .. } => 1,
         })
         .sum()
 }
@@ -1048,45 +1037,6 @@ fn fixed_stencil_decoder_from_plan<T: Facet<'static>>(
         Err(err) if !matches!(&err, StencilError::Unsupported { .. }) => Err(err),
         Err(err) => Err(err),
     }
-}
-
-fn cursor_stencil_decoder_from_plan<T: Facet<'static>>(
-    plan: &ReaderPlan,
-    writer_registry: &SchemaRegistry,
-    allow_helpers: bool,
-) -> Result<StencilDecoder<T>, StencilError> {
-    let mut compiler = CursorStencilCompiler {
-        writer_registry,
-        plan_nodes: plan.nodes(),
-        ops: Vec::new(),
-        helpers: Vec::new(),
-        failures: Vec::new(),
-        allow_helpers,
-    };
-    compiler.compile_root::<T>(&plan.root)?;
-    if !allow_helpers && !compiler.helpers.is_empty() {
-        return Err(StencilError::Unsupported {
-            path: "$".to_owned(),
-            reason: "strict decode stencil does not support helper fallbacks",
-        });
-    }
-
-    let code = generate_hybrid_code(&compiler.ops)?;
-    let report = decode_report(&code, &compiler.ops, &compiler.helpers, &compiler.failures);
-    let func = code.as_hybrid_fn();
-    Ok(StencilDecoder {
-        code,
-        entry: StencilEntry::Hybrid {
-            func,
-            runtime: Box::new(StencilRuntime {
-                writer_registry: writer_registry.clone(),
-                helpers: compiler.helpers,
-            }),
-        },
-        failures: compiler.failures,
-        report,
-        _marker: PhantomData,
-    })
 }
 
 pub fn decode_from_slice_with_stencil<T: Facet<'static>>(

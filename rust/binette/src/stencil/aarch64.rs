@@ -1,3 +1,4 @@
+use super::runtime::HYBRID_ERROR_FLAG;
 use super::*;
 use crate::layout::{option_string_layout, string_layout};
 
@@ -684,22 +685,16 @@ fn emit_hybrid_op_with_output_base(
             error_branches,
             output_base_register,
         )?,
-        HybridStencilOp::List {
-            shape,
+        HybridStencilOp::Bool {
             output_offset,
-            element_ops,
-            element_stride,
             failure_index,
-        } => {
-            let list = HybridListEmit {
-                shape,
-                output_offset: *output_offset,
-                element_ops,
-                element_stride: *element_stride,
-                failure_index: *failure_index,
-            };
-            emit_hybrid_list_op(code, list, error_branches)?;
-        }
+        } => emit_hybrid_bool_op(
+            code,
+            *output_offset,
+            *failure_index,
+            error_branches,
+            output_base_register,
+        )?,
     }
     Ok(())
 }
@@ -725,95 +720,49 @@ fn emit_hybrid_copy_op(
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-struct HybridListEmit<'a> {
-    shape: &'static Shape,
+fn emit_hybrid_bool_op(
+    code: &mut Vec<u8>,
     output_offset: usize,
-    element_ops: &'a [HybridStencilOp],
-    element_stride: usize,
     failure_index: usize,
+    error_branches: &mut Vec<HybridBranchFixup>,
+    output_base_register: u8,
+) -> Result<(), StencilError> {
+    emit_hybrid_check_available(code, 1, error_branches)?;
+    push_u32(code, add_x_register(24, 20, 23)?);
+    push_u32(code, patch_ldur_stur_imm9(AARCH64_LDURB_W9_X0, 0, "$bool")?);
+    let last = code.len() - 4;
+    patch_registers(&mut code[last..last + 4], 9, 24)?;
+    push_u32(code, AARCH64_CMP_W9_1);
+    let valid_branch = code.len();
+    push_u32(code, 0);
+    emit_hybrid_failure_block(code, failure_index, error_branches)?;
+    let valid = code.len();
+    let valid_word = patch_cond_branch_imm19(AARCH64_B_LS, valid_branch, valid)?;
+    code[valid_branch..valid_branch + 4].copy_from_slice(&valid_word.to_le_bytes());
+    push_u32(
+        code,
+        patch_ldur_stur_imm9(AARCH64_STURB_W9_X2, output_offset, "$bool")?,
+    );
+    let last = code.len() - 4;
+    patch_registers(&mut code[last..last + 4], 9, output_base_register)?;
+    push_u32(code, add_x_immediate(23, 23, 1, "$bool")?);
+    Ok(())
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-fn emit_hybrid_list_op(
+fn emit_hybrid_failure_block(
     code: &mut Vec<u8>,
-    list: HybridListEmit<'_>,
+    failure_index: usize,
     error_branches: &mut Vec<HybridBranchFixup>,
 ) -> Result<(), StencilError> {
-    emit_hybrid_check_available(code, 4, error_branches)?;
-    push_u32(code, add_x_register(24, 20, 23)?);
-    push_u32(code, ldur_w_register(25, 24, 0, "$list")?);
-    push_u32(code, add_x_immediate(23, 23, 4, "$list")?);
-
-    if list.output_offset == 0 {
-        push_u32(code, mov_x_register(0, 22)?);
-    } else {
-        push_u32(code, add_x_immediate(0, 22, list.output_offset, "$list")?);
-    }
-    emit_mov_x_immediate(code, 1, list.shape as *const Shape as usize as u64)?;
-    push_u32(code, mov_x_register(2, 25)?);
-    emit_mov_x_immediate(
-        code,
-        16,
-        stencil_decode_list_begin as *const () as usize as u64,
-    )?;
-    push_u32(code, AARCH64_BLR_X16);
-
-    let begin_succeeded_branch = code.len();
+    let status = HYBRID_ERROR_FLAG as u64 | u64::from(status_for_failure(failure_index)?);
+    emit_mov_x_immediate(code, 0, status)?;
+    let offset = code.len();
     push_u32(code, 0);
-    emit_hybrid_failure_block(code, list.failure_index, error_branches)?;
-    let begin_success = code.len();
-    let begin_succeeded_word =
-        patch_compare_zero_branch_imm19(AARCH64_CBNZ_X0, begin_succeeded_branch, begin_success)?;
-    code[begin_succeeded_branch..begin_succeeded_branch + 4]
-        .copy_from_slice(&begin_succeeded_word.to_le_bytes());
-
-    push_u32(code, mov_x_register(26, 0)?);
-    push_u32(code, mov_x_register(27, 26)?);
-    emit_mov_x_immediate(code, 28, 0)?;
-
-    let loop_check = code.len();
-    push_u32(code, cmp_x_register(28, 25)?);
-    let done_branch = code.len();
-    push_u32(code, 0);
-
-    for op in list.element_ops {
-        emit_hybrid_op_with_output_base(code, op, error_branches, 27)?;
-    }
-    if list.element_stride != 0 {
-        push_u32(code, add_x_immediate(27, 27, list.element_stride, "$list")?);
-    }
-    push_u32(code, add_x_immediate(28, 28, 1, "$list")?);
-    let continue_branch = code.len();
-    push_u32(code, 0);
-
-    let finish_offset = code.len();
-    let done_word = patch_cond_branch_imm19(AARCH64_B_EQ, done_branch, finish_offset)?;
-    code[done_branch..done_branch + 4].copy_from_slice(&done_word.to_le_bytes());
-    let continue_word = patch_uncond_branch_imm26(AARCH64_B, continue_branch, loop_check)?;
-    code[continue_branch..continue_branch + 4].copy_from_slice(&continue_word.to_le_bytes());
-
-    if list.output_offset == 0 {
-        push_u32(code, mov_x_register(0, 22)?);
-    } else {
-        push_u32(code, add_x_immediate(0, 22, list.output_offset, "$list")?);
-    }
-    emit_mov_x_immediate(code, 1, list.shape as *const Shape as usize as u64)?;
-    push_u32(code, mov_x_register(2, 25)?);
-    emit_mov_x_immediate(
-        code,
-        16,
-        stencil_decode_list_finish as *const () as usize as u64,
-    )?;
-    push_u32(code, AARCH64_BLR_X16);
-    push_u32(code, AARCH64_CMP_W0_0);
-    let finish_succeeded_branch = code.len();
-    push_u32(code, 0);
-    emit_hybrid_failure_block(code, list.failure_index, error_branches)?;
-    let finish_success = code.len();
-    let finish_succeeded_word =
-        patch_cond_branch_imm19(AARCH64_B_EQ, finish_succeeded_branch, finish_success)?;
-    code[finish_succeeded_branch..finish_succeeded_branch + 4]
-        .copy_from_slice(&finish_succeeded_word.to_le_bytes());
+    error_branches.push(HybridBranchFixup {
+        offset,
+        kind: HybridBranchKind::Uncond,
+    });
     Ok(())
 }
 
@@ -840,23 +789,6 @@ fn emit_hybrid_check_available(
     let success = code.len();
     let success_word = patch_cond_branch_imm19(AARCH64_B_LS, success_branch, success)?;
     code[success_branch..success_branch + 4].copy_from_slice(&success_word.to_le_bytes());
-    Ok(())
-}
-
-#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-fn emit_hybrid_failure_block(
-    code: &mut Vec<u8>,
-    failure_index: usize,
-    error_branches: &mut Vec<HybridBranchFixup>,
-) -> Result<(), StencilError> {
-    let status = HYBRID_ERROR_FLAG as u64 | u64::from(status_for_failure(failure_index)?);
-    emit_mov_x_immediate(code, 0, status)?;
-    let offset = code.len();
-    push_u32(code, 0);
-    error_branches.push(HybridBranchFixup {
-        offset,
-        kind: HybridBranchKind::Uncond,
-    });
     Ok(())
 }
 
@@ -2046,21 +1978,6 @@ fn stur_w_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, Ste
     }
     patch_ldur_stur_imm9(
         0xB800_0000 | (u32::from(rn) << 5) | u32::from(rt),
-        offset,
-        path,
-    )
-}
-
-#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-fn ldur_w_register(rt: u8, rn: u8, offset: usize, path: &str) -> Result<u32, StencilError> {
-    if rt > 31 || rn > 31 {
-        return Err(StencilError::Unsupported {
-            path: "$code".to_owned(),
-            reason: "stencil register index exceeds AArch64 range",
-        });
-    }
-    patch_ldur_stur_imm9(
-        0xB840_0000 | (u32::from(rn) << 5) | u32::from(rt),
         offset,
         path,
     )

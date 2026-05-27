@@ -1,7 +1,7 @@
 use super::*;
 use crate::hash::primitive_type_id;
 use crate::local_access::{
-    LocalAccess, LocalEnumTagThunks, LocalFieldDescriptor, LocalOptionEncodeThunks,
+    LocalAccess, LocalBackend, LocalEnumTagThunks, LocalFieldDescriptor, LocalOptionEncodeThunks,
     LocalOptionRepresentation, LocalOptionSequenceDecodeThunks, LocalScalarAccess, LocalSchemaRef,
     LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks,
     LocalSequenceFixedDecodeThunks, LocalSequenceStorage, LocalThunkBindings, LocalTypeDescriptor,
@@ -12,431 +12,10 @@ use crate::schema::TypeRef;
 
 pub(super) struct StencilCompiler<'registry> {
     pub(super) writer_registry: &'registry SchemaRegistry,
-    pub(super) plan_nodes: &'registry [PlanNode],
-    pub(super) ops: Vec<StencilOp>,
-    pub(super) failures: Vec<StencilFailure>,
     pub(super) input_offset: usize,
 }
 
 impl StencilCompiler<'_> {
-    fn compile_node(
-        &mut self,
-        reader_shape: &'static Shape,
-        reader_descriptor: &LocalTypeDescriptor,
-        node: &PlanNode,
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        match node {
-            PlanNode::Ref { node_index } => {
-                let node =
-                    self.plan_nodes
-                        .get(*node_index)
-                        .ok_or_else(|| StencilError::Unsupported {
-                            path: path.to_owned(),
-                            reason: "recursive reader plan node reference is out of range",
-                        })?;
-                self.compile_node(reader_shape, reader_descriptor, node, output_offset, path)
-            }
-            PlanNode::Primitive { primitive } => {
-                self.compile_primitive_read(*primitive, output_offset, path)
-            }
-            PlanNode::Struct { fields } => self.compile_struct_plan(
-                reader_shape,
-                reader_descriptor,
-                fields,
-                output_offset,
-                path,
-            ),
-            PlanNode::Tuple { elements } => self.compile_tuple_plan(
-                reader_shape,
-                reader_descriptor,
-                elements,
-                output_offset,
-                path,
-            ),
-            PlanNode::Array {
-                dimensions,
-                element,
-            } => self.compile_array_plan(
-                reader_shape,
-                reader_descriptor,
-                dimensions,
-                element,
-                output_offset,
-                path,
-            ),
-            PlanNode::Enum { variants } if output_offset == 0 => self
-                .compile_enum_root(reader_shape, reader_descriptor, variants, path)
-                .map(|_| ()),
-            PlanNode::External { .. } => Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "stencil external attachment decode is not implemented yet",
-            }),
-            _ => Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "first stencil backend only supports scalar structs, tuples, and root enums",
-            }),
-        }
-    }
-
-    // r[impl binette.compat.field-matching]
-    // r[impl binette.compat.skip-unknown]
-    fn compile_struct_plan(
-        &mut self,
-        reader_shape: &'static Shape,
-        reader_descriptor: &LocalTypeDescriptor,
-        fields: &[StructFieldPlan],
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let reader_fields = shape_struct_fields(reader_shape, path)?;
-        let descriptor_fields = local_struct_fields(reader_descriptor, path)?;
-        self.compile_struct_fields_plan(
-            reader_fields,
-            descriptor_fields,
-            fields,
-            output_offset,
-            path,
-        )
-    }
-
-    fn compile_struct_fields_plan(
-        &mut self,
-        reader_fields: &'static [facet_core::Field],
-        descriptor_fields: &[LocalFieldDescriptor],
-        fields: &[StructFieldPlan],
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        for field in fields {
-            match field {
-                StructFieldPlan::Read {
-                    reader_index,
-                    name,
-                    plan,
-                    ..
-                } => {
-                    let reader_field = reader_fields.get(*reader_index).ok_or_else(|| {
-                        StencilError::Unsupported {
-                            path: format!("{path}.{name}"),
-                            reason: "reader field index is out of range",
-                        }
-                    })?;
-                    let field_descriptor = local_reader_field_descriptor(
-                        descriptor_fields,
-                        *reader_index,
-                        name,
-                        path,
-                        "reader descriptor field index is out of range",
-                    )?;
-                    let field_offset = checked_offset(
-                        output_offset,
-                        local_direct_offset(&field_descriptor.access, path)?,
-                        path,
-                    )?;
-                    self.compile_read_plan(
-                        plan,
-                        reader_field.shape.get(),
-                        &field_descriptor.descriptor,
-                        field_offset,
-                        &format!("{path}.{name}"),
-                    )?;
-                }
-                StructFieldPlan::Skip {
-                    writer_type, name, ..
-                } => self.compile_skip(writer_type, &format!("{path}.{name}"))?,
-                StructFieldPlan::Default { name, .. } => {
-                    return Err(StencilError::Unsupported {
-                        path: format!("{path}.{name}"),
-                        reason: "default-filled reader fields require interpreter decode",
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn compile_tuple_plan(
-        &mut self,
-        reader_shape: &'static Shape,
-        reader_descriptor: &LocalTypeDescriptor,
-        elements: &[PlanNode],
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let reader_fields = shape_struct_fields(reader_shape, path)?;
-        let descriptor_fields = local_struct_fields(reader_descriptor, path)?;
-        if reader_fields.len() != elements.len() {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "stencil tuple element count differs from reader shape",
-            });
-        }
-        for (index, element) in elements.iter().enumerate() {
-            let reader_field = &reader_fields[index];
-            let field_descriptor = &descriptor_fields[index];
-            let field_offset = checked_offset(
-                output_offset,
-                local_direct_offset(&field_descriptor.access, path)?,
-                path,
-            )?;
-            self.compile_read_plan(
-                element,
-                reader_field.shape.get(),
-                &field_descriptor.descriptor,
-                field_offset,
-                &format!("{path}.{index}"),
-            )?;
-        }
-        Ok(())
-    }
-
-    // r[impl binette.aggregate.array]
-    fn compile_array_plan(
-        &mut self,
-        reader_shape: &'static Shape,
-        reader_descriptor: &LocalTypeDescriptor,
-        dimensions: &[u64],
-        element: &PlanNode,
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let (element_shape, count, stride) =
-            fixed_array_parts(reader_shape, dimensions, path, "reader array")?;
-        let (element_descriptor, descriptor_count, descriptor_stride) =
-            local_inline_fixed_array(reader_descriptor, path)?;
-        if descriptor_count != count || descriptor_stride != stride {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "reader array descriptor differs from Facet array layout",
-            });
-        }
-        for index in 0..count {
-            let element_output_offset =
-                checked_offset(output_offset, checked_mul(index, stride, path)?, path)?;
-            self.compile_read_plan(
-                element,
-                element_shape,
-                element_descriptor,
-                element_output_offset,
-                &format!("{path}[{index}]"),
-            )?;
-        }
-        Ok(())
-    }
-
-    // r[impl binette.compat.enum]
-    // r[impl binette.compat.enum.payload]
-    fn compile_enum_root(
-        &mut self,
-        reader_shape: &'static Shape,
-        reader_descriptor: &LocalTypeDescriptor,
-        variants: &[EnumVariantPlan],
-        path: &str,
-    ) -> Result<LengthCheck, StencilError> {
-        if self.input_offset != 0 || !self.ops.is_empty() {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "first stencil backend only supports enums at the root",
-            });
-        }
-
-        let enum_type = shape_enum_type(reader_shape, path)?;
-        if enum_type.enum_repr != EnumRepr::U8 {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "first stencil enum backend requires repr(u8) reader enums",
-            });
-        }
-
-        let input_offset = self.input_offset;
-        self.input_offset = checked_offset(self.input_offset, 4, path)?;
-        let unknown_failure_index = self.failures.len();
-        self.failures.push(StencilFailure::UnknownVariantIndex {
-            position: input_offset,
-        });
-
-        let mut cases = Vec::with_capacity(variants.len());
-        let mut bodies = Vec::new();
-        let mut lengths = Vec::new();
-
-        for variant in variants {
-            match variant {
-                EnumVariantPlan::Read {
-                    writer_index,
-                    reader_index,
-                    name,
-                    payload,
-                } => {
-                    let reader_variant =
-                        enum_type.variants.get(*reader_index).ok_or_else(|| {
-                            StencilError::Unsupported {
-                                path: format!("{path}.{name}"),
-                                reason: "reader enum variant index is out of range",
-                            }
-                        })?;
-                    let reader_discriminant =
-                        enum_discriminant_u8(reader_variant, &format!("{path}.{name}"))?;
-                    let local_variant =
-                        local_reader_enum_variant(reader_descriptor, *reader_index, name, path)?;
-                    let (body, expected) =
-                        self.compile_branch_body(input_offset + 4, |compiler| {
-                            compiler.compile_enum_payload_plan(
-                                reader_variant.data.fields,
-                                local_variant.payload.as_deref(),
-                                payload,
-                                &format!("{path}.{name}"),
-                            )
-                        })?;
-                    let body_index = bodies.len();
-                    bodies.push(body);
-                    lengths.push(TaggedLength {
-                        variant_index: *writer_index,
-                        expected,
-                    });
-                    cases.push(EnumCase {
-                        writer_index: *writer_index,
-                        reader_discriminant: Some(reader_discriminant),
-                        body_index: Some(body_index),
-                        failure_index: None,
-                    });
-                }
-                EnumVariantPlan::Reject { writer_index, name } => {
-                    let failure_index = self.failures.len();
-                    self.failures.push(StencilFailure::UnreadableWriterVariant {
-                        position: input_offset,
-                        variant_index: *writer_index,
-                        variant: name.clone(),
-                    });
-                    cases.push(EnumCase {
-                        writer_index: *writer_index,
-                        reader_discriminant: None,
-                        body_index: None,
-                        failure_index: Some(failure_index),
-                    });
-                }
-            }
-        }
-
-        self.ops.push(StencilOp::RootEnum {
-            input_offset,
-            tag_output_offset: 0,
-            cases,
-            bodies,
-            unknown_failure_index,
-        });
-
-        Ok(LengthCheck::RootU32Tag {
-            position: input_offset,
-            cases: lengths,
-        })
-    }
-
-    fn compile_branch_body(
-        &mut self,
-        input_offset: usize,
-        compile: impl FnOnce(&mut Self) -> Result<(), StencilError>,
-    ) -> Result<(Vec<StencilOp>, usize), StencilError> {
-        let parent_ops = std::mem::take(&mut self.ops);
-        let parent_input_offset = self.input_offset;
-        self.input_offset = input_offset;
-
-        let result = compile(self);
-        let body_ops = std::mem::take(&mut self.ops);
-        let body_input_offset = self.input_offset;
-        self.ops = parent_ops;
-        self.input_offset = parent_input_offset;
-
-        result?;
-        Ok((body_ops, body_input_offset))
-    }
-
-    fn compile_enum_payload_plan(
-        &mut self,
-        reader_fields: &'static [facet_core::Field],
-        payload_descriptor: Option<&LocalTypeDescriptor>,
-        payload: &EnumPayloadPlan,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        match payload {
-            EnumPayloadPlan::Unit => Ok(()),
-            EnumPayloadPlan::Newtype(element) => {
-                let reader_field =
-                    reader_fields
-                        .first()
-                        .ok_or_else(|| StencilError::Unsupported {
-                            path: path.to_owned(),
-                            reason: "newtype enum payload is missing reader field",
-                        })?;
-                let payload_descriptor =
-                    payload_descriptor.ok_or_else(|| StencilError::Unsupported {
-                        path: path.to_owned(),
-                        reason: "newtype enum payload is missing local descriptor",
-                    })?;
-                self.compile_read_plan(
-                    element,
-                    reader_field.shape.get(),
-                    payload_descriptor,
-                    reader_field.offset,
-                    path,
-                )
-            }
-            EnumPayloadPlan::Tuple(elements) => {
-                if reader_fields.len() != elements.len() {
-                    return Err(StencilError::Unsupported {
-                        path: path.to_owned(),
-                        reason: "tuple enum payload arity differs from reader shape",
-                    });
-                }
-                let descriptor_fields = local_struct_fields(
-                    payload_descriptor.ok_or_else(|| StencilError::Unsupported {
-                        path: path.to_owned(),
-                        reason: "tuple enum payload is missing local descriptor",
-                    })?,
-                    path,
-                )?;
-                for (index, element) in elements.iter().enumerate() {
-                    let reader_field = &reader_fields[index];
-                    let field_descriptor = &descriptor_fields[index];
-                    self.compile_read_plan(
-                        element,
-                        reader_field.shape.get(),
-                        &field_descriptor.descriptor,
-                        local_direct_offset(&field_descriptor.access, path)?,
-                        &format!("{path}.{index}"),
-                    )?;
-                }
-                Ok(())
-            }
-            EnumPayloadPlan::Struct(fields) => {
-                let descriptor_fields = local_struct_fields(
-                    payload_descriptor.ok_or_else(|| StencilError::Unsupported {
-                        path: path.to_owned(),
-                        reason: "struct enum payload is missing local descriptor",
-                    })?,
-                    path,
-                )?;
-                self.compile_struct_fields_plan(reader_fields, descriptor_fields, fields, 0, path)
-            }
-        }
-    }
-
-    fn compile_read_plan(
-        &mut self,
-        node: &PlanNode,
-        reader_shape: &'static Shape,
-        reader_descriptor: &LocalTypeDescriptor,
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        self.compile_node(reader_shape, reader_descriptor, node, output_offset, path)
-    }
-
-    fn compile_skip(&mut self, type_ref: &TypeRef, path: &str) -> Result<(), StencilError> {
-        self.compile_skip_type(type_ref, path)
-    }
-
     fn compile_skip_type(&mut self, type_ref: &TypeRef, path: &str) -> Result<(), StencilError> {
         if let Some(primitive) = primitive_for_plain_type_ref(type_ref) {
             return self.compile_primitive_skip(primitive, path);
@@ -478,76 +57,17 @@ impl StencilCompiler<'_> {
         }
     }
 
-    fn compile_primitive_read(
-        &mut self,
-        primitive: Primitive,
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        if primitive == Primitive::Bool {
-            return self.emit_bool(path, Some(output_offset));
-        }
-
-        let Some(widths) = primitive_widths(primitive) else {
-            return Err(unsupported_primitive(path, primitive));
-        };
-        self.emit_primitive_copies(path, output_offset, widths)
-    }
-
     fn compile_primitive_skip(
         &mut self,
         primitive: Primitive,
         path: &str,
     ) -> Result<(), StencilError> {
-        if primitive == Primitive::Bool {
-            return self.emit_bool(path, None);
-        }
-
         let Some(widths) = primitive_widths(primitive) else {
             return Err(unsupported_primitive(path, primitive));
         };
         for width in widths {
             self.input_offset = checked_offset(self.input_offset, width.bytes(), path)?;
         }
-        Ok(())
-    }
-
-    // r[impl binette.scalar.unsigned]
-    // r[impl binette.scalar.signed]
-    // r[impl binette.scalar.float]
-    fn emit_primitive_copies(
-        &mut self,
-        path: &str,
-        output_offset: usize,
-        widths: &'static [CopyWidth],
-    ) -> Result<(), StencilError> {
-        let mut output_offset = output_offset;
-        for width in widths {
-            self.ops.push(StencilOp::Copy(CopyOp {
-                input_offset: self.input_offset,
-                output_offset,
-                width: *width,
-            }));
-            self.input_offset = checked_offset(self.input_offset, width.bytes(), path)?;
-            output_offset = checked_offset(output_offset, width.bytes(), path)?;
-        }
-        Ok(())
-    }
-
-    // r[impl binette.scalar.bool]
-    fn emit_bool(&mut self, path: &str, output_offset: Option<usize>) -> Result<(), StencilError> {
-        let input_offset = self.input_offset;
-        let failure_index = self.failures.len();
-        self.failures.push(StencilFailure::InvalidBool {
-            path: path.to_owned(),
-            position: input_offset,
-        });
-        self.ops.push(StencilOp::Bool {
-            input_offset,
-            output_offset,
-            failure_index,
-        });
-        self.input_offset = checked_offset(self.input_offset, 1, path)?;
         Ok(())
     }
 
@@ -1239,6 +759,9 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
             PlanNode::Primitive {
                 primitive: primitive @ (Primitive::String | Primitive::Bytes | Primitive::Payload),
             } => self.push_sequence_bytes(reader, *primitive, output_offset, path),
+            PlanNode::Primitive {
+                primitive: Primitive::Bool,
+            } => self.push_bool(reader, output_offset, path),
             PlanNode::Struct { fields } => self.compile_struct(reader, fields, output_offset, path),
             PlanNode::Tuple { elements } => {
                 self.compile_tuple(reader, elements, output_offset, path)
@@ -1265,6 +788,21 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
                 self.push_constructed_enum(reader, variants, output_offset, path)
             }
         }
+    }
+
+    fn push_bool(
+        &mut self,
+        reader: &LocalTypeDescriptor,
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        validate_descriptor_primitive(reader, Primitive::Bool, path)?;
+        let failure_index = self.push_helper_failure(path)?;
+        self.ops.push(HybridStencilOp::Bool {
+            output_offset,
+            failure_index,
+        });
+        Ok(())
     }
 
     // r[impl binette.compat.field-matching]
@@ -1392,6 +930,19 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
         output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
+        if let Some(layout) = local_rust_byte_sequence_decode_layout(reader, primitive, path)? {
+            let failure_index = self.push_helper_failure(path)?;
+            let helper_index = self.helpers.len();
+            self.helpers.push(StencilHelper::RustSequenceBytes {
+                output_offset,
+                layout,
+                primitive,
+                failure_index,
+            });
+            self.ops.push(HybridStencilOp::Helper { helper_index });
+            return Ok(());
+        }
+
         let thunks = local_sequence_decode_thunks(reader, primitive, self.thunks, path)?;
         let failure_index = self.push_helper_failure(path)?;
         let helper_index = self.helpers.len();
@@ -1411,6 +962,29 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
         output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
+        if let Some((element_descriptor, layout)) = local_rust_sequence_decode_layout(reader, path)?
+        {
+            let (element_ops, element_input_len) = fixed_local_decode_ops(
+                self.writer_registry,
+                self.plan_nodes,
+                element,
+                element_descriptor,
+                0,
+                &format!("{path}[]"),
+            )?;
+            let failure_index = self.push_helper_failure(path)?;
+            let helper_index = self.helpers.len();
+            self.helpers.push(StencilHelper::RustSequenceFixedElements {
+                output_offset,
+                layout,
+                element_ops,
+                element_input_len,
+                failure_index,
+            });
+            self.ops.push(HybridStencilOp::Helper { helper_index });
+            return Ok(());
+        }
+
         let (element_descriptor, element_stride, thunks) =
             local_sequence_fixed_decode_thunks(reader, self.thunks, path)?;
         let (element_ops, element_input_len) = fixed_local_decode_ops(
@@ -1538,7 +1112,13 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
     }
 
     fn push_fixed_skip(&mut self, writer_type: &TypeRef, path: &str) -> Result<(), StencilError> {
-        let input_len = fixed_skip_len(self.writer_registry, writer_type, path)?;
+        let input_len = match fixed_skip_len(self.writer_registry, writer_type, path) {
+            Ok(input_len) => input_len,
+            Err(StencilError::Unsupported { .. }) => {
+                return self.push_skip_helper(writer_type, path);
+            }
+            Err(err) => return Err(err),
+        };
         if input_len == 0 {
             return Ok(());
         }
@@ -1548,6 +1128,17 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
             input_len,
             failure_index,
         });
+        Ok(())
+    }
+
+    fn push_skip_helper(&mut self, writer_type: &TypeRef, path: &str) -> Result<(), StencilError> {
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilHelper::Skip {
+            writer_type: writer_type.clone(),
+            failure_index,
+        });
+        self.ops.push(HybridStencilOp::Helper { helper_index });
         Ok(())
     }
 
@@ -1567,6 +1158,17 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
                 reason: "local option thunk decode currently supports byte-sequence payloads",
             });
         };
+        if local_rust_option_string_decode(reader, *primitive, path)? {
+            let failure_index = self.push_helper_failure(path)?;
+            let helper_index = self.helpers.len();
+            self.helpers.push(StencilHelper::RustOptionStringBytes {
+                output_offset,
+                failure_index,
+            });
+            self.ops.push(HybridStencilOp::Helper { helper_index });
+            return Ok(());
+        }
+
         let thunks =
             local_option_sequence_bytes_decode_thunks(reader, *primitive, self.thunks, path)?;
         let failure_index = self.push_helper_failure(path)?;
@@ -1574,378 +1176,6 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
         self.helpers.push(StencilHelper::LocalOptionSequenceBytes {
             output_offset,
             thunks,
-            failure_index,
-        });
-        self.ops.push(HybridStencilOp::Helper { helper_index });
-        Ok(())
-    }
-
-    fn push_helper_failure(&mut self, path: &str) -> Result<usize, StencilError> {
-        let failure_index = self.failures.len();
-        let _ = status_for_failure(failure_index)?;
-        self.failures.push(StencilFailure::Helper {
-            path: path.to_owned(),
-        });
-        Ok(failure_index)
-    }
-}
-
-pub(super) struct CursorStencilCompiler<'registry> {
-    pub(super) writer_registry: &'registry SchemaRegistry,
-    pub(super) plan_nodes: &'registry [PlanNode],
-    pub(super) ops: Vec<HybridStencilOp>,
-    pub(super) helpers: Vec<StencilHelper>,
-    pub(super) failures: Vec<StencilFailure>,
-    pub(super) allow_helpers: bool,
-}
-
-impl CursorStencilCompiler<'_> {
-    pub(super) fn compile_root<T: Facet<'static>>(
-        &mut self,
-        root: &PlanNode,
-    ) -> Result<(), StencilError> {
-        let reader = rust_facet_descriptor(T::SHAPE, "$")?;
-        self.compile_node(T::SHAPE, &reader, root, 0, "$")
-    }
-
-    // r[impl binette.compat.field-matching]
-    // r[impl binette.compat.skip-unknown]
-    fn compile_struct(
-        &mut self,
-        reader_shape: &'static Shape,
-        reader_descriptor: &LocalTypeDescriptor,
-        fields: &[StructFieldPlan],
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let reader_fields = shape_struct_fields(reader_shape, path)?;
-        let descriptor_fields = local_struct_fields(reader_descriptor, path)?;
-        for field in fields {
-            match field {
-                StructFieldPlan::Read {
-                    reader_index,
-                    name,
-                    plan,
-                    ..
-                } => {
-                    let reader_field = reader_fields.get(*reader_index).ok_or_else(|| {
-                        StencilError::Unsupported {
-                            path: format!("{path}.{name}"),
-                            reason: "reader field index is out of range",
-                        }
-                    })?;
-                    let field_descriptor = local_reader_field_descriptor(
-                        descriptor_fields,
-                        *reader_index,
-                        name,
-                        path,
-                        "reader descriptor field index is out of range",
-                    )?;
-                    let field_offset = checked_offset(
-                        output_offset,
-                        local_direct_offset(&field_descriptor.access, path)?,
-                        path,
-                    )?;
-                    self.compile_node(
-                        reader_field.shape.get(),
-                        &field_descriptor.descriptor,
-                        plan,
-                        field_offset,
-                        &format!("{path}.{name}"),
-                    )?;
-                }
-                StructFieldPlan::Skip {
-                    writer_type, name, ..
-                } => self.push_fixed_skip(writer_type, &format!("{path}.{name}"))?,
-                StructFieldPlan::Default { name, .. } => {
-                    return Err(StencilError::Unsupported {
-                        path: format!("{path}.{name}"),
-                        reason: "default-filled reader fields require interpreter encode",
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn compile_node(
-        &mut self,
-        reader_shape: &'static Shape,
-        reader_descriptor: &LocalTypeDescriptor,
-        node: &PlanNode,
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let result = match node {
-            PlanNode::Ref { node_index } => {
-                let node =
-                    self.plan_nodes
-                        .get(*node_index)
-                        .ok_or_else(|| StencilError::Unsupported {
-                            path: path.to_owned(),
-                            reason: "recursive reader plan node reference is out of range",
-                        })?;
-                self.compile_node(reader_shape, reader_descriptor, node, output_offset, path)
-            }
-            PlanNode::List { element } => self.push_list(
-                reader_shape,
-                reader_descriptor,
-                element,
-                output_offset,
-                path,
-            ),
-            PlanNode::Struct { fields } => {
-                self.compile_struct(reader_shape, reader_descriptor, fields, output_offset, path)
-            }
-            PlanNode::Tuple { elements } => self.compile_tuple(
-                reader_shape,
-                reader_descriptor,
-                elements,
-                output_offset,
-                path,
-            ),
-            PlanNode::Array {
-                dimensions,
-                element,
-            } => self.compile_array(
-                reader_shape,
-                reader_descriptor,
-                dimensions,
-                element,
-                output_offset,
-                path,
-            ),
-            _ => self.push_fixed_copy(node, reader_shape, reader_descriptor, output_offset, path),
-        };
-        match result {
-            Ok(()) => Ok(()),
-            Err(StencilError::Unsupported { .. }) if self.allow_helpers => {
-                self.push_decode_helper(node, reader_shape, output_offset, path)
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    fn compile_tuple(
-        &mut self,
-        reader_shape: &'static Shape,
-        reader_descriptor: &LocalTypeDescriptor,
-        elements: &[PlanNode],
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let reader_fields = shape_struct_fields(reader_shape, path)?;
-        let descriptor_fields = local_struct_fields(reader_descriptor, path)?;
-        if reader_fields.len() != elements.len() {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "cursor tuple element count differs from reader shape",
-            });
-        }
-        for (index, element) in elements.iter().enumerate() {
-            let reader_field = &reader_fields[index];
-            let field_descriptor = &descriptor_fields[index];
-            let element_offset = checked_offset(
-                output_offset,
-                local_direct_offset(&field_descriptor.access, path)?,
-                path,
-            )?;
-            self.compile_node(
-                reader_field.shape.get(),
-                &field_descriptor.descriptor,
-                element,
-                element_offset,
-                &format!("{path}.{index}"),
-            )?;
-        }
-        Ok(())
-    }
-
-    // r[impl binette.aggregate.array]
-    fn compile_array(
-        &mut self,
-        reader_shape: &'static Shape,
-        reader_descriptor: &LocalTypeDescriptor,
-        dimensions: &[u64],
-        element: &PlanNode,
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let (element_shape, count, stride) =
-            fixed_array_parts(reader_shape, dimensions, path, "reader array")?;
-        let (element_descriptor, descriptor_count, descriptor_stride) =
-            local_inline_fixed_array(reader_descriptor, path)?;
-        if descriptor_count != count || descriptor_stride != stride {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "reader array descriptor differs from Facet array layout",
-            });
-        }
-        for index in 0..count {
-            let element_offset =
-                checked_offset(output_offset, checked_mul(index, stride, path)?, path)?;
-            self.compile_node(
-                element_shape,
-                element_descriptor,
-                element,
-                element_offset,
-                &format!("{path}[{index}]"),
-            )?;
-        }
-        Ok(())
-    }
-
-    // r[impl binette.aggregate.list]
-    fn push_list(
-        &mut self,
-        reader_shape: &'static Shape,
-        reader_descriptor: &LocalTypeDescriptor,
-        element: &PlanNode,
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let Def::List(list) = reader_shape.def else {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "reader list stencil requires Facet list shape",
-            });
-        };
-        if list.init_in_place_with_capacity().is_none()
-            || list.as_mut_ptr_typed().is_none()
-            || list.set_len().is_none()
-        {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "reader list shape does not expose direct-fill operations",
-            });
-        }
-
-        let element_shape = list.t();
-        let (element_descriptor, element_stride) = local_sequence_element(reader_descriptor, path)?;
-        let element_ops =
-            self.compile_list_element(element_shape, element_descriptor, element, path)?;
-        let failure_index = self.push_helper_failure(path)?;
-        self.ops.push(HybridStencilOp::List {
-            shape: reader_shape,
-            output_offset,
-            element_ops,
-            element_stride,
-            failure_index,
-        });
-        Ok(())
-    }
-
-    fn compile_list_element(
-        &mut self,
-        element_shape: &'static Shape,
-        element_descriptor: &LocalTypeDescriptor,
-        element: &PlanNode,
-        path: &str,
-    ) -> Result<Vec<HybridStencilOp>, StencilError> {
-        let root_ops = std::mem::take(&mut self.ops);
-        let helpers_len = self.helpers.len();
-        let failures_len = self.failures.len();
-        let element_result = self.compile_node(
-            element_shape,
-            element_descriptor,
-            element,
-            0,
-            &format!("{path}[]"),
-        );
-        let element_ops = std::mem::replace(&mut self.ops, root_ops);
-        if let Err(err) = element_result {
-            self.helpers.truncate(helpers_len);
-            self.failures.truncate(failures_len);
-            return Err(err);
-        }
-        if element_ops
-            .iter()
-            .any(|op| matches!(op, HybridStencilOp::List { .. }))
-        {
-            self.helpers.truncate(helpers_len);
-            self.failures.truncate(failures_len);
-            return Err(StencilError::Unsupported {
-                path: format!("{path}[]"),
-                reason: "cursor list decode does not support nested native list loops yet",
-            });
-        }
-        Ok(element_ops)
-    }
-
-    fn push_fixed_copy(
-        &mut self,
-        node: &PlanNode,
-        reader_shape: &'static Shape,
-        reader_descriptor: &LocalTypeDescriptor,
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let (ops, input_len) = fixed_copy_ops(
-            self.writer_registry,
-            self.plan_nodes,
-            node,
-            reader_shape,
-            reader_descriptor,
-            output_offset,
-            path,
-        )?;
-        if input_len == 0 && ops.is_empty() {
-            return Ok(());
-        }
-        let failure_index = self.push_helper_failure(path)?;
-        self.ops.push(HybridStencilOp::Copy {
-            ops,
-            input_len,
-            failure_index,
-        });
-        Ok(())
-    }
-
-    fn push_fixed_skip(&mut self, writer_type: &TypeRef, path: &str) -> Result<(), StencilError> {
-        let input_len = match fixed_skip_len(self.writer_registry, writer_type, path) {
-            Ok(input_len) => input_len,
-            Err(StencilError::Unsupported { .. }) if self.allow_helpers => {
-                return self.push_skip_helper(writer_type, path);
-            }
-            Err(err) => return Err(err),
-        };
-        if input_len == 0 {
-            return Ok(());
-        }
-        let failure_index = self.push_helper_failure(path)?;
-        self.ops.push(HybridStencilOp::Copy {
-            ops: Vec::new(),
-            input_len,
-            failure_index,
-        });
-        Ok(())
-    }
-
-    fn push_decode_helper(
-        &mut self,
-        plan: &PlanNode,
-        reader_shape: &'static Shape,
-        output_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let failure_index = self.push_helper_failure(path)?;
-        let helper_index = self.helpers.len();
-        self.helpers.push(StencilHelper::Decode {
-            plan: plan.clone(),
-            plan_nodes: self.plan_nodes.to_vec(),
-            reader_shape,
-            output_offset,
-            failure_index,
-        });
-        self.ops.push(HybridStencilOp::Helper { helper_index });
-        Ok(())
-    }
-
-    fn push_skip_helper(&mut self, writer_type: &TypeRef, path: &str) -> Result<(), StencilError> {
-        let failure_index = self.push_helper_failure(path)?;
-        let helper_index = self.helpers.len();
-        self.helpers.push(StencilHelper::Skip {
-            writer_type: writer_type.clone(),
             failure_index,
         });
         self.ops.push(HybridStencilOp::Helper { helper_index });
@@ -4140,6 +3370,69 @@ fn local_sequence_decode_thunks(
         })
 }
 
+fn local_rust_byte_sequence_decode_layout(
+    descriptor: &LocalTypeDescriptor,
+    primitive: Primitive,
+    path: &str,
+) -> Result<Option<RustSequenceDecodeLayout>, StencilError> {
+    if descriptor.backend != LocalBackend::RustFacet {
+        return Ok(None);
+    }
+    let storage = local_byte_sequence_storage(
+        descriptor,
+        primitive,
+        path,
+        "local descriptor is not a byte sequence",
+    )?;
+    rust_direct_sequence_decode_layout(storage, 1, path)
+}
+
+fn local_rust_sequence_decode_layout<'a>(
+    descriptor: &'a LocalTypeDescriptor,
+    path: &str,
+) -> Result<Option<(&'a LocalTypeDescriptor, RustSequenceDecodeLayout)>, StencilError> {
+    if descriptor.backend != LocalBackend::RustFacet {
+        return Ok(None);
+    }
+    let LocalTypeKind::Sequence { element, storage } = &descriptor.kind else {
+        return Ok(None);
+    };
+    let Some(layout) = rust_direct_sequence_decode_layout(storage, element.layout.align, path)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some((element, layout)))
+}
+
+fn rust_direct_sequence_decode_layout(
+    storage: &LocalSequenceStorage,
+    element_align: usize,
+    path: &str,
+) -> Result<Option<RustSequenceDecodeLayout>, StencilError> {
+    let LocalSequenceStorage::DirectContiguous {
+        pointer: LocalAccess::Direct { offset: ptr_offset },
+        length: LocalAccess::Direct { offset: len_offset },
+        capacity: Some(LocalAccess::Direct { offset: cap_offset }),
+        element_stride,
+    } = storage
+    else {
+        return Ok(None);
+    };
+    if element_align == 0 || !element_align.is_power_of_two() {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "Rust sequence element alignment is not valid",
+        });
+    }
+    Ok(Some(RustSequenceDecodeLayout {
+        ptr_offset: *ptr_offset,
+        len_offset: *len_offset,
+        cap_offset: *cap_offset,
+        element_stride: *element_stride,
+        element_align,
+    }))
+}
+
 fn local_sequence_fixed_decode_thunks<'a>(
     descriptor: &'a LocalTypeDescriptor,
     bindings: &LocalThunkBindings,
@@ -4175,6 +3468,27 @@ fn local_sequence_fixed_decode_thunks<'a>(
                 reason: "local fixed-element sequence decode thunk is not bound",
             })?;
     Ok((element, element.layout.stride, thunks))
+}
+
+fn local_rust_option_string_decode(
+    descriptor: &LocalTypeDescriptor,
+    primitive: Primitive,
+    path: &str,
+) -> Result<bool, StencilError> {
+    if descriptor.backend != LocalBackend::RustFacet || primitive != Primitive::String {
+        return Ok(false);
+    }
+    let (some, representation) = local_option_descriptor(descriptor, path)?;
+    local_byte_sequence_storage(
+        some,
+        primitive,
+        &format!("{path}.some"),
+        "local option byte-sequence payload is not a byte sequence",
+    )?;
+    Ok(matches!(
+        representation,
+        LocalOptionRepresentation::NicheString { .. }
+    ))
 }
 
 fn local_option_sequence_bytes_encode_thunks(
@@ -4424,27 +3738,6 @@ fn local_enum_variant<'a>(
         })
 }
 
-fn local_reader_enum_variant<'a>(
-    descriptor: &'a LocalTypeDescriptor,
-    index: usize,
-    name: &str,
-    path: &str,
-) -> Result<&'a crate::local_access::LocalVariantDescriptor, StencilError> {
-    let LocalTypeKind::Enum { variants, .. } = &descriptor.kind else {
-        return Err(StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "local descriptor is not an enum layout",
-        });
-    };
-    local_reader_variant_descriptor(
-        variants,
-        index,
-        name,
-        path,
-        "local descriptor enum variant index is out of range",
-    )
-}
-
 fn shape_struct_fields(
     shape: &'static Shape,
     path: &str,
@@ -4468,16 +3761,6 @@ fn shape_struct_fields(
             reason: "unit struct stencil decode is not implemented yet",
         }),
     }
-}
-
-fn shape_enum_type(shape: &'static Shape, path: &str) -> Result<EnumType, StencilError> {
-    let Type::User(UserType::Enum(enum_type)) = shape.ty else {
-        return Err(StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "reader shape is not an enum",
-        });
-    };
-    Ok(enum_type)
 }
 
 fn fixed_array_parts(
@@ -4525,19 +3808,6 @@ fn dimensions_element_count(dimensions: &[u64], path: &str) -> Result<usize, Ste
     })
 }
 
-fn enum_discriminant_u8(variant: &facet_core::Variant, path: &str) -> Result<u8, StencilError> {
-    let discriminant = variant
-        .discriminant
-        .ok_or_else(|| StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "reader enum variant is missing a discriminant",
-        })?;
-    u8::try_from(discriminant).map_err(|_| StencilError::Unsupported {
-        path: path.to_owned(),
-        reason: "reader enum discriminant does not fit repr(u8)",
-    })
-}
-
 fn checked_offset(offset: usize, width: usize, path: &str) -> Result<usize, StencilError> {
     offset
         .checked_add(width)
@@ -4556,38 +3826,6 @@ fn copy_ops_from_stencil_ops(ops: &[StencilOp]) -> Option<Vec<CopyOp>> {
             }
         })
         .collect()
-}
-
-fn fixed_copy_ops(
-    writer_registry: &SchemaRegistry,
-    plan_nodes: &[PlanNode],
-    node: &PlanNode,
-    reader_shape: &'static Shape,
-    reader_descriptor: &LocalTypeDescriptor,
-    output_offset: usize,
-    path: &str,
-) -> Result<(Vec<CopyOp>, usize), StencilError> {
-    let mut compiler = StencilCompiler {
-        writer_registry,
-        plan_nodes,
-        ops: Vec::new(),
-        failures: Vec::new(),
-        input_offset: 0,
-    };
-    compiler.compile_node(reader_shape, reader_descriptor, node, output_offset, path)?;
-    if !compiler.failures.is_empty() {
-        return Err(StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "cursor decode currently supports only infallible fixed-copy stencils",
-        });
-    }
-    let Some(ops) = copy_ops_from_stencil_ops(&compiler.ops) else {
-        return Err(StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "cursor decode currently supports only fixed-copy stencils",
-        });
-    };
-    Ok((ops, compiler.input_offset))
 }
 
 fn fixed_local_copy_ops(
@@ -4657,18 +3895,9 @@ fn fixed_skip_len(
 ) -> Result<usize, StencilError> {
     let mut compiler = StencilCompiler {
         writer_registry,
-        plan_nodes: &[],
-        ops: Vec::new(),
-        failures: Vec::new(),
         input_offset: 0,
     };
     compiler.compile_skip_type(writer_type, path)?;
-    if !compiler.failures.is_empty() || copy_ops_from_stencil_ops(&compiler.ops).is_none() {
-        return Err(StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "cursor decode currently supports only infallible fixed-copy skips",
-        });
-    }
     Ok(compiler.input_offset)
 }
 
