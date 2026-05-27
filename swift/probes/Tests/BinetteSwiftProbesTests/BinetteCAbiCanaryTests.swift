@@ -8,11 +8,9 @@ private enum Message: Equatable {
     case Bye(UInt32)
 }
 
-private struct VoxLikeChannel {
-    var raw: UInt64
-}
+private struct VoxLikeChannel: Equatable {}
 
-private struct VoxLikeRequest {
+private struct VoxLikeRequest: Equatable {
     var title: String
     var payload: [UInt8]
     var retry: UInt16?
@@ -63,7 +61,38 @@ final class BinetteCAbiCanaryTests: XCTestCase {
     // r[verify binette.local-access.swift-probes+2]
     func testVoxLikeSwiftDescriptorTreeImportsThroughCAbi() throws {
         let handle = try importVoxLikeRequestDescriptor()
-        binette_local_descriptor_free(handle)
+        defer { binette_local_descriptor_free(handle) }
+        let schemaBundle = try syntheticSchemaBundle(handle: handle)
+        defer { binette_byte_buffer_free(schemaBundle) }
+
+        for value in [
+            VoxLikeRequest(
+                title: "hello from vox-ish swift",
+                payload: [0, 1, 2, 3, 255],
+                retry: 0xCAFE,
+                stream: VoxLikeChannel()
+            ),
+            VoxLikeRequest(
+                title: "none branch",
+                payload: [],
+                retry: nil,
+                stream: VoxLikeChannel()
+            ),
+        ] {
+            let encoded = try encodeVoxLikeRequest(
+                handle: handle,
+                schemaBundle: schemaBundle,
+                value
+            )
+            defer { binette_byte_buffer_free(encoded) }
+
+            let decoded = try decodeVoxLikeRequest(
+                handle: handle,
+                schemaBundle: schemaBundle,
+                bytes: encoded
+            )
+            XCTAssertEqual(decoded, value)
+        }
     }
 }
 
@@ -193,9 +222,68 @@ private func decodeMessage(
     return value
 }
 
+private func encodeVoxLikeRequest(
+    handle: OpaquePointer,
+    schemaBundle: BinetteByteBuffer,
+    _ value: VoxLikeRequest
+) throws -> BinetteByteBuffer {
+    var request = value
+    var encoded = BinetteByteBuffer()
+    let status = withUnsafePointer(to: &request) { pointer in
+        binette_local_encode_with_schema_bundle(
+            handle,
+            UnsafePointer(schemaBundle.ptr),
+            schemaBundle.len,
+            UnsafeRawPointer(pointer).assumingMemoryBound(to: UInt8.self),
+            &encoded
+        )
+    }
+    XCTAssertEqual(status, BINETTE_STATUS_OK)
+    if status != BINETTE_STATUS_OK {
+        throw NSError(domain: "BinetteCAbiCanaryTests", code: Int(status))
+    }
+    return encoded
+}
+
+private func decodeVoxLikeRequest(
+    handle: OpaquePointer,
+    schemaBundle: BinetteByteBuffer,
+    bytes: BinetteByteBuffer
+) throws -> VoxLikeRequest {
+    let out = UnsafeMutablePointer<VoxLikeRequest>.allocate(capacity: 1)
+    let status = binette_local_decode_with_schema_bundles(
+        handle,
+        UnsafePointer(schemaBundle.ptr),
+        schemaBundle.len,
+        UnsafePointer(schemaBundle.ptr),
+        schemaBundle.len,
+        UnsafePointer(bytes.ptr),
+        bytes.len,
+        UnsafeMutableRawPointer(out).assumingMemoryBound(to: UInt8.self)
+    )
+    XCTAssertEqual(status, BINETTE_STATUS_OK)
+    if status != BINETTE_STATUS_OK {
+        out.deallocate()
+        throw NSError(domain: "BinetteCAbiCanaryTests", code: Int(status))
+    }
+    let value = out.move()
+    out.deallocate()
+    return value
+}
+
 private func canaryMessageSchemaBundle() throws -> BinetteByteBuffer {
     var schemaBundle = BinetteByteBuffer()
     let status = binette_canary_message_schema_bundle(&schemaBundle)
+    XCTAssertEqual(status, BINETTE_STATUS_OK)
+    if status != BINETTE_STATUS_OK {
+        throw NSError(domain: "BinetteCAbiCanaryTests", code: Int(status))
+    }
+    return schemaBundle
+}
+
+private func syntheticSchemaBundle(handle: OpaquePointer) throws -> BinetteByteBuffer {
+    var schemaBundle = BinetteByteBuffer()
+    let status = binette_local_descriptor_synthetic_schema_bundle(handle, &schemaBundle)
     XCTAssertEqual(status, BINETTE_STATUS_OK)
     if status != BINETTE_STATUS_OK {
         throw NSError(domain: "BinetteCAbiCanaryTests", code: Int(status))
