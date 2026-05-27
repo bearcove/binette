@@ -654,6 +654,29 @@ fn local_stencils_reject_byte_sequence_descriptor_that_disagrees_with_plan() {
     ));
 }
 
+// r[verify binette.local-access.boundary]
+// r[verify binette.local-access.descriptor]
+#[test]
+fn local_encode_rejects_descriptor_field_name_that_disagrees_with_plan() {
+    let facet_plan = writer_plan_for::<SwiftText>().unwrap();
+    let schema_plan = writer_plan_for_bundle(facet_plan.schema_bundle()).unwrap();
+    let mut descriptor = swift_text_export_descriptor(schema_plan.root());
+    rename_title_descriptor_field(&mut descriptor, "headline");
+    let thunks = swift_string_thunk_bindings();
+
+    let error = match hybrid_local_stencil_encoder_from_plan(&schema_plan, &descriptor, &thunks) {
+        Ok(_) => panic!("hybrid encode must reject a descriptor field with the wrong name"),
+        Err(err) => err,
+    };
+    assert!(matches!(
+        error,
+        StencilError::Unsupported {
+            ref path,
+            reason: "local descriptor field name differs from writer plan",
+        } if path == "$.title"
+    ));
+}
+
 // r[verify binette.local-access.descriptor]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
@@ -1337,6 +1360,17 @@ fn force_title_descriptor_to_bytes(descriptor: &mut LocalTypeDescriptor) {
             element: swift_string_element_thunk(),
             write: Some(swift_string_write_thunk()),
         }));
+}
+
+fn rename_title_descriptor_field(descriptor: &mut LocalTypeDescriptor, name: &str) {
+    let LocalTypeKind::Struct { fields } = &mut descriptor.kind else {
+        panic!("expected SwiftText struct descriptor");
+    };
+    let title = fields
+        .iter_mut()
+        .find(|field| field.name == "title")
+        .expect("SwiftText descriptor has a title field");
+    title.name = name.to_owned();
 }
 
 fn swift_maybe_text_descriptor(root: &TypeRef) -> LocalTypeDescriptor {

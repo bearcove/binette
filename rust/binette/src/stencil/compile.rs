@@ -2112,12 +2112,12 @@ impl StencilEncodeCompiler {
                     reason: "writer field index is out of range",
                 });
             };
-            let field_descriptor = descriptor_fields.get(field.local_index).ok_or_else(|| {
-                StencilError::Unsupported {
-                    path: field_path.clone(),
-                    reason: "writer descriptor field index is out of range",
-                }
-            })?;
+            let field_descriptor = local_writer_field_descriptor(
+                descriptor_fields,
+                field,
+                path,
+                "writer descriptor field index is out of range",
+            )?;
             let field_offset = checked_offset(
                 input_offset,
                 local_direct_offset(&field_descriptor.access, path)?,
@@ -2558,13 +2558,12 @@ impl StencilEncodeCompiler {
                 reason: "writer enum struct field index is out of range",
             });
         };
-        let field_descriptor =
-            descriptor_fields
-                .get(field.local_index)
-                .ok_or_else(|| StencilError::Unsupported {
-                    path: field_path.clone(),
-                    reason: "writer enum struct descriptor field index is out of range",
-                })?;
+        let field_descriptor = local_writer_field_descriptor(
+            descriptor_fields,
+            field,
+            path,
+            "writer enum struct descriptor field index is out of range",
+        )?;
         let field_offset = checked_offset(
             input_offset,
             local_direct_offset(&field_descriptor.access, path)?,
@@ -2751,12 +2750,12 @@ impl LocalEncodeStencilCompiler<'_> {
         let descriptor_fields = local_struct_fields(descriptor, path)?;
         for field in fields {
             let field_path = format!("{path}.{}", field.name);
-            let field_descriptor = descriptor_fields.get(field.local_index).ok_or_else(|| {
-                StencilError::Unsupported {
-                    path: field_path.clone(),
-                    reason: "writer descriptor field index is out of range",
-                }
-            })?;
+            let field_descriptor = local_writer_field_descriptor(
+                descriptor_fields,
+                field,
+                path,
+                "writer descriptor field index is out of range",
+            )?;
             let field_offset = checked_offset(
                 input_offset,
                 local_direct_offset(&field_descriptor.access, &field_path)?,
@@ -3133,12 +3132,12 @@ impl LocalEncodeStencilCompiler<'_> {
                     )?;
                     for field in fields {
                         let field_path = format!("{path}.{}", field.name);
-                        let field_descriptor = descriptor_fields
-                            .get(field.local_index)
-                            .ok_or_else(|| StencilError::Unsupported {
-                                path: field_path.clone(),
-                                reason: "writer enum struct descriptor field index is out of range",
-                            })?;
+                        let field_descriptor = local_writer_field_descriptor(
+                            descriptor_fields,
+                            field,
+                            path,
+                            "writer enum struct descriptor field index is out of range",
+                        )?;
                         let field_offset = checked_offset(
                             input_offset,
                             local_direct_offset(&field_descriptor.access, &field_path)?,
@@ -3418,12 +3417,12 @@ impl FixedEncodeCompiler {
     ) -> Result<(), StencilError> {
         let descriptor_fields = local_struct_fields(descriptor, path)?;
         for field in fields {
-            let field_descriptor = descriptor_fields.get(field.local_index).ok_or_else(|| {
-                StencilError::Unsupported {
-                    path: format!("{path}.{}", field.name),
-                    reason: "writer descriptor field index is out of range",
-                }
-            })?;
+            let field_descriptor = local_writer_field_descriptor(
+                descriptor_fields,
+                field,
+                path,
+                "writer descriptor field index is out of range",
+            )?;
             let field_offset = checked_offset(
                 input_offset,
                 local_direct_offset(&field_descriptor.access, path)?,
@@ -3528,12 +3527,12 @@ impl FixedEncodeCompiler {
                         path: format!("{path}.{}", field.name),
                         reason: "writer field index is out of range",
                     })?;
-            let field_descriptor = descriptor_fields.get(field.local_index).ok_or_else(|| {
-                StencilError::Unsupported {
-                    path: format!("{path}.{}", field.name),
-                    reason: "writer descriptor field index is out of range",
-                }
-            })?;
+            let field_descriptor = local_writer_field_descriptor(
+                descriptor_fields,
+                field,
+                path,
+                "writer descriptor field index is out of range",
+            )?;
             let field_offset = checked_offset(
                 input_offset,
                 local_direct_offset(&field_descriptor.access, path)?,
@@ -3844,6 +3843,29 @@ fn local_struct_fields<'a>(
         });
     };
     Ok(fields)
+}
+
+fn local_writer_field_descriptor<'a>(
+    descriptor_fields: &'a [LocalFieldDescriptor],
+    field: &WriterFieldPlan,
+    path: &str,
+    missing_reason: &'static str,
+) -> Result<&'a LocalFieldDescriptor, StencilError> {
+    let field_path = format!("{path}.{}", field.name);
+    let descriptor =
+        descriptor_fields
+            .get(field.local_index)
+            .ok_or_else(|| StencilError::Unsupported {
+                path: field_path.clone(),
+                reason: missing_reason,
+            })?;
+    if descriptor.name != field.name {
+        return Err(StencilError::Unsupported {
+            path: field_path,
+            reason: "local descriptor field name differs from writer plan",
+        });
+    }
+    Ok(descriptor)
 }
 
 fn local_direct_offset(access: &LocalAccess, path: &str) -> Result<usize, StencilError> {
