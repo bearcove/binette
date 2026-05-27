@@ -4,12 +4,14 @@ use super::*;
 use crate::encode::{encode_to_vec_with_plan, writer_plan_for};
 use crate::hash::primitive_type_id;
 use crate::local_access::{
-    LocalAccess, LocalBackend, LocalDescriptorImport, LocalDescriptorImportKind,
-    LocalEnumTagThunks, LocalFieldImport, LocalOptionEncodeThunks, LocalOptionRepresentation,
+    LocalAccess, LocalAccessExport, LocalBackend, LocalDescriptorExport, LocalDescriptorImport,
+    LocalDescriptorImportKind, LocalEnumTagThunks, LocalFieldExport, LocalFieldImport,
+    LocalKindExport, LocalLayoutExport, LocalOptionEncodeThunks, LocalOptionRepresentation,
     LocalOptionSequenceDecodeThunks, LocalScalarAccess, LocalSequenceDecodeThunks,
     LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks,
-    LocalSequenceStorage, LocalThunk, LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout,
-    LocalVariantConstructThunks, LocalVariantProjectThunks, rust_facet_descriptor_for,
+    LocalSequenceStorage, LocalStorageExport, LocalThunk, LocalThunkBindings, LocalTypeDescriptor,
+    LocalValueLayout, LocalVariantConstructThunks, LocalVariantProjectThunks,
+    rust_facet_descriptor_for,
 };
 use crate::reader_plan_for_bundle;
 
@@ -406,6 +408,77 @@ fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_string_subtree() {
 
     assert_eq!(decoder.report().mode, StencilMode::Hybrid);
     assert_eq!(decoder.report().helper_count, 1);
+    assert_eq!(decoder.report().helper_paths, vec!["$.title".to_owned()]);
+
+    let mut decoded = std::mem::MaybeUninit::<SwiftText>::uninit();
+    unsafe { decoder.decode_raw_into(&bytes, decoded.as_mut_ptr().cast()) }.unwrap();
+    let decoded = unsafe { decoded.assume_init() };
+    assert_eq!(decoded.id, value.id);
+    assert_eq!(decoded.title, value.title);
+    assert_eq!(decoded.code, value.code);
+}
+
+// r[verify binette.local-access.swift-probes]
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn exported_swift_descriptor_drives_hybrid_local_string_stencils() {
+    let value = SwiftText {
+        id: 0x2122_2324_2526_2728,
+        title: "exported descriptor path".to_owned(),
+        code: 0x5566,
+    };
+    let writer_plan = writer_plan_for::<SwiftText>().unwrap();
+    let descriptor = swift_text_export_descriptor(writer_plan.root());
+    let thunks = swift_string_thunk_bindings();
+
+    let strict_error = match strict_local_stencil_encoder_from_plan(&writer_plan, &descriptor) {
+        Ok(_) => panic!("strict local encode must reject exported thunk-backed string fields"),
+        Err(err) => err,
+    };
+    assert!(matches!(strict_error, StencilError::Unsupported { .. }));
+
+    let encoder =
+        hybrid_local_stencil_encoder_from_plan(&writer_plan, &descriptor, &thunks).unwrap();
+    assert_eq!(encoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(encoder.report().helper_paths, vec!["$.title".to_owned()]);
+    let bytes = unsafe { encoder.encode_raw_to_vec((&value as *const SwiftText).cast()) }.unwrap();
+    assert_eq!(
+        bytes,
+        encode_to_vec_with_plan(&value, &writer_plan).unwrap()
+    );
+
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        writer_plan.root(),
+        &writer_registry,
+    )
+    .unwrap();
+    let reader_descriptor = swift_text_export_descriptor(reader_plan.reader_root());
+
+    let strict_error = match strict_local_stencil_decoder_from_plan(
+        &reader_plan,
+        &writer_registry,
+        &reader_descriptor,
+    ) {
+        Ok(_) => panic!("strict local decode must reject exported thunk-backed string fields"),
+        Err(err) => err,
+    };
+    assert!(matches!(strict_error, StencilError::Unsupported { .. }));
+
+    let decoder = hybrid_local_stencil_decoder_from_plan(
+        &reader_plan,
+        &writer_registry,
+        &reader_descriptor,
+        &thunks,
+    )
+    .unwrap();
+    assert_eq!(decoder.report().mode, StencilMode::Hybrid);
     assert_eq!(decoder.report().helper_paths, vec!["$.title".to_owned()]);
 
     let mut decoded = std::mem::MaybeUninit::<SwiftText>::uninit();
@@ -958,6 +1031,128 @@ fn swift_text_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
         },
     ))
     .unwrap()
+}
+
+fn swift_text_export_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
+    let export = LocalDescriptorExport {
+        schema_name: "SwiftText".to_owned(),
+        backend: "swift-probe".to_owned(),
+        layout: LocalLayoutExport {
+            size: std::mem::size_of::<SwiftText>(),
+            alignment: std::mem::align_of::<SwiftText>(),
+            stride: std::mem::size_of::<SwiftText>(),
+        },
+        kind: LocalKindExport {
+            tag: "struct".to_owned(),
+            fields: Some(vec![
+                export_field(
+                    "id",
+                    std::mem::offset_of!(SwiftText, id),
+                    export_primitive("u64", Primitive::U64, LocalValueLayout::of::<u64>()),
+                ),
+                export_field(
+                    "title",
+                    std::mem::offset_of!(SwiftText, title),
+                    export_string(),
+                ),
+                export_field(
+                    "code",
+                    std::mem::offset_of!(SwiftText, code),
+                    export_primitive("u16", Primitive::U16, LocalValueLayout::of::<u16>()),
+                ),
+            ]),
+            variants: None,
+            element: None,
+            some: None,
+            storage: None,
+            reason: None,
+        },
+    };
+    LocalTypeDescriptor::from_export(export, |schema_name| swift_export_schema(root, schema_name))
+        .unwrap()
+}
+
+fn swift_export_schema(
+    root: &TypeRef,
+    schema_name: &str,
+) -> Option<crate::local_access::LocalSchemaRef> {
+    match schema_name {
+        "SwiftText" => Some(crate::local_access::LocalSchemaRef::Type(root.clone())),
+        "string" => Some(crate::local_access::LocalSchemaRef::Type(
+            TypeRef::concrete(primitive_type_id(Primitive::String)),
+        )),
+        "u64" => Some(crate::local_access::LocalSchemaRef::Type(
+            TypeRef::concrete(primitive_type_id(Primitive::U64)),
+        )),
+        "u16" => Some(crate::local_access::LocalSchemaRef::Type(
+            TypeRef::concrete(primitive_type_id(Primitive::U16)),
+        )),
+        _ => None,
+    }
+}
+
+fn export_field(name: &str, offset: usize, descriptor: LocalDescriptorExport) -> LocalFieldExport {
+    LocalFieldExport {
+        name: name.to_owned(),
+        access: LocalAccessExport {
+            tag: "direct".to_owned(),
+            offset: Some(offset),
+            thunk: None,
+        },
+        descriptor: Box::new(descriptor),
+    }
+}
+
+fn export_primitive(
+    schema_name: &str,
+    _primitive: Primitive,
+    layout: LocalValueLayout,
+) -> LocalDescriptorExport {
+    LocalDescriptorExport {
+        schema_name: schema_name.to_owned(),
+        backend: "swift-probe".to_owned(),
+        layout: LocalLayoutExport {
+            size: layout.size,
+            alignment: layout.align,
+            stride: layout.stride,
+        },
+        kind: LocalKindExport {
+            tag: "scalar".to_owned(),
+            fields: None,
+            variants: None,
+            element: None,
+            some: None,
+            storage: None,
+            reason: None,
+        },
+    }
+}
+
+fn export_string() -> LocalDescriptorExport {
+    LocalDescriptorExport {
+        schema_name: "string".to_owned(),
+        backend: "swift-probe".to_owned(),
+        layout: LocalLayoutExport {
+            size: std::mem::size_of::<String>(),
+            alignment: std::mem::align_of::<String>(),
+            stride: std::mem::size_of::<String>(),
+        },
+        kind: LocalKindExport {
+            tag: "string".to_owned(),
+            fields: None,
+            variants: None,
+            element: None,
+            some: None,
+            storage: Some(LocalStorageExport {
+                tag: "thunk".to_owned(),
+                count: Some("Swift.String.utf8.count".to_owned()),
+                element: Some("Swift.String.utf8.element".to_owned()),
+                write: Some("Swift.String.init.utf8".to_owned()),
+                ..LocalStorageExport::default()
+            }),
+            reason: None,
+        },
+    }
 }
 
 fn swift_maybe_text_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
