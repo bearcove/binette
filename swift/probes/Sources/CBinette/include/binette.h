@@ -51,12 +51,31 @@ typedef uint32_t BinetteLocalScalarTag;
 
 typedef uint32_t BinetteLocalSequenceStorageTag;
 
+typedef size_t (*BinetteLocalSequenceLenThunk)(const uint8_t *value, void *context);
+
+typedef uint8_t (*BinetteLocalSequenceU8Thunk)(const uint8_t *value, size_t index, void *context);
+
+typedef const uint8_t *(*BinetteLocalSequenceElementPtrThunk)(const uint8_t *value,
+                                                              size_t index,
+                                                              void *context);
+
+typedef bool (*BinetteLocalSequenceWriteBytesThunk)(uint8_t *value,
+                                                    const uint8_t *ptr,
+                                                    size_t len,
+                                                    void *context);
+
+typedef bool (*BinetteLocalSequenceWriteFixedElementsThunk)(uint8_t *value,
+                                                            const uint8_t *ptr,
+                                                            size_t count,
+                                                            size_t element_stride,
+                                                            void *context);
+
 typedef struct BinetteLocalSequenceThunksAbi {
-  const void *len;
-  const void *element_u8;
-  const void *element_ptr;
-  const void *write_bytes;
-  const void *write_fixed_elements;
+  BinetteLocalSequenceLenThunk len;
+  BinetteLocalSequenceU8Thunk element_u8;
+  BinetteLocalSequenceElementPtrThunk element_ptr;
+  BinetteLocalSequenceWriteBytesThunk write_bytes;
+  BinetteLocalSequenceWriteFixedElementsThunk write_fixed_elements;
   void *context;
 } BinetteLocalSequenceThunksAbi;
 
@@ -90,8 +109,10 @@ typedef struct BinetteLocalStructAbi {
 
 typedef uint32_t BinetteLocalAccessTag;
 
+typedef uint32_t (*BinetteLocalEnumTagThunk)(const uint8_t *value, void *context);
+
 typedef struct BinetteLocalEnumTagThunkAbi {
-  const void *call;
+  BinetteLocalEnumTagThunk call;
   void *context;
 } BinetteLocalEnumTagThunkAbi;
 
@@ -101,8 +122,10 @@ typedef struct BinetteLocalEnumTagAccessAbi {
   struct BinetteLocalEnumTagThunkAbi thunk;
 } BinetteLocalEnumTagAccessAbi;
 
+typedef const uint8_t *(*BinetteLocalVariantProjectThunk)(const uint8_t *value, void *context);
+
 typedef struct BinetteLocalVariantProjectThunkAbi {
-  const void *call;
+  BinetteLocalVariantProjectThunk call;
   void *context;
 } BinetteLocalVariantProjectThunkAbi;
 
@@ -112,18 +135,30 @@ typedef struct BinetteLocalVariantProjectAccessAbi {
   struct BinetteLocalVariantProjectThunkAbi thunk;
 } BinetteLocalVariantProjectAccessAbi;
 
+typedef bool (*BinetteLocalVariantProjectIntoThunk)(const uint8_t *value,
+                                                    uint8_t *out,
+                                                    size_t out_len,
+                                                    void *context);
+
 typedef struct BinetteLocalVariantProjectIntoAbi {
-  const void *call;
+  BinetteLocalVariantProjectIntoThunk call;
   void *context;
 } BinetteLocalVariantProjectIntoAbi;
 
+typedef void (*BinetteLocalVariantDropProjectedThunk)(uint8_t *value, void *context);
+
 typedef struct BinetteLocalVariantDropAbi {
-  const void *call;
+  BinetteLocalVariantDropProjectedThunk call;
   void *context;
 } BinetteLocalVariantDropAbi;
 
+typedef bool (*BinetteLocalVariantConstructThunk)(uint8_t *value,
+                                                  const uint8_t *payload,
+                                                  size_t payload_len,
+                                                  void *context);
+
 typedef struct BinetteLocalVariantConstructAbi {
-  const void *call;
+  BinetteLocalVariantConstructThunk call;
   void *context;
 } BinetteLocalVariantConstructAbi;
 
@@ -150,11 +185,22 @@ typedef struct BinetteLocalSequenceAbi {
 
 typedef uint32_t BinetteLocalOptionRepresentationTag;
 
+typedef bool (*BinetteLocalOptionIsSomeThunk)(const uint8_t *value, void *context);
+
+typedef const uint8_t *(*BinetteLocalOptionSomeThunk)(const uint8_t *value, void *context);
+
+typedef bool (*BinetteLocalOptionWriteNoneThunk)(uint8_t *value, void *context);
+
+typedef bool (*BinetteLocalOptionWriteSomeBytesThunk)(uint8_t *value,
+                                                      const uint8_t *ptr,
+                                                      size_t len,
+                                                      void *context);
+
 typedef struct BinetteLocalOptionThunksAbi {
-  const void *is_some;
-  const void *some;
-  const void *write_none;
-  const void *write_some_bytes;
+  BinetteLocalOptionIsSomeThunk is_some;
+  BinetteLocalOptionSomeThunk some;
+  BinetteLocalOptionWriteNoneThunk write_none;
+  BinetteLocalOptionWriteSomeBytesThunk write_some_bytes;
   void *context;
 } BinetteLocalOptionThunksAbi;
 
@@ -197,52 +243,6 @@ typedef struct BinetteByteBuffer {
   size_t len;
   size_t cap;
 } BinetteByteBuffer;
-
-typedef uint32_t (*BinetteLocalEnumTagThunk)(const uint8_t *value, void *context);
-
-typedef bool (*BinetteLocalOptionIsSomeThunk)(const uint8_t *value, void *context);
-
-typedef const uint8_t *(*BinetteLocalOptionSomeThunk)(const uint8_t *value, void *context);
-
-typedef bool (*BinetteLocalOptionWriteNoneThunk)(uint8_t *value, void *context);
-
-typedef bool (*BinetteLocalOptionWriteSomeBytesThunk)(uint8_t *value,
-                                                      const uint8_t *ptr,
-                                                      size_t len,
-                                                      void *context);
-
-typedef const uint8_t *(*BinetteLocalSequenceElementPtrThunk)(const uint8_t *value,
-                                                              size_t index,
-                                                              void *context);
-
-typedef size_t (*BinetteLocalSequenceLenThunk)(const uint8_t *value, void *context);
-
-typedef uint8_t (*BinetteLocalSequenceU8Thunk)(const uint8_t *value, size_t index, void *context);
-
-typedef bool (*BinetteLocalSequenceWriteBytesThunk)(uint8_t *value,
-                                                    const uint8_t *ptr,
-                                                    size_t len,
-                                                    void *context);
-
-typedef bool (*BinetteLocalSequenceWriteFixedElementsThunk)(uint8_t *value,
-                                                            const uint8_t *ptr,
-                                                            size_t count,
-                                                            size_t element_stride,
-                                                            void *context);
-
-typedef bool (*BinetteLocalVariantConstructThunk)(uint8_t *value,
-                                                  const uint8_t *payload,
-                                                  size_t payload_len,
-                                                  void *context);
-
-typedef void (*BinetteLocalVariantDropProjectedThunk)(uint8_t *value, void *context);
-
-typedef bool (*BinetteLocalVariantProjectIntoThunk)(const uint8_t *value,
-                                                    uint8_t *out,
-                                                    size_t out_len,
-                                                    void *context);
-
-typedef const uint8_t *(*BinetteLocalVariantProjectThunk)(const uint8_t *value, void *context);
 
 #define BINETTE_LOCAL_BACKEND_RUST_FACET 1
 

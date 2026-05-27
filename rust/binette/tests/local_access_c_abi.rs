@@ -12,10 +12,7 @@ use binette::local_access::{
     BinetteLocalSequenceThunksAbi, BinetteLocalStrAbi, BinetteLocalStructAbi,
     BinetteLocalVariantAbi, BinetteLocalVariantConstructAbi, BinetteLocalVariantDropAbi,
     BinetteLocalVariantProjectAccessAbi, BinetteLocalVariantProjectIntoAbi,
-    BinetteLocalVariantProjectThunkAbi, LocalEnumTagThunk, LocalSequenceLenThunk,
-    LocalSequenceU8Thunk, LocalSequenceWriteBytesThunk, LocalTypeDescriptor, LocalValueLayout,
-    LocalVariantConstructThunk, LocalVariantDropProjectedThunk, LocalVariantProjectIntoThunk,
-    LocalVariantProjectThunk,
+    BinetteLocalVariantProjectThunkAbi, LocalTypeDescriptor, LocalValueLayout,
 };
 use binette::{
     Primitive, SchemaRegistry, StencilError, StencilMode, TypeRef, encode_to_vec_with_plan,
@@ -155,20 +152,20 @@ fn c_abi_descriptor_drives_hybrid_local_enum_message_stencil() {
                 tag: BINETTE_LOCAL_ACCESS_THUNK,
                 direct_offset: 0,
                 thunk: BinetteLocalVariantProjectThunkAbi {
-                    call: variant_project_fn(project_hi),
+                    call: Some(project_hi),
                     context: std::ptr::null_mut(),
                 },
             },
             project_into: BinetteLocalVariantProjectIntoAbi {
-                call: variant_project_into_fn(project_hi_into),
+                call: Some(project_hi_into),
                 context: std::ptr::null_mut(),
             },
             drop_projected: BinetteLocalVariantDropAbi {
-                call: variant_drop_fn(drop_projected_string),
+                call: Some(drop_projected_string),
                 context: std::ptr::null_mut(),
             },
             construct: BinetteLocalVariantConstructAbi {
-                call: variant_construct_fn(construct_hi),
+                call: Some(construct_hi),
                 context: std::ptr::null_mut(),
             },
             payload: &string_descriptor,
@@ -180,20 +177,20 @@ fn c_abi_descriptor_drives_hybrid_local_enum_message_stencil() {
                 tag: BINETTE_LOCAL_ACCESS_THUNK,
                 direct_offset: 0,
                 thunk: BinetteLocalVariantProjectThunkAbi {
-                    call: variant_project_fn(project_bye),
+                    call: Some(project_bye),
                     context: std::ptr::null_mut(),
                 },
             },
             project_into: BinetteLocalVariantProjectIntoAbi {
-                call: variant_project_into_fn(project_bye_into),
+                call: Some(project_bye_into),
                 context: std::ptr::null_mut(),
             },
             drop_projected: BinetteLocalVariantDropAbi {
-                call: std::ptr::null(),
+                call: None,
                 context: std::ptr::null_mut(),
             },
             construct: BinetteLocalVariantConstructAbi {
-                call: variant_construct_fn(construct_bye),
+                call: Some(construct_bye),
                 context: std::ptr::null_mut(),
             },
             payload: &u32_descriptor,
@@ -210,7 +207,7 @@ fn c_abi_descriptor_drives_hybrid_local_enum_message_stencil() {
                     tag: BINETTE_LOCAL_ACCESS_THUNK,
                     direct_offset: 0,
                     thunk: BinetteLocalEnumTagThunkAbi {
-                        call: enum_tag_fn(message_tag),
+                        call: Some(message_tag),
                         context: std::ptr::null_mut(),
                     },
                 },
@@ -336,11 +333,11 @@ fn c_abi_sequence_storage_empty() -> BinetteLocalSequenceStorageAbi {
         capacity_offset: 0,
         element_stride: 0,
         thunks: BinetteLocalSequenceThunksAbi {
-            len: std::ptr::null(),
-            element_u8: std::ptr::null(),
-            element_ptr: std::ptr::null(),
-            write_bytes: std::ptr::null(),
-            write_fixed_elements: std::ptr::null(),
+            len: None,
+            element_u8: None,
+            element_ptr: None,
+            write_bytes: None,
+            write_fixed_elements: None,
             context: std::ptr::null_mut(),
         },
     }
@@ -359,10 +356,10 @@ fn c_abi_option_empty() -> BinetteLocalOptionAbi {
             none_bytes: std::ptr::null(),
             none_bytes_len: 0,
             thunks: BinetteLocalOptionThunksAbi {
-                is_some: std::ptr::null(),
-                some: std::ptr::null(),
-                write_none: std::ptr::null(),
-                write_some_bytes: std::ptr::null(),
+                is_some: None,
+                some: None,
+                write_none: None,
+                write_some_bytes: None,
                 context: std::ptr::null_mut(),
             },
         },
@@ -385,7 +382,7 @@ fn empty_c_abi_kind() -> BinetteLocalKindAbi {
                 tag: BINETTE_LOCAL_ACCESS_DIRECT,
                 direct_offset: 0,
                 thunk: BinetteLocalEnumTagThunkAbi {
-                    call: std::ptr::null(),
+                    call: None,
                     context: std::ptr::null_mut(),
                 },
             },
@@ -436,11 +433,11 @@ fn c_abi_string_descriptor() -> BinetteLocalDescriptorAbi {
                     capacity_offset: 0,
                     element_stride: 1,
                     thunks: BinetteLocalSequenceThunksAbi {
-                        len: sequence_len_fn(string_len),
-                        element_u8: sequence_u8_fn(string_element),
-                        element_ptr: std::ptr::null(),
-                        write_bytes: sequence_write_bytes_fn(string_write),
-                        write_fixed_elements: std::ptr::null(),
+                        len: Some(string_len),
+                        element_u8: Some(string_element),
+                        element_ptr: None,
+                        write_bytes: Some(string_write),
+                        write_fixed_elements: None,
                         context: std::ptr::null_mut(),
                     },
                 },
@@ -448,49 +445,6 @@ fn c_abi_string_descriptor() -> BinetteLocalDescriptorAbi {
             ..empty_c_abi_kind()
         },
     }
-}
-
-fn enum_tag_fn(call: LocalEnumTagThunk) -> *const std::ffi::c_void {
-    c_abi_fn(call)
-}
-
-fn variant_project_fn(call: LocalVariantProjectThunk) -> *const std::ffi::c_void {
-    c_abi_fn(call)
-}
-
-fn variant_project_into_fn(call: LocalVariantProjectIntoThunk) -> *const std::ffi::c_void {
-    c_abi_fn(call)
-}
-
-fn variant_drop_fn(call: LocalVariantDropProjectedThunk) -> *const std::ffi::c_void {
-    c_abi_fn(call)
-}
-
-fn variant_construct_fn(call: LocalVariantConstructThunk) -> *const std::ffi::c_void {
-    c_abi_fn(call)
-}
-
-fn sequence_len_fn(call: LocalSequenceLenThunk) -> *const std::ffi::c_void {
-    c_abi_fn(call)
-}
-
-fn sequence_u8_fn(call: LocalSequenceU8Thunk) -> *const std::ffi::c_void {
-    c_abi_fn(call)
-}
-
-fn sequence_write_bytes_fn(call: LocalSequenceWriteBytesThunk) -> *const std::ffi::c_void {
-    c_abi_fn(call)
-}
-
-fn c_abi_fn<T>(call: T) -> *const std::ffi::c_void
-where
-    T: Copy,
-{
-    assert_eq!(
-        std::mem::size_of::<T>(),
-        std::mem::size_of::<*const std::ffi::c_void>()
-    );
-    unsafe { std::mem::transmute_copy(&call) }
 }
 
 unsafe extern "C" fn string_len(value: *const u8, _context: *mut std::ffi::c_void) -> usize {

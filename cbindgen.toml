@@ -16,59 +16,43 @@ include = [
   "BinetteLocalDescriptorHandle",
   "BinetteLocalEnumAbi",
   "BinetteLocalEnumTagAccessAbi",
+  "BinetteLocalEnumTagThunk",
   "BinetteLocalEnumTagThunkAbi",
   "BinetteLocalFieldAbi",
   "BinetteLocalKindAbi",
   "BinetteLocalKindTag",
   "BinetteLocalLayoutAbi",
   "BinetteLocalOptionAbi",
+  "BinetteLocalOptionIsSomeThunk",
   "BinetteLocalOptionRepresentationAbi",
   "BinetteLocalOptionRepresentationTag",
+  "BinetteLocalOptionSomeThunk",
   "BinetteLocalOptionThunksAbi",
+  "BinetteLocalOptionWriteNoneThunk",
+  "BinetteLocalOptionWriteSomeBytesThunk",
   "BinetteLocalScalarAbi",
   "BinetteLocalScalarTag",
   "BinetteLocalSchemaRefAbi",
   "BinetteLocalSchemaRefTag",
   "BinetteLocalSequenceAbi",
+  "BinetteLocalSequenceElementPtrThunk",
+  "BinetteLocalSequenceLenThunk",
   "BinetteLocalSequenceStorageAbi",
   "BinetteLocalSequenceStorageTag",
   "BinetteLocalSequenceThunksAbi",
+  "BinetteLocalSequenceU8Thunk",
+  "BinetteLocalSequenceWriteBytesThunk",
+  "BinetteLocalSequenceWriteFixedElementsThunk",
   "BinetteLocalStrAbi",
   "BinetteLocalStructAbi",
   "BinetteLocalVariantAbi",
   "BinetteLocalVariantConstructAbi",
+  "BinetteLocalVariantConstructThunk",
   "BinetteLocalVariantDropAbi",
+  "BinetteLocalVariantDropProjectedThunk",
   "BinetteLocalVariantProjectAccessAbi",
   "BinetteLocalVariantProjectIntoAbi",
+  "BinetteLocalVariantProjectIntoThunk",
+  "BinetteLocalVariantProjectThunk",
   "BinetteLocalVariantProjectThunkAbi",
-  "LocalEnumTagThunk",
-  "LocalOptionIsSomeThunk",
-  "LocalOptionSomeThunk",
-  "LocalOptionWriteNoneThunk",
-  "LocalOptionWriteSomeBytesThunk",
-  "LocalSequenceElementPtrThunk",
-  "LocalSequenceLenThunk",
-  "LocalSequenceU8Thunk",
-  "LocalSequenceWriteBytesThunk",
-  "LocalSequenceWriteFixedElementsThunk",
-  "LocalVariantConstructThunk",
-  "LocalVariantDropProjectedThunk",
-  "LocalVariantProjectIntoThunk",
-  "LocalVariantProjectThunk",
 ]
-
-[export.rename]
-"LocalEnumTagThunk" = "BinetteLocalEnumTagThunk"
-"LocalOptionIsSomeThunk" = "BinetteLocalOptionIsSomeThunk"
-"LocalOptionSomeThunk" = "BinetteLocalOptionSomeThunk"
-"LocalOptionWriteNoneThunk" = "BinetteLocalOptionWriteNoneThunk"
-"LocalOptionWriteSomeBytesThunk" = "BinetteLocalOptionWriteSomeBytesThunk"
-"LocalSequenceElementPtrThunk" = "BinetteLocalSequenceElementPtrThunk"
-"LocalSequenceLenThunk" = "BinetteLocalSequenceLenThunk"
-"LocalSequenceU8Thunk" = "BinetteLocalSequenceU8Thunk"
-"LocalSequenceWriteBytesThunk" = "BinetteLocalSequenceWriteBytesThunk"
-"LocalSequenceWriteFixedElementsThunk" = "BinetteLocalSequenceWriteFixedElementsThunk"
-"LocalVariantConstructThunk" = "BinetteLocalVariantConstructThunk"
-"LocalVariantDropProjectedThunk" = "BinetteLocalVariantDropProjectedThunk"
-"LocalVariantProjectIntoThunk" = "BinetteLocalVariantProjectIntoThunk"
-"LocalVariantProjectThunk" = "BinetteLocalVariantProjectThunk"

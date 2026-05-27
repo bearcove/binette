@@ -156,6 +156,29 @@ pub type BinetteLocalAccessTag = u32;
 pub const BINETTE_LOCAL_ACCESS_DIRECT: BinetteLocalAccessTag = 1;
 pub const BINETTE_LOCAL_ACCESS_THUNK: BinetteLocalAccessTag = 2;
 
+pub type BinetteLocalEnumTagThunk =
+    Option<unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> u32>;
+pub type BinetteLocalVariantProjectThunk =
+    Option<unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> *const u8>;
+pub type BinetteLocalVariantProjectIntoThunk = Option<
+    unsafe extern "C" fn(
+        value: *const u8,
+        out: *mut u8,
+        out_len: usize,
+        context: *mut c_void,
+    ) -> bool,
+>;
+pub type BinetteLocalVariantDropProjectedThunk =
+    Option<unsafe extern "C" fn(value: *mut u8, context: *mut c_void)>;
+pub type BinetteLocalVariantConstructThunk = Option<
+    unsafe extern "C" fn(
+        value: *mut u8,
+        payload: *const u8,
+        payload_len: usize,
+        context: *mut c_void,
+    ) -> bool,
+>;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalEnumTagAccessAbi {
@@ -175,35 +198,35 @@ pub struct BinetteLocalVariantProjectAccessAbi {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalEnumTagThunkAbi {
-    pub call: *const c_void,
+    pub call: BinetteLocalEnumTagThunk,
     pub context: *mut c_void,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalVariantProjectThunkAbi {
-    pub call: *const c_void,
+    pub call: BinetteLocalVariantProjectThunk,
     pub context: *mut c_void,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalVariantProjectIntoAbi {
-    pub call: *const c_void,
+    pub call: BinetteLocalVariantProjectIntoThunk,
     pub context: *mut c_void,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalVariantDropAbi {
-    pub call: *const c_void,
+    pub call: BinetteLocalVariantDropProjectedThunk,
     pub context: *mut c_void,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalVariantConstructAbi {
-    pub call: *const c_void,
+    pub call: BinetteLocalVariantConstructThunk,
     pub context: *mut c_void,
 }
 
@@ -218,6 +241,25 @@ pub type BinetteLocalSequenceStorageTag = u32;
 pub const BINETTE_LOCAL_SEQUENCE_INLINE_FIXED: BinetteLocalSequenceStorageTag = 1;
 pub const BINETTE_LOCAL_SEQUENCE_DIRECT_CONTIGUOUS: BinetteLocalSequenceStorageTag = 2;
 pub const BINETTE_LOCAL_SEQUENCE_THUNK: BinetteLocalSequenceStorageTag = 3;
+
+pub type BinetteLocalSequenceLenThunk =
+    Option<unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> usize>;
+pub type BinetteLocalSequenceU8Thunk =
+    Option<unsafe extern "C" fn(value: *const u8, index: usize, context: *mut c_void) -> u8>;
+pub type BinetteLocalSequenceElementPtrThunk =
+    Option<unsafe extern "C" fn(value: *const u8, index: usize, context: *mut c_void) -> *const u8>;
+pub type BinetteLocalSequenceWriteBytesThunk = Option<
+    unsafe extern "C" fn(value: *mut u8, ptr: *const u8, len: usize, context: *mut c_void) -> bool,
+>;
+pub type BinetteLocalSequenceWriteFixedElementsThunk = Option<
+    unsafe extern "C" fn(
+        value: *mut u8,
+        ptr: *const u8,
+        count: usize,
+        element_stride: usize,
+        context: *mut c_void,
+    ) -> bool,
+>;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -236,11 +278,11 @@ pub struct BinetteLocalSequenceStorageAbi {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalSequenceThunksAbi {
-    pub len: *const c_void,
-    pub element_u8: *const c_void,
-    pub element_ptr: *const c_void,
-    pub write_bytes: *const c_void,
-    pub write_fixed_elements: *const c_void,
+    pub len: BinetteLocalSequenceLenThunk,
+    pub element_u8: BinetteLocalSequenceU8Thunk,
+    pub element_ptr: BinetteLocalSequenceElementPtrThunk,
+    pub write_bytes: BinetteLocalSequenceWriteBytesThunk,
+    pub write_fixed_elements: BinetteLocalSequenceWriteFixedElementsThunk,
     pub context: *mut c_void,
 }
 
@@ -255,6 +297,16 @@ pub type BinetteLocalOptionRepresentationTag = u32;
 pub const BINETTE_LOCAL_OPTION_DIRECT_TAG: BinetteLocalOptionRepresentationTag = 1;
 pub const BINETTE_LOCAL_OPTION_NICHE: BinetteLocalOptionRepresentationTag = 2;
 pub const BINETTE_LOCAL_OPTION_THUNK: BinetteLocalOptionRepresentationTag = 3;
+
+pub type BinetteLocalOptionIsSomeThunk =
+    Option<unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> bool>;
+pub type BinetteLocalOptionSomeThunk =
+    Option<unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> *const u8>;
+pub type BinetteLocalOptionWriteNoneThunk =
+    Option<unsafe extern "C" fn(value: *mut u8, context: *mut c_void) -> bool>;
+pub type BinetteLocalOptionWriteSomeBytesThunk = Option<
+    unsafe extern "C" fn(value: *mut u8, ptr: *const u8, len: usize, context: *mut c_void) -> bool,
+>;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -273,10 +325,10 @@ pub struct BinetteLocalOptionRepresentationAbi {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BinetteLocalOptionThunksAbi {
-    pub is_some: *const c_void,
-    pub some: *const c_void,
-    pub write_none: *const c_void,
-    pub write_some_bytes: *const c_void,
+    pub is_some: BinetteLocalOptionIsSomeThunk,
+    pub some: BinetteLocalOptionSomeThunk,
+    pub write_none: BinetteLocalOptionWriteNoneThunk,
+    pub write_some_bytes: BinetteLocalOptionWriteSomeBytesThunk,
     pub context: *mut c_void,
 }
 
@@ -528,12 +580,14 @@ impl AbiImporter {
                 offset: access.direct_offset,
             }),
             BINETTE_LOCAL_ACCESS_THUNK => {
-                let call = function_ptr(access.thunk.call).ok_or_else(|| {
-                    LocalDescriptorAbiError::MissingThunk {
-                        path: path.to_owned(),
-                        field: "enum.tag",
-                    }
-                })?;
+                let call =
+                    access
+                        .thunk
+                        .call
+                        .ok_or_else(|| LocalDescriptorAbiError::MissingThunk {
+                            path: path.to_owned(),
+                            field: "enum.tag",
+                        })?;
                 let thunk = LocalThunk::new(backend, format!("{path}.$tag"));
                 self.thunks = std::mem::take(&mut self.thunks).with_enum_tag(
                     thunk.clone(),
@@ -563,12 +617,14 @@ impl AbiImporter {
                 offset: access.direct_offset,
             }),
             BINETTE_LOCAL_ACCESS_THUNK => {
-                let call = function_ptr(access.thunk.call).ok_or_else(|| {
-                    LocalDescriptorAbiError::MissingThunk {
-                        path: path.to_owned(),
-                        field: "variant.project",
-                    }
-                })?;
+                let call =
+                    access
+                        .thunk
+                        .call
+                        .ok_or_else(|| LocalDescriptorAbiError::MissingThunk {
+                            path: path.to_owned(),
+                            field: "variant.project",
+                        })?;
                 let thunk = LocalThunk::new(backend, format!("{path}.$project"));
                 self.thunks = std::mem::take(&mut self.thunks).with_variant_project(
                     thunk.clone(),
@@ -593,7 +649,7 @@ impl AbiImporter {
         backend: LocalBackend,
         path: &str,
     ) -> Option<LocalThunk> {
-        let call = function_ptr(construct.call)?;
+        let call = construct.call?;
         let thunk = LocalThunk::new(backend, format!("{path}.$construct"));
         self.thunks = std::mem::take(&mut self.thunks).with_variant_construct(
             thunk.clone(),
@@ -612,11 +668,11 @@ impl AbiImporter {
         backend: LocalBackend,
         path: &str,
     ) -> (Option<LocalThunk>, Option<LocalThunk>) {
-        let Some(call) = function_ptr(project_into.call) else {
+        let Some(call) = project_into.call else {
             return (None, None);
         };
         let project_thunk = LocalThunk::new(backend, format!("{path}.$project_into"));
-        let drop_call = function_ptr(drop_projected.call);
+        let drop_call = drop_projected.call;
         let drop_thunk =
             drop_call.map(|_| LocalThunk::new(backend, format!("{path}.$drop_projected")));
         self.thunks = std::mem::take(&mut self.thunks).with_variant_project_into(
@@ -659,15 +715,17 @@ impl AbiImporter {
                 })
             }
             BINETTE_LOCAL_SEQUENCE_THUNK => {
-                let len = function_ptr(storage.thunks.len).ok_or_else(|| {
-                    LocalDescriptorAbiError::MissingThunk {
-                        path: path.to_owned(),
-                        field: "sequence.len",
-                    }
-                })?;
+                let len =
+                    storage
+                        .thunks
+                        .len
+                        .ok_or_else(|| LocalDescriptorAbiError::MissingThunk {
+                            path: path.to_owned(),
+                            field: "sequence.len",
+                        })?;
                 let len_thunk = LocalThunk::new(backend, format!("{path}.$len"));
                 let element_thunk = LocalThunk::new(backend, format!("{path}.$element"));
-                if let Some(element_u8) = function_ptr(storage.thunks.element_u8) {
+                if let Some(element_u8) = storage.thunks.element_u8 {
                     self.thunks = std::mem::take(&mut self.thunks).with_sequence_u8(
                         len_thunk.clone(),
                         element_thunk.clone(),
@@ -678,7 +736,7 @@ impl AbiImporter {
                         },
                     );
                 }
-                if let Some(element_ptr) = function_ptr(storage.thunks.element_ptr) {
+                if let Some(element_ptr) = storage.thunks.element_ptr {
                     self.thunks = std::mem::take(&mut self.thunks).with_sequence_element_ptr(
                         len_thunk.clone(),
                         element_thunk.clone(),
@@ -689,8 +747,8 @@ impl AbiImporter {
                         },
                     );
                 }
-                let write_bytes = function_ptr(storage.thunks.write_bytes);
-                let write_fixed_elements = function_ptr(storage.thunks.write_fixed_elements);
+                let write_bytes = storage.thunks.write_bytes;
+                let write_fixed_elements = storage.thunks.write_fixed_elements;
                 let write = if write_bytes.is_some() || write_fixed_elements.is_some() {
                     Some(LocalThunk::new(backend, format!("{path}.$write")))
                 } else {
@@ -770,18 +828,22 @@ impl AbiImporter {
                 })
             }
             BINETTE_LOCAL_OPTION_THUNK => {
-                let is_some = function_ptr(option.thunks.is_some).ok_or_else(|| {
-                    LocalDescriptorAbiError::MissingThunk {
-                        path: path.to_owned(),
-                        field: "option.is_some",
-                    }
-                })?;
-                let some = function_ptr(option.thunks.some).ok_or_else(|| {
-                    LocalDescriptorAbiError::MissingThunk {
-                        path: path.to_owned(),
-                        field: "option.some",
-                    }
-                })?;
+                let is_some =
+                    option
+                        .thunks
+                        .is_some
+                        .ok_or_else(|| LocalDescriptorAbiError::MissingThunk {
+                            path: path.to_owned(),
+                            field: "option.is_some",
+                        })?;
+                let some =
+                    option
+                        .thunks
+                        .some
+                        .ok_or_else(|| LocalDescriptorAbiError::MissingThunk {
+                            path: path.to_owned(),
+                            field: "option.some",
+                        })?;
                 let is_some_thunk = LocalThunk::new(backend, format!("{path}.$is_some"));
                 let some_thunk = LocalThunk::new(backend, format!("{path}.$some"));
                 self.thunks = std::mem::take(&mut self.thunks).with_option(
@@ -793,8 +855,8 @@ impl AbiImporter {
                         context: option.thunks.context as usize,
                     },
                 );
-                let write_none_call = function_ptr(option.thunks.write_none);
-                let write_some_bytes_call = function_ptr(option.thunks.write_some_bytes);
+                let write_none_call = option.thunks.write_none;
+                let write_some_bytes_call = option.thunks.write_some_bytes;
                 let write_none = write_none_call
                     .map(|_| LocalThunk::new(backend, format!("{path}.$write_none")));
                 let write_some_bytes = write_some_bytes_call
@@ -869,20 +931,6 @@ fn import_backend(
             tag,
         }),
     }
-}
-
-fn function_ptr<T>(ptr: *const c_void) -> Option<T>
-where
-    T: Copy,
-{
-    if ptr.is_null() {
-        return None;
-    }
-    assert_eq!(
-        std::mem::size_of::<T>(),
-        std::mem::size_of::<*const c_void>()
-    );
-    Some(unsafe { std::mem::transmute_copy(&ptr) })
 }
 
 unsafe fn read_str(
