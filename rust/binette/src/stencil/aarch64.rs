@@ -1,6 +1,5 @@
 use super::runtime::HYBRID_ERROR_FLAG;
 use super::*;
-use crate::layout::option_string_layout;
 
 pub(super) fn generate_code(
     ops: &[StencilOp],
@@ -1178,9 +1177,6 @@ fn emit_encode_option_op(
     error_branches: &mut Vec<EncodeBranchFixup>,
 ) -> Result<(), StencilError> {
     match option.layout {
-        EncodeOptionLayout::NicheString => {
-            emit_encode_niche_string_option_op(code, option, error_branches)
-        }
         EncodeOptionLayout::DirectTag {
             tag_offset,
             tag_width,
@@ -1283,72 +1279,6 @@ fn emit_load_local_option_tag(
         }
     };
     push_u32(code, word);
-    Ok(())
-}
-
-#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-fn emit_encode_niche_string_option_op(
-    code: &mut Vec<u8>,
-    option: EncodeOptionEmit<'_>,
-    error_branches: &mut Vec<EncodeBranchFixup>,
-) -> Result<(), StencilError> {
-    let Some(layout) = option_string_layout() else {
-        return Err(StencilError::Unsupported {
-            path: "$option".to_owned(),
-            reason: "option string layout probe failed",
-        });
-    };
-    if !layout.same_size_niche {
-        return Err(StencilError::Unsupported {
-            path: "$option".to_owned(),
-            reason: "Option<String> is not represented as a niche string",
-        });
-    }
-
-    let some_base_reg = option_value_base_register(option.option_depth)?;
-    if option.input_offset == 0 {
-        push_u32(code, mov_x_register(some_base_reg, option.value_base_reg)?);
-    } else {
-        push_u32(
-            code,
-            add_x_immediate(
-                some_base_reg,
-                option.value_base_reg,
-                option.input_offset,
-                "$option",
-            )?,
-        );
-    }
-    push_u32(
-        code,
-        ldur_x_register(24, some_base_reg, layout.none_tag_offset, "$option")?,
-    );
-    emit_mov_x_immediate(code, 10, layout.none_tag_value as u64)?;
-    push_u32(code, cmp_x_register(24, 10)?);
-    let none_branch = code.len();
-    push_u32(code, 0);
-
-    emit_encode_tag_byte(code, STENCIL_OPTION_SOME, error_branches)?;
-    for op in option.some_ops {
-        emit_encode_op(
-            code,
-            op,
-            error_branches,
-            some_base_reg,
-            option.option_depth + 1,
-        )?;
-    }
-    let some_done_branch = code.len();
-    push_u32(code, 0);
-
-    let none_offset = code.len();
-    emit_encode_tag_byte(code, STENCIL_OPTION_NONE, error_branches)?;
-
-    let done = code.len();
-    let none_word = patch_cond_branch_imm19(AARCH64_B_EQ, none_branch, none_offset)?;
-    code[none_branch..none_branch + 4].copy_from_slice(&none_word.to_le_bytes());
-    let some_done_word = patch_uncond_branch_imm26(AARCH64_B, some_done_branch, done)?;
-    code[some_done_branch..some_done_branch + 4].copy_from_slice(&some_done_word.to_le_bytes());
     Ok(())
 }
 

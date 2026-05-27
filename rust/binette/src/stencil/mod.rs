@@ -48,10 +48,10 @@ use self::runtime::{
     stencil_decode_helper, stencil_encode_helper, stencil_encode_reserve,
 };
 use self::types::{
-    ByteTaggedLength, CopyOp, CopyWidth, DirectSequenceDecodeLayout, EncodeBytesKind,
-    EncodeBytesLayout, EncodeEnumCase, EncodeEnumSelector, EncodeListLayout, EncodeOptionLayout,
-    EncodeStencilOp, EnumCase, FixedEncodeCompiler, FixedEncodeSegment, HybridStencilOp,
-    LengthCheck, LocalEnumDecodeCase, LocalEnumDecodePayload, LocalEnumEncodeCase,
+    ByteTaggedLength, CopyOp, CopyWidth, DirectOptionDecodeLayout, DirectSequenceDecodeLayout,
+    EncodeBytesKind, EncodeBytesLayout, EncodeEnumCase, EncodeEnumSelector, EncodeListLayout,
+    EncodeOptionLayout, EncodeStencilOp, EnumCase, FixedEncodeCompiler, FixedEncodeSegment,
+    HybridStencilOp, LengthCheck, LocalEnumDecodeCase, LocalEnumDecodePayload, LocalEnumEncodeCase,
     LocalEnumEncodePayload, StencilEncodeHelper, StencilEncodeRuntime, StencilFailure,
     StencilHelper, StencilOp, StencilRuntime, TaggedLength,
 };
@@ -828,8 +828,8 @@ fn decode_helper_paths(helpers: &[StencilHelper], failures: &[StencilFailure]) -
             | StencilHelper::SequenceFixedElements { failure_index, .. }
             | StencilHelper::DirectSequenceBytes { failure_index, .. }
             | StencilHelper::DirectSequenceFixedElements { failure_index, .. }
+            | StencilHelper::DirectOptionSequenceBytes { failure_index, .. }
             | StencilHelper::OptionSequenceBytes { failure_index, .. }
-            | StencilHelper::RustOptionStringBytes { failure_index, .. }
             | StencilHelper::Enum { failure_index, .. }
             | StencilHelper::Skip { failure_index, .. } => helper_path(failures, *failure_index),
         })

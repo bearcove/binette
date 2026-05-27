@@ -119,13 +119,16 @@ pub(super) enum StencilHelper {
         element_input_len: usize,
         failure_index: usize,
     },
+    DirectOptionSequenceBytes {
+        output_offset: usize,
+        option: DirectOptionDecodeLayout,
+        sequence: DirectSequenceDecodeLayout,
+        primitive: Primitive,
+        failure_index: usize,
+    },
     OptionSequenceBytes {
         output_offset: usize,
         thunks: LocalOptionSequenceDecodeThunks,
-        failure_index: usize,
-    },
-    RustOptionStringBytes {
-        output_offset: usize,
         failure_index: usize,
     },
     Enum {
@@ -146,6 +149,17 @@ pub(super) struct DirectSequenceDecodeLayout {
     pub(super) cap_offset: usize,
     pub(super) element_stride: usize,
     pub(super) element_align: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct DirectOptionDecodeLayout {
+    pub(super) tag_offset: usize,
+    pub(super) tag_width: usize,
+    pub(super) none_value: usize,
+    pub(super) none_bytes: Option<Vec<u8>>,
+    pub(super) some_value: Option<usize>,
+    pub(super) some_offset: usize,
+    pub(super) option_size: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -218,7 +232,6 @@ pub(super) enum EncodeBytesLayout {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EncodeOptionLayout {
-    NicheString,
     DirectTag {
         tag_offset: usize,
         tag_width: usize,

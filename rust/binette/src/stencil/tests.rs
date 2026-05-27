@@ -2656,6 +2656,52 @@ fn option_string_encode_stencil_uses_niche_layout_without_facet_option_helper() 
     );
 }
 
+// r[verify binette.local-access.descriptor+2]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn hybrid_local_decode_constructs_option_string_from_descriptor_facts() {
+    type Value = Option<String>;
+
+    let writer_plan = writer_plan_for::<Value>().unwrap();
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        writer_plan.root(),
+        &writer_registry,
+    )
+    .unwrap();
+    let descriptor = rust_facet_descriptor_for::<Value>().unwrap();
+
+    let strict_error =
+        match strict_local_stencil_decoder_from_plan(&reader_plan, &writer_registry, &descriptor) {
+            Ok(_) => panic!("strict local decode must reject variable-width option payloads"),
+            Err(err) => err,
+        };
+    assert!(matches!(strict_error, StencilError::Unsupported { .. }));
+
+    let decoder = hybrid_local_stencil_decoder_from_plan(
+        &reader_plan,
+        &writer_registry,
+        &descriptor,
+        &LocalThunkBindings::new(),
+    )
+    .unwrap();
+    assert_eq!(decoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(decoder.report().helper_paths, vec!["$".to_owned()]);
+
+    for value in [Some("descriptor none/some".to_owned()), None] {
+        let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+        let mut decoded = std::mem::MaybeUninit::<Value>::uninit();
+        unsafe { decoder.decode_raw_into(&bytes, decoded.as_mut_ptr().cast()) }.unwrap();
+        let decoded = unsafe { decoded.assume_init() };
+        assert_eq!(decoded, value);
+    }
+}
+
 #[test]
 fn list_encode_stencil_uses_vec_layout_without_facet_list_helpers() {
     type Value = Vec<(u16, String)>;

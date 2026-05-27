@@ -8,12 +8,13 @@ pub(crate) struct VecLayout {
     pub(crate) cap_offset: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OptionStringLayout {
     pub(crate) same_size_niche: bool,
     pub(crate) some_string: VecLayout,
     pub(crate) none_tag_offset: usize,
     pub(crate) none_tag_value: usize,
+    pub(crate) none_bytes: Vec<u8>,
 }
 
 pub(crate) fn string_layout() -> Option<VecLayout> {
@@ -59,6 +60,7 @@ pub(crate) fn option_string_layout() -> Option<OptionStringLayout> {
         some_string,
         none_tag_offset: some_string.cap_offset,
         none_tag_value,
+        none_bytes: unsafe { bytes_of(&*none).to_vec() },
     })
 }
 
@@ -87,6 +89,10 @@ unsafe fn words_of<T>(value: &T) -> &[usize] {
             size_of::<T>() / size_of::<usize>(),
         )
     }
+}
+
+unsafe fn bytes_of<T>(value: &T) -> &[u8] {
+    unsafe { slice::from_raw_parts(std::ptr::from_ref(value).cast::<u8>(), size_of::<T>()) }
 }
 
 fn find_unique_word(words: &[usize], needle: usize) -> Option<usize> {

@@ -184,6 +184,20 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
             }
             end
         }
+        StencilHelper::DirectOptionSequenceBytes {
+            output_offset,
+            option,
+            sequence,
+            primitive,
+            ..
+        } => decode_direct_option_sequence_bytes(
+            helper,
+            tail,
+            unsafe { out.add(*output_offset) },
+            option,
+            *sequence,
+            *primitive,
+        ),
         StencilHelper::OptionSequenceBytes {
             output_offset,
             thunks,
@@ -217,38 +231,6 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
                     } {
                         return hybrid_error_for_helper(helper);
                     }
-                    end
-                }
-                _ => return hybrid_error_for_helper(helper),
-            }
-        }
-        StencilHelper::RustOptionStringBytes { output_offset, .. } => {
-            let Some(tag) = tail.first().copied() else {
-                return hybrid_error_for_helper(helper);
-            };
-            let output = unsafe { out.add(*output_offset) };
-            match tag {
-                STENCIL_OPTION_NONE_U8 => {
-                    unsafe { std::ptr::write(output.cast::<Option<String>>(), None) };
-                    1
-                }
-                STENCIL_OPTION_SOME_U8 => {
-                    if tail.len() < 5 {
-                        return hybrid_error_for_helper(helper);
-                    }
-                    let len = u32::from_le_bytes(tail[1..5].try_into().unwrap()) as usize;
-                    let Some(end) = 5usize.checked_add(len) else {
-                        return hybrid_error_for_helper(helper);
-                    };
-                    let Some(bytes) = tail.get(5..end) else {
-                        return hybrid_error_for_helper(helper);
-                    };
-                    let Ok(value) = std::str::from_utf8(bytes) else {
-                        return hybrid_error_for_helper(helper);
-                    };
-                    unsafe {
-                        std::ptr::write(output.cast::<Option<String>>(), Some(value.to_owned()))
-                    };
                     end
                 }
                 _ => return hybrid_error_for_helper(helper),
@@ -352,11 +334,114 @@ fn hybrid_error_for_helper(helper: &StencilHelper) -> usize {
         | StencilHelper::SequenceFixedElements { failure_index, .. }
         | StencilHelper::DirectSequenceBytes { failure_index, .. }
         | StencilHelper::DirectSequenceFixedElements { failure_index, .. }
+        | StencilHelper::DirectOptionSequenceBytes { failure_index, .. }
         | StencilHelper::OptionSequenceBytes { failure_index, .. }
-        | StencilHelper::RustOptionStringBytes { failure_index, .. }
         | StencilHelper::Enum { failure_index, .. }
         | StencilHelper::Skip { failure_index, .. } => hybrid_error_for_failure(*failure_index),
     }
+}
+
+fn decode_direct_option_sequence_bytes(
+    helper: &StencilHelper,
+    tail: &[u8],
+    output: *mut u8,
+    option: &DirectOptionDecodeLayout,
+    sequence: DirectSequenceDecodeLayout,
+    primitive: Primitive,
+) -> usize {
+    let Some(tag) = tail.first().copied() else {
+        return hybrid_error_for_helper(helper);
+    };
+    match tag {
+        STENCIL_OPTION_NONE_U8 => {
+            if !unsafe { write_direct_option_none(output, option) } {
+                return hybrid_error_for_helper(helper);
+            }
+            1
+        }
+        STENCIL_OPTION_SOME_U8 => {
+            if tail.len() < 5 {
+                return hybrid_error_for_helper(helper);
+            }
+            let len = u32::from_le_bytes(tail[1..5].try_into().unwrap()) as usize;
+            let Some(end) = 5usize.checked_add(len) else {
+                return hybrid_error_for_helper(helper);
+            };
+            let Some(bytes) = tail.get(5..end) else {
+                return hybrid_error_for_helper(helper);
+            };
+            if primitive == Primitive::String && std::str::from_utf8(bytes).is_err() {
+                return hybrid_error_for_helper(helper);
+            }
+            let some_output = unsafe { output.add(option.some_offset) };
+            if !unsafe { write_direct_sequence(some_output, sequence, bytes, len) } {
+                return hybrid_error_for_helper(helper);
+            }
+            if let Some(some_value) = option.some_value
+                && !unsafe {
+                    write_direct_option_tag(output, option.tag_offset, option.tag_width, some_value)
+                }
+            {
+                return hybrid_error_for_helper(helper);
+            }
+            end
+        }
+        _ => hybrid_error_for_helper(helper),
+    }
+}
+
+unsafe fn write_direct_option_none(output: *mut u8, layout: &DirectOptionDecodeLayout) -> bool {
+    if let Some(bytes) = &layout.none_bytes {
+        if bytes.len() != layout.option_size {
+            return false;
+        }
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len()) };
+    }
+    unsafe {
+        write_direct_option_tag(
+            output,
+            layout.tag_offset,
+            layout.tag_width,
+            layout.none_value,
+        )
+    }
+}
+
+unsafe fn write_direct_option_tag(
+    output: *mut u8,
+    tag_offset: usize,
+    tag_width: usize,
+    value: usize,
+) -> bool {
+    let tag_output = unsafe { output.add(tag_offset) };
+    match tag_width {
+        1 => {
+            let Ok(value) = u8::try_from(value) else {
+                return false;
+            };
+            unsafe { std::ptr::write(tag_output, value) };
+        }
+        2 => {
+            let Ok(value) = u16::try_from(value) else {
+                return false;
+            };
+            unsafe { std::ptr::write_unaligned(tag_output.cast::<u16>(), value) };
+        }
+        4 => {
+            let Ok(value) = u32::try_from(value) else {
+                return false;
+            };
+            unsafe { std::ptr::write_unaligned(tag_output.cast::<u32>(), value) };
+        }
+        8 => {
+            let Ok(value) = u64::try_from(value) else {
+                return false;
+            };
+            unsafe { std::ptr::write_unaligned(tag_output.cast::<u64>(), value) };
+        }
+        _ => return false,
+    }
+    true
 }
 
 unsafe fn write_direct_sequence(

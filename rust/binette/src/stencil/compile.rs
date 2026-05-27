@@ -1,7 +1,7 @@
 use super::*;
 use crate::hash::primitive_type_id;
 use crate::local_access::{
-    LocalAccess, LocalBackend, LocalEnumTagThunks, LocalFieldDescriptor, LocalOptionEncodeThunks,
+    LocalAccess, LocalEnumTagThunks, LocalFieldDescriptor, LocalOptionEncodeThunks,
     LocalOptionRepresentation, LocalOptionSequenceDecodeThunks, LocalScalarAccess, LocalSchemaRef,
     LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks,
     LocalSequenceFixedDecodeThunks, LocalSequenceStorage, LocalThunkBindings, LocalTypeDescriptor,
@@ -1158,11 +1158,16 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
                 reason: "local option thunk decode currently supports byte-sequence payloads",
             });
         };
-        if local_rust_option_string_decode(reader, *primitive, path)? {
+        if let Some((option, sequence)) =
+            local_direct_option_sequence_bytes_decode_layout(reader, *primitive, path)?
+        {
             let failure_index = self.push_helper_failure(path)?;
             let helper_index = self.helpers.len();
-            self.helpers.push(StencilHelper::RustOptionStringBytes {
+            self.helpers.push(StencilHelper::DirectOptionSequenceBytes {
                 output_offset,
+                option,
+                sequence,
+                primitive: *primitive,
                 failure_index,
             });
             self.ops.push(HybridStencilOp::Helper { helper_index });
@@ -1279,17 +1284,7 @@ impl LocalEncodeStencilCompiler<'_> {
                 match self.push_direct_option(descriptor, element, input_offset, path) {
                     Ok(()) => Ok(()),
                     Err(StencilError::Unsupported { .. }) => {
-                        match self.push_niche_option(descriptor, element, input_offset, path) {
-                            Ok(()) => Ok(()),
-                            Err(StencilError::Unsupported { .. }) => self
-                                .push_option_sequence_bytes(
-                                    descriptor,
-                                    element,
-                                    input_offset,
-                                    path,
-                                ),
-                            Err(err) => Err(err),
-                        }
+                        self.push_option_sequence_bytes(descriptor, element, input_offset, path)
                     }
                     Err(err) => Err(err),
                 }
@@ -1539,57 +1534,6 @@ impl LocalEncodeStencilCompiler<'_> {
                 none_value: option_parts.none_value,
                 some_offset: option_parts.some_offset,
             },
-            some_ops: compiler.ops,
-        });
-        Ok(())
-    }
-
-    fn push_niche_option(
-        &mut self,
-        descriptor: &LocalTypeDescriptor,
-        element: &WriterNode,
-        input_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let (some_descriptor, representation) = local_option_descriptor(descriptor, path)?;
-        if !matches!(
-            representation,
-            LocalOptionRepresentation::NicheString { .. }
-        ) {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "local option descriptor does not use a niche string",
-            });
-        }
-
-        let mut compiler = LocalEncodeStencilCompiler {
-            ops: Vec::new(),
-            helpers: Vec::new(),
-            failures: Vec::new(),
-            thunks: self.thunks,
-        };
-        let mut pending = FixedEncodeSegment {
-            ops: Vec::new(),
-            output_len: 0,
-        };
-        compiler.compile_node(
-            some_descriptor,
-            element,
-            0,
-            &format!("{path}.some"),
-            &mut pending,
-        )?;
-        compiler.flush_direct_segment(&mut pending);
-        if !compiler.helpers.is_empty() {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "niche local option payload requires helper fallback",
-            });
-        }
-
-        self.ops.push(EncodeStencilOp::Option {
-            input_offset,
-            layout: EncodeOptionLayout::NicheString,
             some_ops: compiler.ops,
         });
         Ok(())
@@ -2419,8 +2363,10 @@ struct LocalDirectOptionParts<'a> {
     tag_offset: usize,
     tag_width: usize,
     none_value: usize,
+    none_bytes: Option<&'a [u8]>,
     some_value: Option<usize>,
     some_offset: usize,
+    option_size: usize,
 }
 
 fn local_direct_option_parts<'a>(
@@ -2428,20 +2374,29 @@ fn local_direct_option_parts<'a>(
     path: &str,
 ) -> Result<LocalDirectOptionParts<'a>, StencilError> {
     let (some, representation) = local_option_descriptor(descriptor, path)?;
-    let (tag, tag_width, none_value, some_value, some_access) = match representation {
+    let (tag, tag_width, none_value, none_bytes, some_value, some_access) = match representation {
         LocalOptionRepresentation::Tag {
             tag,
             tag_width,
             none_value,
             some_value,
             some,
-        } => (tag, *tag_width, *none_value, Some(*some_value), some),
+        } => (tag, *tag_width, *none_value, None, Some(*some_value), some),
         LocalOptionRepresentation::Niche {
             tag,
             tag_width,
             none_value,
+            none_bytes,
             some,
-        } => (tag, *tag_width, *none_value, None, some),
+            ..
+        } => (
+            tag,
+            *tag_width,
+            *none_value,
+            none_bytes.as_deref(),
+            None,
+            some,
+        ),
         _ => {
             return Err(StencilError::Unsupported {
                 path: path.to_owned(),
@@ -2454,8 +2409,10 @@ fn local_direct_option_parts<'a>(
         tag_offset: local_direct_offset(tag, path)?,
         tag_width,
         none_value,
+        none_bytes,
         some_value,
         some_offset: local_direct_offset(some_access, &format!("{path}.some"))?,
+        option_size: descriptor.layout.size,
     })
 }
 
@@ -2687,25 +2644,39 @@ fn local_sequence_fixed_decode_thunks<'a>(
     Ok((element, element.layout.stride, thunks))
 }
 
-fn local_rust_option_string_decode(
+fn local_direct_option_sequence_bytes_decode_layout(
     descriptor: &LocalTypeDescriptor,
     primitive: Primitive,
     path: &str,
-) -> Result<bool, StencilError> {
-    if descriptor.backend != LocalBackend::RustFacet || primitive != Primitive::String {
-        return Ok(false);
-    }
+) -> Result<Option<(DirectOptionDecodeLayout, DirectSequenceDecodeLayout)>, StencilError> {
     let (some, representation) = local_option_descriptor(descriptor, path)?;
-    local_byte_sequence_storage(
-        some,
-        primitive,
-        &format!("{path}.some"),
-        "local option byte-sequence payload is not a byte sequence",
-    )?;
-    Ok(matches!(
+    if !matches!(
         representation,
-        LocalOptionRepresentation::NicheString { .. }
-    ))
+        LocalOptionRepresentation::Tag { .. } | LocalOptionRepresentation::Niche { .. }
+    ) {
+        return Ok(None);
+    }
+    let Some(sequence) =
+        local_direct_byte_sequence_decode_layout(some, primitive, &format!("{path}.some"))?
+    else {
+        return Ok(None);
+    };
+    let option_parts = local_direct_option_parts(descriptor, path)?;
+    if option_parts.some_value.is_none() && option_parts.none_bytes.is_none() {
+        return Ok(None);
+    }
+    Ok(Some((
+        DirectOptionDecodeLayout {
+            tag_offset: option_parts.tag_offset,
+            tag_width: option_parts.tag_width,
+            none_value: option_parts.none_value,
+            none_bytes: option_parts.none_bytes.map(<[u8]>::to_vec),
+            some_value: option_parts.some_value,
+            some_offset: option_parts.some_offset,
+            option_size: option_parts.option_size,
+        },
+        sequence,
+    )))
 }
 
 fn local_option_sequence_bytes_encode_thunks(

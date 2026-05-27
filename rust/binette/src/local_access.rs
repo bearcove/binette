@@ -296,12 +296,8 @@ pub enum LocalOptionRepresentation {
         tag: LocalAccess,
         tag_width: usize,
         none_value: usize,
+        none_bytes: Option<Vec<u8>>,
         some: LocalAccess,
-    },
-    NicheString {
-        string: LocalSequenceStorage,
-        none_tag: LocalAccess,
-        none_value: usize,
     },
     Thunk {
         is_some: LocalThunk,
@@ -1211,6 +1207,7 @@ mod rust_layout {
             tag: LocalAccess::Direct { offset: tag_offset },
             tag_width,
             none_value: option_string.none_tag_value,
+            none_bytes: read_option_none_bytes(option_shape, option_layout),
             some: LocalAccess::Direct { offset: 0 },
         })
     }
@@ -1289,6 +1286,24 @@ mod rust_layout {
         value
     }
 
+    fn read_option_none_bytes(
+        option_shape: &'static Shape,
+        option_layout: &LocalValueLayout,
+    ) -> Option<Vec<u8>> {
+        let Def::Option(option) = option_shape.def else {
+            return None;
+        };
+        let mut none = Scratch::new(option_layout.size, option_layout.align)?;
+        unsafe {
+            (option.vtable.init_none)(PtrUninit::new_sized(none.as_mut_ptr()));
+        }
+        let bytes = unsafe { none.bytes(option_layout.size).to_vec() };
+        unsafe {
+            option_shape.call_drop_in_place(PtrMut::new_sized(none.as_mut_ptr()));
+        }
+        Some(bytes)
+    }
+
     fn rust_option_niche_representation(
         option_shape: &'static Shape,
         option_layout: &LocalValueLayout,
@@ -1307,8 +1322,8 @@ mod rust_layout {
         unsafe {
             (option.vtable.init_none)(PtrUninit::new_sized(none.as_mut_ptr()));
         }
-        let none_bytes = unsafe { none.bytes(option_layout.size) };
-        let (tag_offset, tag_width, none_value) = unique_niche_none_tag(none_bytes)?;
+        let none_bytes = unsafe { none.bytes(option_layout.size).to_vec() };
+        let (tag_offset, tag_width, none_value) = unique_niche_none_tag(&none_bytes)?;
         unsafe {
             option_shape.call_drop_in_place(PtrMut::new_sized(none.as_mut_ptr()));
         }
@@ -1317,6 +1332,7 @@ mod rust_layout {
             tag: LocalAccess::Direct { offset: tag_offset },
             tag_width,
             none_value,
+            none_bytes: Some(none_bytes),
             some: LocalAccess::Direct { offset: 0 },
         })
     }
@@ -1324,12 +1340,14 @@ mod rust_layout {
     fn option_string_representation_from_layout(
         layout: OptionStringLayout,
     ) -> LocalOptionRepresentation {
-        LocalOptionRepresentation::NicheString {
-            string: sequence_storage_from_vec_layout(layout.some_string, 1),
-            none_tag: LocalAccess::Direct {
+        LocalOptionRepresentation::Niche {
+            tag: LocalAccess::Direct {
                 offset: layout.none_tag_offset,
             },
+            tag_width: size_of::<usize>(),
             none_value: layout.none_tag_value,
+            none_bytes: Some(layout.none_bytes),
+            some: LocalAccess::Direct { offset: 0 },
         }
     }
 
@@ -1621,23 +1639,27 @@ mod tests {
         let LocalTypeKind::Option {
             some,
             representation:
-                LocalOptionRepresentation::NicheString {
-                    string, none_tag, ..
+                LocalOptionRepresentation::Niche {
+                    tag,
+                    tag_width,
+                    some: some_access,
+                    ..
                 },
         } = descriptor.kind
         else {
-            panic!("expected niche string option storage");
+            panic!("expected niche option storage");
         };
 
-        assert!(matches!(
-            some.kind,
-            LocalTypeKind::Scalar(LocalScalarAccess::String(_))
-        ));
+        let LocalTypeKind::Scalar(LocalScalarAccess::String(string)) = some.kind else {
+            panic!("expected string payload descriptor");
+        };
         assert!(matches!(
             string,
             LocalSequenceStorage::DirectContiguous { .. }
         ));
-        assert!(matches!(none_tag, LocalAccess::Direct { .. }));
+        assert!(matches!(tag, LocalAccess::Direct { .. }));
+        assert_eq!(tag_width, size_of::<usize>());
+        assert_eq!(some_access, LocalAccess::Direct { offset: 0 });
     }
 
     // r[verify binette.local-access.backends]
@@ -1665,6 +1687,7 @@ mod tests {
             tag_width,
             none_value,
             some: some_access,
+            ..
         } = representation
         else {
             panic!("expected direct niche option storage");
@@ -1693,6 +1716,7 @@ mod tests {
                     tag_width,
                     some: some_access,
                     none_value,
+                    ..
                 },
         } = descriptor.kind
         else {
@@ -2109,6 +2133,7 @@ mod tests {
                     tag_width,
                     none_value,
                     some: some_access,
+                    ..
                 },
         } = &option_bool_descriptor.kind
         else {

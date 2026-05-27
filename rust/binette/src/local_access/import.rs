@@ -462,6 +462,7 @@ impl LocalStorageExport {
                 },
                 tag_width: self.option_tag_width.unwrap_or(1),
                 none_value: required(self.none_value, path, "none_value")?,
+                none_bytes: None,
                 some: LocalAccess::Direct {
                     offset: required(self.some_offset, path, "some_offset")?,
                 },
@@ -701,12 +702,6 @@ impl LocalOptionRepresentation {
             Self::Tag { tag, some, .. } | Self::Niche { tag, some, .. } => {
                 tag.validate_backend(backend, path)?;
                 some.validate_backend(backend, &format!("{path}.some"))
-            }
-            Self::NicheString {
-                string, none_tag, ..
-            } => {
-                string.validate_backend(backend, path)?;
-                none_tag.validate_backend(backend, path)
             }
             Self::Thunk {
                 is_some,
