@@ -945,7 +945,7 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
         let thunks = local_sequence_decode_thunks(reader, primitive, self.thunks, path)?;
         let failure_index = self.push_helper_failure(path)?;
         let helper_index = self.helpers.len();
-        self.helpers.push(StencilHelper::LocalSequenceBytes {
+        self.helpers.push(StencilHelper::SequenceBytes {
             output_offset,
             thunks,
             failure_index,
@@ -996,15 +996,14 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
         )?;
         let failure_index = self.push_helper_failure(path)?;
         let helper_index = self.helpers.len();
-        self.helpers
-            .push(StencilHelper::LocalSequenceFixedElements {
-                output_offset,
-                thunks,
-                element_ops,
-                element_input_len,
-                element_stride,
-                failure_index,
-            });
+        self.helpers.push(StencilHelper::SequenceFixedElements {
+            output_offset,
+            thunks,
+            element_ops,
+            element_input_len,
+            element_stride,
+            failure_index,
+        });
         self.ops.push(HybridStencilOp::Helper { helper_index });
         Ok(())
     }
@@ -1053,7 +1052,7 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
         }
         let failure_index = self.push_helper_failure(path)?;
         let helper_index = self.helpers.len();
-        self.helpers.push(StencilHelper::LocalEnum {
+        self.helpers.push(StencilHelper::Enum {
             output_offset,
             cases,
             failure_index,
@@ -1172,7 +1171,7 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
             local_option_sequence_bytes_decode_thunks(reader, *primitive, self.thunks, path)?;
         let failure_index = self.push_helper_failure(path)?;
         let helper_index = self.helpers.len();
-        self.helpers.push(StencilHelper::LocalOptionSequenceBytes {
+        self.helpers.push(StencilHelper::OptionSequenceBytes {
             output_offset,
             thunks,
             failure_index,
@@ -1458,7 +1457,7 @@ impl LocalEncodeStencilCompiler<'_> {
         let thunks = local_sequence_bytes_thunks(descriptor, primitive, self.thunks, path)?;
         let failure_index = self.push_helper_failure(path)?;
         let helper_index = self.helpers.len();
-        self.helpers.push(StencilEncodeHelper::LocalSequenceBytes {
+        self.helpers.push(StencilEncodeHelper::SequenceBytes {
             input_offset,
             thunks,
             failure_index,
@@ -1486,7 +1485,7 @@ impl LocalEncodeStencilCompiler<'_> {
         let failure_index = self.push_helper_failure(path)?;
         let helper_index = self.helpers.len();
         self.helpers
-            .push(StencilEncodeHelper::LocalSequenceFixedElements {
+            .push(StencilEncodeHelper::SequenceFixedElements {
                 input_offset,
                 thunks,
                 element_ops: segment.ops,
@@ -1825,7 +1824,7 @@ impl LocalEncodeStencilCompiler<'_> {
         }
         let failure_index = self.push_helper_failure(path)?;
         let helper_index = self.helpers.len();
-        self.helpers.push(StencilEncodeHelper::LocalEnum {
+        self.helpers.push(StencilEncodeHelper::Enum {
             input_offset,
             tag_thunks,
             cases,
@@ -1906,13 +1905,12 @@ impl LocalEncodeStencilCompiler<'_> {
             local_option_sequence_bytes_encode_thunks(descriptor, *primitive, self.thunks, path)?;
         let failure_index = self.push_helper_failure(path)?;
         let helper_index = self.helpers.len();
-        self.helpers
-            .push(StencilEncodeHelper::LocalOptionSequenceBytes {
-                input_offset,
-                option_thunks,
-                sequence_thunks,
-                failure_index,
-            });
+        self.helpers.push(StencilEncodeHelper::OptionSequenceBytes {
+            input_offset,
+            option_thunks,
+            sequence_thunks,
+            failure_index,
+        });
         self.ops.push(EncodeStencilOp::Helper { helper_index });
         Ok(())
     }

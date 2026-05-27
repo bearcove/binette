@@ -93,12 +93,12 @@ pub(super) enum HybridStencilOp {
 
 #[derive(Debug, Clone)]
 pub(super) enum StencilHelper {
-    LocalSequenceBytes {
+    SequenceBytes {
         output_offset: usize,
         thunks: LocalSequenceDecodeThunks,
         failure_index: usize,
     },
-    LocalSequenceFixedElements {
+    SequenceFixedElements {
         output_offset: usize,
         thunks: LocalSequenceFixedDecodeThunks,
         element_ops: Vec<StencilOp>,
@@ -119,7 +119,7 @@ pub(super) enum StencilHelper {
         element_input_len: usize,
         failure_index: usize,
     },
-    LocalOptionSequenceBytes {
+    OptionSequenceBytes {
         output_offset: usize,
         thunks: LocalOptionSequenceDecodeThunks,
         failure_index: usize,
@@ -128,7 +128,7 @@ pub(super) enum StencilHelper {
         output_offset: usize,
         failure_index: usize,
     },
-    LocalEnum {
+    Enum {
         output_offset: usize,
         cases: Vec<LocalEnumDecodeCase>,
         failure_index: usize,
@@ -250,30 +250,25 @@ pub(super) struct EncodeEnumCase {
 
 #[derive(Debug, Clone)]
 pub(super) enum StencilEncodeHelper {
-    RustFacetRoot {
-        shape: &'static Shape,
-        plan: WriterPlan,
-        failure_index: usize,
-    },
-    LocalSequenceBytes {
+    SequenceBytes {
         input_offset: usize,
         thunks: LocalSequenceEncodeThunks,
         failure_index: usize,
     },
-    LocalSequenceFixedElements {
+    SequenceFixedElements {
         input_offset: usize,
         thunks: LocalSequenceElementPtrEncodeThunks,
         element_ops: Vec<CopyOp>,
         element_output_len: usize,
         failure_index: usize,
     },
-    LocalEnum {
+    Enum {
         input_offset: usize,
         tag_thunks: LocalEnumTagThunks,
         cases: Vec<LocalEnumEncodeCase>,
         failure_index: usize,
     },
-    LocalOptionSequenceBytes {
+    OptionSequenceBytes {
         input_offset: usize,
         option_thunks: LocalOptionEncodeThunks,
         sequence_thunks: LocalSequenceEncodeThunks,

@@ -2624,11 +2624,10 @@ fn strict_encode_rejects_option_payload_that_needs_helper() {
         strict_stencil_encoder_from_plan::<Value>(&plan),
         Err(StencilError::Unsupported { .. })
     ));
-
-    let encoder = hybrid_stencil_encoder_from_plan::<Value>(&plan).unwrap();
-    assert_eq!(encoder.report().mode, StencilMode::Hybrid);
-    assert_eq!(encoder.report().helper_count, 1);
-    assert_eq!(encoder.report().helper_paths, vec!["$"]);
+    assert!(matches!(
+        hybrid_stencil_encoder_from_plan::<Value>(&plan),
+        Err(StencilError::Unsupported { .. })
+    ));
 }
 
 #[test]

@@ -4,15 +4,14 @@ use std::mem::MaybeUninit;
 use std::ptr::{NonNull, copy_nonoverlapping};
 use std::slice;
 
-use facet_core::{Facet, PtrConst, Shape};
-use facet_reflect::Peek;
+use facet_core::Facet;
 use thiserror::Error;
 
 use crate::compact::CompactError;
 use crate::decode::DecodeError;
 use crate::encode::{
     EncodeError, WriterFieldPlan, WriterNode, WriterPlan, WriterTupleElementPlan,
-    WriterVariantPayloadPlan, WriterVariantPlan, encode_peek_with_plan, writer_plan_for,
+    WriterVariantPayloadPlan, WriterVariantPlan, writer_plan_for,
 };
 use crate::hash::primitive_for_type_id;
 use crate::local_access::{
@@ -544,11 +543,8 @@ pub fn hybrid_stencil_encoder_from_plan<T: Facet<'static>>(
         reason: "failed to build Rust local access descriptor for stencil compilation",
     })?;
     let empty_thunks = LocalThunkBindings::new();
-    match hybrid_local_stencil_encoder_from_plan(plan, &descriptor, &empty_thunks) {
-        Ok(encoder) => Ok(StencilEncoder::from_local(encoder)),
-        Err(err) if !matches!(&err, StencilError::Unsupported { .. }) => Err(err),
-        Err(_) => rust_facet_root_hybrid_stencil_encoder_from_plan::<T>(plan),
-    }
+    hybrid_local_stencil_encoder_from_plan(plan, &descriptor, &empty_thunks)
+        .map(StencilEncoder::from_local)
 }
 
 // r[impl binette.local-access.boundary]
@@ -784,32 +780,6 @@ fn strict_encode_stencil_encoder_from_plan<T: Facet<'static>>(
     fixed_encode_stencil_encoder_from_plan(plan)
 }
 
-fn rust_facet_root_hybrid_stencil_encoder_from_plan<T: Facet<'static>>(
-    plan: &WriterPlan,
-) -> Result<StencilEncoder<T>, StencilError> {
-    let failures = vec![StencilFailure::Helper {
-        path: "$".to_owned(),
-    }];
-    let helpers = vec![StencilEncodeHelper::RustFacetRoot {
-        shape: T::SHAPE,
-        plan: plan.clone(),
-        failure_index: 0,
-    }];
-    let ops = vec![EncodeStencilOp::Helper { helper_index: 0 }];
-    let code = generate_encode_code(&ops)?;
-    let report = encode_report(&code, &ops, &helpers, &failures);
-    let func = code.as_encode_fn();
-    Ok(StencilEncoder {
-        code,
-        entry: EncodeStencilEntry::Helper {
-            func,
-            runtime: Box::new(StencilEncodeRuntime { helpers }),
-        },
-        report,
-        _marker: PhantomData,
-    })
-}
-
 fn decode_report(
     code: &ExecutableMemory,
     ops: &[HybridStencilOp],
@@ -854,13 +824,13 @@ fn decode_helper_paths(helpers: &[StencilHelper], failures: &[StencilFailure]) -
     helpers
         .iter()
         .filter_map(|helper| match helper {
-            StencilHelper::LocalSequenceBytes { failure_index, .. }
-            | StencilHelper::LocalSequenceFixedElements { failure_index, .. }
+            StencilHelper::SequenceBytes { failure_index, .. }
+            | StencilHelper::SequenceFixedElements { failure_index, .. }
             | StencilHelper::RustSequenceBytes { failure_index, .. }
             | StencilHelper::RustSequenceFixedElements { failure_index, .. }
-            | StencilHelper::LocalOptionSequenceBytes { failure_index, .. }
+            | StencilHelper::OptionSequenceBytes { failure_index, .. }
             | StencilHelper::RustOptionStringBytes { failure_index, .. }
-            | StencilHelper::LocalEnum { failure_index, .. }
+            | StencilHelper::Enum { failure_index, .. }
             | StencilHelper::Skip { failure_index, .. } => helper_path(failures, *failure_index),
         })
         .collect()
@@ -873,11 +843,10 @@ fn encode_helper_paths(
     helpers
         .iter()
         .filter_map(|helper| match helper {
-            StencilEncodeHelper::RustFacetRoot { failure_index, .. }
-            | StencilEncodeHelper::LocalSequenceBytes { failure_index, .. }
-            | StencilEncodeHelper::LocalSequenceFixedElements { failure_index, .. }
-            | StencilEncodeHelper::LocalEnum { failure_index, .. }
-            | StencilEncodeHelper::LocalOptionSequenceBytes { failure_index, .. } => {
+            StencilEncodeHelper::SequenceBytes { failure_index, .. }
+            | StencilEncodeHelper::SequenceFixedElements { failure_index, .. }
+            | StencilEncodeHelper::Enum { failure_index, .. }
+            | StencilEncodeHelper::OptionSequenceBytes { failure_index, .. } => {
                 helper_path(failures, *failure_index)
             }
         })

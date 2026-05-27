@@ -847,7 +847,7 @@ fn option_encode_jit_fixture() -> EncodeStencilFixture<aggregate::OptionValue> {
     }
 }
 
-macro_rules! same_schema_encode_benches {
+macro_rules! same_schema_encode_interp_bench {
     ($module:ident, $ty:ty, $sample:expr) => {
         mod $module {
             use super::*;
@@ -861,22 +861,6 @@ macro_rules! same_schema_encode_benches {
                         encode_to_vec_with_plan(
                             black_box(&fixture.sample),
                             black_box(&fixture.writer_plan),
-                        )
-                        .unwrap(),
-                    )
-                });
-            }
-
-            #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
-            #[divan::bench]
-            pub fn hybrid(bencher: Bencher) {
-                let fixture = same_hybrid_fixture::<$ty>($sample);
-
-                bencher.bench(|| {
-                    black_box(
-                        encode_to_vec_with_stencil(
-                            black_box(&fixture.fixture.sample),
-                            &fixture.encoder,
                         )
                         .unwrap(),
                     )
@@ -918,6 +902,30 @@ macro_rules! same_schema_decode_benches {
                             .decoder
                             .decode(black_box(&fixture.fixture.bytes))
                             .unwrap(),
+                    )
+                });
+            }
+        }
+    };
+}
+
+macro_rules! same_schema_decode_interp_bench {
+    ($module:ident, $ty:ty, $sample:expr) => {
+        mod $module {
+            use super::*;
+
+            #[divan::bench]
+            pub fn interp(bencher: Bencher) {
+                let fixture = same_fixture::<$ty>($sample);
+
+                bencher.bench(|| {
+                    black_box(
+                        decode_from_slice_with_plan::<$ty>(
+                            black_box(&fixture.bytes),
+                            black_box(&fixture.reader_plan),
+                            black_box(&fixture.writer_registry),
+                        )
+                        .unwrap(),
                     )
                 });
             }
@@ -1318,8 +1326,8 @@ mod encode {
             });
         }
     }
-    same_schema_encode_benches!(set, aggregate::Set, aggregate::set_sample());
-    same_schema_encode_benches!(map, aggregate::Map, aggregate::map_sample());
+    same_schema_encode_interp_bench!(set, aggregate::Set, aggregate::set_sample());
+    same_schema_encode_interp_bench!(map, aggregate::Map, aggregate::map_sample());
     mod nested_list {
         use super::*;
 
@@ -1462,7 +1470,7 @@ mod encode {
             });
         }
     }
-    same_schema_encode_benches!(dynamic, aggregate::Dynamic, aggregate::dynamic_sample());
+    same_schema_encode_interp_bench!(dynamic, aggregate::Dynamic, aggregate::dynamic_sample());
 }
 
 mod plan {
@@ -1749,8 +1757,8 @@ mod fixed_list {
         });
     }
 }
-same_schema_decode_benches!(set, aggregate::Set, aggregate::set_sample());
-same_schema_decode_benches!(map, aggregate::Map, aggregate::map_sample());
+same_schema_decode_interp_bench!(set, aggregate::Set, aggregate::set_sample());
+same_schema_decode_interp_bench!(map, aggregate::Map, aggregate::map_sample());
 same_schema_decode_benches!(option, aggregate::OptionValue, aggregate::option_sample());
 mod array {
     use super::*;
@@ -1794,4 +1802,4 @@ mod array {
         bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
     }
 }
-same_schema_decode_benches!(dynamic, aggregate::Dynamic, aggregate::dynamic_sample());
+same_schema_decode_interp_bench!(dynamic, aggregate::Dynamic, aggregate::dynamic_sample());

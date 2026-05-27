@@ -39,7 +39,7 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
     let input = unsafe { slice::from_raw_parts(input, len) };
     let tail = &input[cursor..];
     let consumed = match helper {
-        StencilHelper::LocalSequenceBytes {
+        StencilHelper::SequenceBytes {
             output_offset,
             thunks,
             ..
@@ -61,7 +61,7 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
             }
             end
         }
-        StencilHelper::LocalSequenceFixedElements {
+        StencilHelper::SequenceFixedElements {
             output_offset,
             thunks,
             element_ops,
@@ -184,7 +184,7 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
             }
             end
         }
-        StencilHelper::LocalOptionSequenceBytes {
+        StencilHelper::OptionSequenceBytes {
             output_offset,
             thunks,
             ..
@@ -254,7 +254,7 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
                 _ => return hybrid_error_for_helper(helper),
             }
         }
-        StencilHelper::LocalEnum {
+        StencilHelper::Enum {
             output_offset,
             cases,
             ..
@@ -348,13 +348,13 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
 
 fn hybrid_error_for_helper(helper: &StencilHelper) -> usize {
     match helper {
-        StencilHelper::LocalSequenceBytes { failure_index, .. }
-        | StencilHelper::LocalSequenceFixedElements { failure_index, .. }
+        StencilHelper::SequenceBytes { failure_index, .. }
+        | StencilHelper::SequenceFixedElements { failure_index, .. }
         | StencilHelper::RustSequenceBytes { failure_index, .. }
         | StencilHelper::RustSequenceFixedElements { failure_index, .. }
-        | StencilHelper::LocalOptionSequenceBytes { failure_index, .. }
+        | StencilHelper::OptionSequenceBytes { failure_index, .. }
         | StencilHelper::RustOptionStringBytes { failure_index, .. }
-        | StencilHelper::LocalEnum { failure_index, .. }
+        | StencilHelper::Enum { failure_index, .. }
         | StencilHelper::Skip { failure_index, .. } => hybrid_error_for_failure(*failure_index),
     }
 }
@@ -452,27 +452,16 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
     };
 
     let status = match helper {
-        StencilEncodeHelper::RustFacetRoot { failure_index, .. }
-        | StencilEncodeHelper::LocalSequenceBytes { failure_index, .. }
-        | StencilEncodeHelper::LocalSequenceFixedElements { failure_index, .. }
-        | StencilEncodeHelper::LocalEnum { failure_index, .. }
-        | StencilEncodeHelper::LocalOptionSequenceBytes { failure_index, .. } => {
+        StencilEncodeHelper::SequenceBytes { failure_index, .. }
+        | StencilEncodeHelper::SequenceFixedElements { failure_index, .. }
+        | StencilEncodeHelper::Enum { failure_index, .. }
+        | StencilEncodeHelper::OptionSequenceBytes { failure_index, .. } => {
             status_for_failure(*failure_index).unwrap_or(1)
         }
     };
 
     match helper {
-        StencilEncodeHelper::RustFacetRoot { shape, plan, .. } => {
-            if value.is_null() {
-                return status;
-            }
-            let peek: Peek<'_, 'static> =
-                unsafe { Peek::unchecked_new(PtrConst::new(value), shape) };
-            if encode_peek_with_plan(out, peek, plan).is_err() {
-                return status;
-            }
-        }
-        StencilEncodeHelper::LocalSequenceBytes {
+        StencilEncodeHelper::SequenceBytes {
             input_offset,
             thunks,
             ..
@@ -492,7 +481,7 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
                 out.push(unsafe { (thunks.element_u8)(value, index, context) });
             }
         }
-        StencilEncodeHelper::LocalSequenceFixedElements {
+        StencilEncodeHelper::SequenceFixedElements {
             input_offset,
             thunks,
             element_ops,
@@ -532,7 +521,7 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
                 }
             }
         }
-        StencilEncodeHelper::LocalEnum {
+        StencilEncodeHelper::Enum {
             input_offset,
             tag_thunks,
             cases,
@@ -595,7 +584,7 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
                 }
             }
         }
-        StencilEncodeHelper::LocalOptionSequenceBytes {
+        StencilEncodeHelper::OptionSequenceBytes {
             input_offset,
             option_thunks,
             sequence_thunks,

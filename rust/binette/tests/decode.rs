@@ -915,7 +915,7 @@ fn stencil_encodes_enum_through_writer_plan() {
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 #[test]
 fn stencil_handles_aggregate_roots_through_schema_plan() {
-    fn assert_stencil_matches_interpreter<T>(value: T)
+    fn assert_supported_stencil_matches_interpreter<T>(value: T)
     where
         T: Facet<'static> + std::fmt::Debug + PartialEq,
     {
@@ -933,12 +933,31 @@ fn stencil_handles_aggregate_roots_through_schema_plan() {
         assert_eq!(stencil_bytes, bytes);
     }
 
-    assert_stencil_matches_interpreter((7u16, "seven".to_owned(), vec![1u32, 2, 3], Some(true)));
-    assert_stencil_matches_interpreter(vec![(1u16, "one".to_owned()), (2, "two".to_owned())]);
-    assert_stencil_matches_interpreter(HashSet::from([3u16, 1, 2]));
-    assert_stencil_matches_interpreter(HashMap::from([(2u16, 20u8), (1, 10), (3, 30)]));
-    assert_stencil_matches_interpreter(Some((9u16, "nine".to_owned())));
-    assert_stencil_matches_interpreter([5u16, 8, 13, 21]);
+    fn assert_unsupported_stencil_encoder<T>(_value: T)
+    where
+        T: Facet<'static> + std::fmt::Debug + PartialEq,
+    {
+        let writer_plan = writer_plan_for::<T>().unwrap();
+        assert!(matches!(
+            stencil_encoder_from_plan::<T>(&writer_plan),
+            Err(StencilError::Unsupported { .. })
+        ));
+    }
+
+    assert_supported_stencil_matches_interpreter((
+        7u16,
+        "seven".to_owned(),
+        vec![1u32, 2, 3],
+        Some(true),
+    ));
+    assert_supported_stencil_matches_interpreter(vec![
+        (1u16, "one".to_owned()),
+        (2, "two".to_owned()),
+    ]);
+    assert_unsupported_stencil_encoder(HashSet::from([3u16, 1, 2]));
+    assert_unsupported_stencil_encoder(HashMap::from([(2u16, 20u8), (1, 10), (3, 30)]));
+    assert_supported_stencil_matches_interpreter(Some((9u16, "nine".to_owned())));
+    assert_supported_stencil_matches_interpreter([5u16, 8, 13, 21]);
 
     let mut object = VObject::new();
     object.insert("name", FacetValue::from("binette"));
@@ -947,7 +966,7 @@ fn stencil_handles_aggregate_roots_through_schema_plan() {
     items.push(FacetValue::from(true));
     items.push(FacetValue::NULL);
     object.insert("items", FacetValue::from(items));
-    assert_stencil_matches_interpreter(FacetValue::from(object));
+    assert_unsupported_stencil_encoder(FacetValue::from(object));
 }
 
 // r[verify binette.mode.compact]
