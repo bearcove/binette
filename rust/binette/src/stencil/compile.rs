@@ -123,13 +123,13 @@ impl StencilCompiler<'_> {
                             reason: "reader field index is out of range",
                         }
                     })?;
-                    let field_descriptor =
-                        descriptor_fields.get(*reader_index).ok_or_else(|| {
-                            StencilError::Unsupported {
-                                path: format!("{path}.{name}"),
-                                reason: "reader descriptor field index is out of range",
-                            }
-                        })?;
+                    let field_descriptor = local_reader_field_descriptor(
+                        descriptor_fields,
+                        *reader_index,
+                        name,
+                        path,
+                        "reader descriptor field index is out of range",
+                    )?;
                     let field_offset = checked_offset(
                         output_offset,
                         local_direct_offset(&field_descriptor.access, path)?,
@@ -278,7 +278,8 @@ impl StencilCompiler<'_> {
                         })?;
                     let reader_discriminant =
                         enum_discriminant_u8(reader_variant, &format!("{path}.{name}"))?;
-                    let local_variant = local_enum_variant(reader_descriptor, *reader_index, path)?;
+                    let local_variant =
+                        local_reader_enum_variant(reader_descriptor, *reader_index, name, path)?;
                     let (body, expected) =
                         self.compile_branch_body(input_offset + 4, |compiler| {
                             compiler.compile_enum_payload_plan(
@@ -738,12 +739,13 @@ impl LocalDecodeStencilCompiler<'_> {
                     name,
                     payload,
                 } => {
-                    let local_variant = local_variants.get(*reader_index).ok_or_else(|| {
-                        StencilError::Unsupported {
-                            path: format!("{path}.{name}"),
-                            reason: "reader enum variant index is out of range",
-                        }
-                    })?;
+                    let local_variant = local_reader_variant_descriptor(
+                        local_variants,
+                        *reader_index,
+                        name,
+                        path,
+                        "reader enum variant index is out of range",
+                    )?;
                     let reader_discriminant = u8::try_from(local_variant.index).map_err(|_| {
                         StencilError::Unsupported {
                             path: format!("{path}.{name}"),
@@ -888,12 +890,13 @@ impl LocalDecodeStencilCompiler<'_> {
                             plan,
                             ..
                         } => {
-                            let field_descriptor = descriptor_fields
-                                .get(*reader_index)
-                                .ok_or_else(|| StencilError::Unsupported {
-                                    path: format!("{path}.{name}"),
-                                    reason: "reader enum struct field index is out of range",
-                                })?;
+                            let field_descriptor = local_reader_field_descriptor(
+                                descriptor_fields,
+                                *reader_index,
+                                name,
+                                path,
+                                "reader enum struct field index is out of range",
+                            )?;
                             self.compile_node(
                                 &field_descriptor.descriptor,
                                 plan,
@@ -935,13 +938,13 @@ impl LocalDecodeStencilCompiler<'_> {
                     plan,
                     ..
                 } => {
-                    let field_descriptor =
-                        descriptor_fields.get(*reader_index).ok_or_else(|| {
-                            StencilError::Unsupported {
-                                path: format!("{path}.{name}"),
-                                reason: "reader descriptor field index is out of range",
-                            }
-                        })?;
+                    let field_descriptor = local_reader_field_descriptor(
+                        descriptor_fields,
+                        *reader_index,
+                        name,
+                        path,
+                        "reader descriptor field index is out of range",
+                    )?;
                     let field_offset = checked_offset(
                         output_offset,
                         local_direct_offset(&field_descriptor.access, path)?,
@@ -1283,13 +1286,13 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
                     ..
                 } => {
                     let field_path = format!("{path}.{name}");
-                    let field_descriptor =
-                        descriptor_fields.get(*reader_index).ok_or_else(|| {
-                            StencilError::Unsupported {
-                                path: field_path.clone(),
-                                reason: "reader descriptor field index is out of range",
-                            }
-                        })?;
+                    let field_descriptor = local_reader_field_descriptor(
+                        descriptor_fields,
+                        *reader_index,
+                        name,
+                        path,
+                        "reader descriptor field index is out of range",
+                    )?;
                     let field_offset = checked_offset(
                         output_offset,
                         local_direct_offset(&field_descriptor.access, &field_path)?,
@@ -1452,13 +1455,13 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
             else {
                 continue;
             };
-            let local_variant =
-                local_variants
-                    .get(*reader_index)
-                    .ok_or_else(|| StencilError::Unsupported {
-                        path: format!("{path}.{name}"),
-                        reason: "reader enum variant index is out of range",
-                    })?;
+            let local_variant = local_reader_variant_descriptor(
+                local_variants,
+                *reader_index,
+                name,
+                path,
+                "reader enum variant index is out of range",
+            )?;
             let construct_thunks = local_variant_construct_thunks(
                 local_variant,
                 self.thunks,
@@ -1631,13 +1634,13 @@ impl CursorStencilCompiler<'_> {
                             reason: "reader field index is out of range",
                         }
                     })?;
-                    let field_descriptor =
-                        descriptor_fields.get(*reader_index).ok_or_else(|| {
-                            StencilError::Unsupported {
-                                path: format!("{path}.{name}"),
-                                reason: "reader descriptor field index is out of range",
-                            }
-                        })?;
+                    let field_descriptor = local_reader_field_descriptor(
+                        descriptor_fields,
+                        *reader_index,
+                        name,
+                        path,
+                        "reader descriptor field index is out of range",
+                    )?;
                     let field_offset = checked_offset(
                         output_offset,
                         local_direct_offset(&field_descriptor.access, path)?,
@@ -3868,6 +3871,53 @@ fn local_writer_field_descriptor<'a>(
     Ok(descriptor)
 }
 
+fn local_reader_field_descriptor<'a>(
+    descriptor_fields: &'a [LocalFieldDescriptor],
+    reader_index: usize,
+    name: &str,
+    path: &str,
+    missing_reason: &'static str,
+) -> Result<&'a LocalFieldDescriptor, StencilError> {
+    let field_path = format!("{path}.{name}");
+    let descriptor =
+        descriptor_fields
+            .get(reader_index)
+            .ok_or_else(|| StencilError::Unsupported {
+                path: field_path.clone(),
+                reason: missing_reason,
+            })?;
+    if descriptor.name != name {
+        return Err(StencilError::Unsupported {
+            path: field_path,
+            reason: "local descriptor field name differs from reader plan",
+        });
+    }
+    Ok(descriptor)
+}
+
+fn local_reader_variant_descriptor<'a>(
+    variants: &'a [crate::local_access::LocalVariantDescriptor],
+    reader_index: usize,
+    name: &str,
+    path: &str,
+    missing_reason: &'static str,
+) -> Result<&'a crate::local_access::LocalVariantDescriptor, StencilError> {
+    let variant_path = format!("{path}.{name}");
+    let variant = variants
+        .get(reader_index)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: variant_path.clone(),
+            reason: missing_reason,
+        })?;
+    if variant.name != name {
+        return Err(StencilError::Unsupported {
+            path: variant_path,
+            reason: "local descriptor enum variant name differs from reader plan",
+        });
+    }
+    Ok(variant)
+}
+
 fn local_direct_offset(access: &LocalAccess, path: &str) -> Result<usize, StencilError> {
     let LocalAccess::Direct { offset } = access else {
         return Err(StencilError::Unsupported {
@@ -4372,6 +4422,27 @@ fn local_enum_variant<'a>(
             path: path.to_owned(),
             reason: "local descriptor enum variant index is out of range",
         })
+}
+
+fn local_reader_enum_variant<'a>(
+    descriptor: &'a LocalTypeDescriptor,
+    index: usize,
+    name: &str,
+    path: &str,
+) -> Result<&'a crate::local_access::LocalVariantDescriptor, StencilError> {
+    let LocalTypeKind::Enum { variants, .. } = &descriptor.kind else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor is not an enum layout",
+        });
+    };
+    local_reader_variant_descriptor(
+        variants,
+        index,
+        name,
+        path,
+        "local descriptor enum variant index is out of range",
+    )
 }
 
 fn shape_struct_fields(

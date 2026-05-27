@@ -677,6 +677,82 @@ fn local_encode_rejects_descriptor_field_name_that_disagrees_with_plan() {
     ));
 }
 
+// r[verify binette.local-access.boundary]
+// r[verify binette.local-access.descriptor]
+#[test]
+fn local_decode_rejects_descriptor_field_name_that_disagrees_with_plan() {
+    let writer_plan = writer_plan_for::<SwiftText>().unwrap();
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        writer_plan.root(),
+        &writer_registry,
+    )
+    .unwrap();
+    let mut descriptor = swift_text_export_descriptor(reader_plan.reader_root());
+    rename_title_descriptor_field(&mut descriptor, "headline");
+    let thunks = swift_string_thunk_bindings();
+
+    let error = match hybrid_local_stencil_decoder_from_plan(
+        &reader_plan,
+        &writer_registry,
+        &descriptor,
+        &thunks,
+    ) {
+        Ok(_) => panic!("hybrid decode must reject a descriptor field with the wrong name"),
+        Err(err) => err,
+    };
+    assert!(matches!(
+        error,
+        StencilError::Unsupported {
+            ref path,
+            reason: "local descriptor field name differs from reader plan",
+        } if path == "$.title"
+    ));
+}
+
+// r[verify binette.local-access.boundary]
+// r[verify binette.local-access.descriptor]
+#[test]
+fn local_decode_rejects_descriptor_enum_variant_name_that_disagrees_with_plan() {
+    let writer_plan = writer_plan_for::<SwiftEventEnvelope>().unwrap();
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        writer_plan.root(),
+        &writer_registry,
+    )
+    .unwrap();
+    let mut descriptor = swift_event_envelope_descriptor(reader_plan.reader_root());
+    rename_event_descriptor_variant(&mut descriptor, "Nested", "Other");
+    let thunks = swift_string_thunk_bindings();
+
+    let error = match hybrid_local_stencil_decoder_from_plan(
+        &reader_plan,
+        &writer_registry,
+        &descriptor,
+        &thunks,
+    ) {
+        Ok(_) => panic!("hybrid decode must reject a descriptor variant with the wrong name"),
+        Err(err) => err,
+    };
+    assert!(matches!(
+        error,
+        StencilError::Unsupported {
+            ref path,
+            reason: "local descriptor enum variant name differs from reader plan",
+        } if path == "$.event.Nested"
+    ));
+}
+
 // r[verify binette.local-access.descriptor]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
@@ -1371,6 +1447,24 @@ fn rename_title_descriptor_field(descriptor: &mut LocalTypeDescriptor, name: &st
         .find(|field| field.name == "title")
         .expect("SwiftText descriptor has a title field");
     title.name = name.to_owned();
+}
+
+fn rename_event_descriptor_variant(descriptor: &mut LocalTypeDescriptor, from: &str, to: &str) {
+    let LocalTypeKind::Struct { fields } = &mut descriptor.kind else {
+        panic!("expected SwiftEventEnvelope struct descriptor");
+    };
+    let event = fields
+        .iter_mut()
+        .find(|field| field.name == "event")
+        .expect("SwiftEventEnvelope descriptor has an event field");
+    let LocalTypeKind::Enum { variants, .. } = &mut event.descriptor.kind else {
+        panic!("expected SwiftProbeEvent enum descriptor");
+    };
+    let variant = variants
+        .iter_mut()
+        .find(|variant| variant.name == from)
+        .expect("SwiftProbeEvent descriptor has requested variant");
+    variant.name = to.to_owned();
 }
 
 fn swift_maybe_text_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
