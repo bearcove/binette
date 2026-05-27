@@ -1510,6 +1510,7 @@ fn emit_encode_list_op(
     code[done_branch..done_branch + 4].copy_from_slice(&done_word.to_le_bytes());
     let continue_word = patch_uncond_branch_imm26(AARCH64_B, continue_branch, loop_check)?;
     code[continue_branch..continue_branch + 4].copy_from_slice(&continue_word.to_le_bytes());
+    restore_list_parent_base(code, value_base_reg, input_offset, "$list")?;
     Ok(())
 }
 
@@ -1575,6 +1576,28 @@ fn emit_encode_vec_list_op(
     code[done_branch..done_branch + 4].copy_from_slice(&done_word.to_le_bytes());
     let continue_word = patch_uncond_branch_imm26(AARCH64_B, continue_branch, loop_check)?;
     code[continue_branch..continue_branch + 4].copy_from_slice(&continue_word.to_le_bytes());
+    restore_list_parent_base(code, list.value_base_reg, list.input_offset, "$list")?;
+    Ok(())
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn restore_list_parent_base(
+    code: &mut Vec<u8>,
+    value_base_reg: u8,
+    input_offset: usize,
+    path: &str,
+) -> Result<(), StencilError> {
+    if !(25..=28).contains(&value_base_reg) {
+        return Ok(());
+    }
+    if input_offset == 0 {
+        push_u32(code, mov_x_register(value_base_reg, 26)?);
+    } else {
+        push_u32(
+            code,
+            sub_x_immediate(value_base_reg, 26, input_offset, path)?,
+        );
+    }
     Ok(())
 }
 
@@ -1903,6 +1926,23 @@ fn add_x_immediate(rd: u8, rn: u8, value: usize, path: &str) -> Result<u32, Sten
         });
     }
     Ok(0x9100_0000 | ((value as u32) << 10) | (u32::from(rn) << 5) | u32::from(rd))
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn sub_x_immediate(rd: u8, rn: u8, value: usize, path: &str) -> Result<u32, StencilError> {
+    if rd > 31 || rn > 31 {
+        return Err(StencilError::Unsupported {
+            path: "$code".to_owned(),
+            reason: "stencil register index exceeds AArch64 range",
+        });
+    }
+    if value > 0xfff {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "stencil sub immediate exceeds AArch64 imm12 range",
+        });
+    }
+    Ok(0xD100_0000 | ((value as u32) << 10) | (u32::from(rn) << 5) | u32::from(rd))
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]

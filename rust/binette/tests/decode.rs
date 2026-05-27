@@ -765,6 +765,89 @@ fn stencil_encodes_mixed_struct_through_writer_plan() {
 }
 
 // r[verify binette.mode.compact]
+// r[verify binette.aggregate.tuple]
+// r[verify binette.aggregate.struct.compact]
+// r[verify binette.aggregate.enum.compact]
+// r[verify binette.aggregate.list]
+// r[verify binette.aggregate.option]
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[test]
+fn stencil_encodes_tuple_wrapped_nested_payload() {
+    #[derive(Debug, Facet, PartialEq)]
+    struct Attr {
+        key: String,
+        value: String,
+    }
+
+    #[derive(Debug, Facet, PartialEq)]
+    #[repr(u8)]
+    enum Kind {
+        File {
+            mime: String,
+            tags: Vec<String>,
+        },
+        Directory {
+            child_count: u32,
+            children: Vec<String>,
+        },
+        Symlink {
+            target: String,
+            hops: Vec<u32>,
+        },
+    }
+
+    #[derive(Debug, Facet, PartialEq)]
+    struct Entry {
+        id: u64,
+        parent: Option<u64>,
+        name: String,
+        path: String,
+        attrs: Vec<Attr>,
+        chunks: Vec<Vec<u8>>,
+        kind: Kind,
+    }
+
+    #[derive(Debug, Facet, PartialEq)]
+    struct Payload {
+        revision: u64,
+        mount: String,
+        entries: Vec<Entry>,
+        footer: Option<String>,
+        digest: Vec<u8>,
+    }
+
+    let value = (Payload {
+        revision: 7,
+        mount: "/mnt/binette".to_owned(),
+        entries: vec![Entry {
+            id: 42,
+            parent: Some(41),
+            name: "entry".to_owned(),
+            path: "/mnt/binette/entry".to_owned(),
+            attrs: vec![Attr {
+                key: "owner".to_owned(),
+                value: "vox".to_owned(),
+            }],
+            chunks: vec![vec![1, 2, 3], vec![5, 8, 13, 21]],
+            kind: Kind::File {
+                mime: "application/octet-stream".to_owned(),
+                tags: vec!["hot".to_owned(), "path".to_owned()],
+            },
+        }],
+        footer: Some("done".to_owned()),
+        digest: vec![0xAB; 16],
+    },);
+
+    let writer_plan = writer_plan_for::<(Payload,)>().unwrap();
+    let stencil = stencil_encoder_from_plan::<(Payload,)>(&writer_plan).unwrap();
+
+    let stencil_bytes = encode_to_vec_with_stencil(&value, &stencil).unwrap();
+    let interpreted_bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+
+    assert_eq!(stencil_bytes, interpreted_bytes);
+}
+
+// r[verify binette.mode.compact]
 // r[verify binette.aggregate.struct.compact]
 // r[verify binette.scalar.bool]
 // r[verify binette.scalar.char]
