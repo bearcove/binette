@@ -10,7 +10,8 @@ use binette::local_access::{
     BinetteLocalOptionRepresentationAbi, BinetteLocalOptionThunksAbi, BinetteLocalScalarAbi,
     BinetteLocalSchemaRefAbi, BinetteLocalSequenceAbi, BinetteLocalSequenceStorageAbi,
     BinetteLocalSequenceThunksAbi, BinetteLocalStrAbi, BinetteLocalStructAbi,
-    BinetteLocalVariantAbi, BinetteLocalVariantConstructAbi, BinetteLocalVariantProjectAccessAbi,
+    BinetteLocalVariantAbi, BinetteLocalVariantConstructAbi, BinetteLocalVariantDropAbi,
+    BinetteLocalVariantProjectAccessAbi, BinetteLocalVariantProjectIntoAbi,
     BinetteLocalVariantProjectThunkAbi, LocalTypeDescriptor, LocalValueLayout,
 };
 use binette::{
@@ -50,6 +51,26 @@ fn c_abi_descriptor_drives_hybrid_local_enum_message_stencil() {
         }
     }
 
+    unsafe extern "C" fn project_hi_into(
+        value: *const u8,
+        out: *mut u8,
+        out_len: usize,
+        _context: *mut std::ffi::c_void,
+    ) -> bool {
+        if out_len != std::mem::size_of::<String>() {
+            return false;
+        }
+        let Message::Hi(text) = (unsafe { &*value.cast::<Message>() }) else {
+            return false;
+        };
+        unsafe { out.cast::<String>().write(text.clone()) };
+        true
+    }
+
+    unsafe extern "C" fn drop_projected_string(value: *mut u8, _context: *mut std::ffi::c_void) {
+        unsafe { std::ptr::drop_in_place(value.cast::<String>()) };
+    }
+
     unsafe extern "C" fn project_bye(
         value: *const u8,
         _context: *mut std::ffi::c_void,
@@ -58,6 +79,22 @@ fn c_abi_descriptor_drives_hybrid_local_enum_message_stencil() {
             Message::Hi(_) => std::ptr::null(),
             Message::Bye(code) => (code as *const u32).cast(),
         }
+    }
+
+    unsafe extern "C" fn project_bye_into(
+        value: *const u8,
+        out: *mut u8,
+        out_len: usize,
+        _context: *mut std::ffi::c_void,
+    ) -> bool {
+        if out_len != std::mem::size_of::<u32>() {
+            return false;
+        }
+        let Message::Bye(code) = (unsafe { &*value.cast::<Message>() }) else {
+            return false;
+        };
+        unsafe { out.cast::<u32>().write(*code) };
+        true
     }
 
     unsafe extern "C" fn construct_hi(
@@ -119,6 +156,14 @@ fn c_abi_descriptor_drives_hybrid_local_enum_message_stencil() {
                     context: std::ptr::null_mut(),
                 },
             },
+            project_into: BinetteLocalVariantProjectIntoAbi {
+                call: Some(project_hi_into),
+                context: std::ptr::null_mut(),
+            },
+            drop_projected: BinetteLocalVariantDropAbi {
+                call: Some(drop_projected_string),
+                context: std::ptr::null_mut(),
+            },
             construct: BinetteLocalVariantConstructAbi {
                 call: Some(construct_hi),
                 context: std::ptr::null_mut(),
@@ -135,6 +180,14 @@ fn c_abi_descriptor_drives_hybrid_local_enum_message_stencil() {
                     call: Some(project_bye),
                     context: std::ptr::null_mut(),
                 },
+            },
+            project_into: BinetteLocalVariantProjectIntoAbi {
+                call: Some(project_bye_into),
+                context: std::ptr::null_mut(),
+            },
+            drop_projected: BinetteLocalVariantDropAbi {
+                call: None,
+                context: std::ptr::null_mut(),
             },
             construct: BinetteLocalVariantConstructAbi {
                 call: Some(construct_bye),

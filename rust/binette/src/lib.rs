@@ -2,6 +2,8 @@
 //! identities, compatibility tooling, self-describing values, and support for
 //! long-lived data.
 
+#[cfg(not(target_arch = "wasm32"))]
+mod capi;
 mod compact;
 mod compatibility;
 mod decode;

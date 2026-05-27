@@ -647,6 +647,35 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
                         }
                     }
                 }
+                LocalEnumEncodePayload::OwnedFixed {
+                    project_into_thunks,
+                    payload_layout,
+                    ops,
+                    output_len,
+                } => {
+                    let Some(()) = (unsafe {
+                        with_owned_projected_payload(
+                            value,
+                            *payload_layout,
+                            *project_into_thunks,
+                            |payload| {
+                                let payload_base = out.len();
+                                out.resize(payload_base + output_len, 0);
+                                for op in ops {
+                                    let source = payload.add(op.input_offset);
+                                    copy_nonoverlapping(
+                                        source,
+                                        out.as_mut_ptr().add(payload_base + op.output_offset),
+                                        op.width.bytes(),
+                                    );
+                                }
+                                Some(())
+                            },
+                        )
+                    }) else {
+                        return status;
+                    };
+                }
                 LocalEnumEncodePayload::SequenceBytes {
                     project_thunks,
                     thunks,
@@ -666,6 +695,34 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
                     for index in 0..len {
                         out.push(unsafe { (thunks.element_u8)(payload, index, sequence_context) });
                     }
+                }
+                LocalEnumEncodePayload::OwnedSequenceBytes {
+                    project_into_thunks,
+                    payload_layout,
+                    thunks,
+                } => {
+                    let Some(()) = (unsafe {
+                        with_owned_projected_payload(
+                            value,
+                            *payload_layout,
+                            *project_into_thunks,
+                            |payload| {
+                                let sequence_context = thunks.context as *mut std::ffi::c_void;
+                                let len = (thunks.len)(payload, sequence_context);
+                                let Ok(len_u32) = u32::try_from(len) else {
+                                    return None;
+                                };
+                                out.extend_from_slice(&len_u32.to_le_bytes());
+                                out.reserve(len);
+                                for index in 0..len {
+                                    out.push((thunks.element_u8)(payload, index, sequence_context));
+                                }
+                                Some(())
+                            },
+                        )
+                    }) else {
+                        return status;
+                    };
                 }
             }
         }
@@ -703,6 +760,42 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
     }
 
     STENCIL_OK
+}
+
+unsafe fn with_owned_projected_payload<T>(
+    value: *const u8,
+    layout: LocalValueLayout,
+    thunks: LocalVariantProjectIntoThunks,
+    f: impl FnOnce(*const u8) -> Option<T>,
+) -> Option<T> {
+    let alloc_layout =
+        std::alloc::Layout::from_size_align(layout.size.max(1), layout.align).ok()?;
+    let scratch = if layout.size == 0 {
+        std::ptr::NonNull::<u8>::dangling().as_ptr()
+    } else {
+        let ptr = unsafe { std::alloc::alloc(alloc_layout) };
+        if ptr.is_null() {
+            return None;
+        }
+        ptr
+    };
+    let project_context = thunks.project_context as *mut std::ffi::c_void;
+    let projected = unsafe { (thunks.project_into)(value, scratch, layout.size, project_context) };
+    if !projected {
+        if layout.size != 0 {
+            unsafe { std::alloc::dealloc(scratch, alloc_layout) };
+        }
+        return None;
+    }
+    let result = f(scratch.cast_const());
+    if let Some(drop_projected) = thunks.drop_projected {
+        let drop_context = thunks.drop_context as *mut std::ffi::c_void;
+        unsafe { drop_projected(scratch, drop_context) };
+    }
+    if layout.size != 0 {
+        unsafe { std::alloc::dealloc(scratch, alloc_layout) };
+    }
+    result
 }
 
 pub(super) unsafe extern "C" fn stencil_copy_bytes(dst: *mut u8, src: *const u8, len: usize) {

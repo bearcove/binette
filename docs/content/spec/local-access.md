@@ -107,7 +107,12 @@ inside the current process.
 > facts for that optional representation.
 > For an enum subtree, a backend may provide a tag thunk plus per-variant
 > payload projectors; hybrid execution writes the binette variant index and
-> encodes the projected payload using the variant payload descriptor.
+> encodes the projected payload using the variant payload descriptor. A payload
+> projector may either return a backend-owned borrowed pointer, or initialize a
+> caller-provided scratch buffer and optionally provide a drop thunk for that
+> scratch value. Backends whose enum payload projection copies values, such as
+> Swift associated values, use the scratch-buffer form rather than returning
+> unstable borrowed pointers.
 > Decode may use per-variant constructor thunks at the same enum subtree
 > boundary, after binette has identified the writer variant and prepared the
 > payload representation expected by that backend constructor.
@@ -142,9 +147,9 @@ inside the current process.
 > A Swift descriptor handoff includes the same information as any other local
 > access descriptor: schema reference, local layout, stored-field offsets where
 > available, enum variant projectors, sequence/optional access, and explicit
-> thunk names for cases that require Swift-owned accessors. The handoff is
-> rejected if Swift descriptor nodes contain thunks from another backend. A
-> Swift backend may export this handoff as a tagged descriptor tree. If the
-> handoff crosses an FFI or process boundary as JSON, Rust/binette decodes it as
-> typed Facet data before lowering it into runtime descriptors. That export is
-> metadata for binette engines, not encoded binette data and not a Swift codec.
+> callable thunks for cases that require Swift-owned accessors. The handoff is
+> rejected if Swift descriptor nodes contain thunks from another backend. Across
+> a Rust/Swift boundary, the handoff is a tree of plain C ABI descriptor structs
+> plus function pointers. Tagged exports such as JSON are tooling artifacts for
+> inspection or fixtures; they are not the execution boundary, not encoded
+> binette data, and not a Swift codec.

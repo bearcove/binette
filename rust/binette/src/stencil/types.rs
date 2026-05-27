@@ -304,8 +304,19 @@ pub(super) enum LocalEnumEncodePayload {
         ops: Vec<CopyOp>,
         output_len: usize,
     },
+    OwnedFixed {
+        project_into_thunks: LocalVariantProjectIntoThunks,
+        payload_layout: LocalValueLayout,
+        ops: Vec<CopyOp>,
+        output_len: usize,
+    },
     SequenceBytes {
         project_thunks: LocalVariantProjectThunks,
+        thunks: LocalSequenceEncodeThunks,
+    },
+    OwnedSequenceBytes {
+        project_into_thunks: LocalVariantProjectIntoThunks,
+        payload_layout: LocalValueLayout,
         thunks: LocalSequenceEncodeThunks,
     },
 }

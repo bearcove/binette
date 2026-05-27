@@ -5,7 +5,8 @@ use crate::local_access::{
     LocalOptionRepresentation, LocalOptionSequenceDecodeThunks, LocalScalarAccess, LocalSchemaRef,
     LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks,
     LocalSequenceFixedDecodeThunks, LocalSequenceStorage, LocalThunkBindings, LocalTypeDescriptor,
-    LocalTypeKind, LocalVariantConstructThunks, LocalVariantProjectThunks,
+    LocalTypeKind, LocalVariantConstructThunks, LocalVariantProjectIntoThunks,
+    LocalVariantProjectThunks,
 };
 use crate::schema::TypeRef;
 
@@ -1797,8 +1798,6 @@ impl LocalEncodeStencilCompiler<'_> {
                             path: path.to_owned(),
                             reason: "writer enum payload is missing local descriptor",
                         })?;
-                let project_thunks =
-                    local_variant_project_thunks(&local_variant.access, self.thunks, path)?;
                 if let WriterNode::Primitive(
                     primitive @ (Primitive::String | Primitive::Bytes | Primitive::Payload),
                 ) = element.node
@@ -1809,6 +1808,17 @@ impl LocalEncodeStencilCompiler<'_> {
                         self.thunks,
                         path,
                     )?;
+                    if let Some(project_into_thunks) =
+                        local_variant_project_into_thunks(local_variant, self.thunks, path)?
+                    {
+                        return Ok(LocalEnumEncodePayload::OwnedSequenceBytes {
+                            project_into_thunks,
+                            payload_layout: payload_descriptor.layout,
+                            thunks,
+                        });
+                    }
+                    let project_thunks =
+                        local_variant_project_thunks(&local_variant.access, self.thunks, path)?;
                     return Ok(LocalEnumEncodePayload::SequenceBytes {
                         project_thunks,
                         thunks,
@@ -1816,6 +1826,18 @@ impl LocalEncodeStencilCompiler<'_> {
                 }
                 let segment =
                     fixed_descriptor_encode_segment(payload_descriptor, &element.node, 0, 0, path)?;
+                if let Some(project_into_thunks) =
+                    local_variant_project_into_thunks(local_variant, self.thunks, path)?
+                {
+                    return Ok(LocalEnumEncodePayload::OwnedFixed {
+                        project_into_thunks,
+                        payload_layout: payload_descriptor.layout,
+                        ops: segment.ops,
+                        output_len: segment.output_len,
+                    });
+                }
+                let project_thunks =
+                    local_variant_project_thunks(&local_variant.access, self.thunks, path)?;
                 Ok(LocalEnumEncodePayload::Fixed {
                     project_thunks,
                     ops: segment.ops,
@@ -2884,6 +2906,23 @@ fn local_variant_project_thunks(
         .ok_or_else(|| StencilError::Unsupported {
             path: path.to_owned(),
             reason: "local enum variant projector thunk is not bound",
+        })
+}
+
+fn local_variant_project_into_thunks(
+    variant: &crate::local_access::LocalVariantDescriptor,
+    bindings: &LocalThunkBindings,
+    path: &str,
+) -> Result<Option<LocalVariantProjectIntoThunks>, StencilError> {
+    let Some(project_into) = &variant.project_into else {
+        return Ok(None);
+    };
+    bindings
+        .variant_project_into(project_into, variant.drop_projected.as_ref())
+        .map(Some)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local enum variant owned projector thunk is not bound",
         })
 }
 

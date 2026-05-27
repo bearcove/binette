@@ -8,7 +8,7 @@ use super::{
     LocalScalarAccess, LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks,
     LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks, LocalSequenceStorage, LocalThunk,
     LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout, LocalVariantConstructThunks,
-    LocalVariantProjectThunks,
+    LocalVariantProjectIntoThunks, LocalVariantProjectThunks,
 };
 use crate::schema::{TypeId, TypeRef};
 
@@ -146,6 +146,8 @@ pub struct BinetteLocalVariantAbi {
     pub name: BinetteLocalStrAbi,
     pub index: u32,
     pub project: BinetteLocalVariantProjectAccessAbi,
+    pub project_into: BinetteLocalVariantProjectIntoAbi,
+    pub drop_projected: BinetteLocalVariantDropAbi,
     pub construct: BinetteLocalVariantConstructAbi,
     pub payload: *const BinetteLocalDescriptorAbi,
 }
@@ -181,6 +183,20 @@ pub struct BinetteLocalEnumTagThunkAbi {
 #[derive(Clone, Copy)]
 pub struct BinetteLocalVariantProjectThunkAbi {
     pub call: Option<super::LocalVariantProjectThunk>,
+    pub context: *mut c_void,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct BinetteLocalVariantProjectIntoAbi {
+    pub call: Option<super::LocalVariantProjectIntoThunk>,
+    pub context: *mut c_void,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct BinetteLocalVariantDropAbi {
+    pub call: Option<super::LocalVariantDropProjectedThunk>,
     pub context: *mut c_void,
 }
 
@@ -442,6 +458,12 @@ impl AbiImporter {
             let name = unsafe { read_str(variant.name, path, "variant.name") }?;
             let variant_path = format!("{path}.{name}");
             let access = self.import_variant_project(variant.project, backend, &variant_path)?;
+            let (project_into, drop_projected) = self.import_variant_project_into(
+                variant.project_into,
+                variant.drop_projected,
+                backend,
+                &variant_path,
+            );
             let construct =
                 self.import_variant_construct(variant.construct, backend, &variant_path);
             let payload = if variant.payload.is_null() {
@@ -453,6 +475,8 @@ impl AbiImporter {
                 name,
                 index: variant.index,
                 access,
+                project_into,
+                drop_projected,
                 construct,
                 payload,
             });
@@ -583,6 +607,33 @@ impl AbiImporter {
             },
         );
         Some(thunk)
+    }
+
+    fn import_variant_project_into(
+        &mut self,
+        project_into: BinetteLocalVariantProjectIntoAbi,
+        drop_projected: BinetteLocalVariantDropAbi,
+        backend: LocalBackend,
+        path: &str,
+    ) -> (Option<LocalThunk>, Option<LocalThunk>) {
+        let Some(call) = project_into.call else {
+            return (None, None);
+        };
+        let project_thunk = LocalThunk::new(backend, format!("{path}.$project_into"));
+        let drop_thunk = drop_projected
+            .call
+            .map(|_| LocalThunk::new(backend, format!("{path}.$drop_projected")));
+        self.thunks = std::mem::take(&mut self.thunks).with_variant_project_into(
+            project_thunk.clone(),
+            drop_thunk.clone(),
+            LocalVariantProjectIntoThunks {
+                project_into: call,
+                drop_projected: drop_projected.call,
+                project_context: project_into.context as usize,
+                drop_context: drop_projected.context as usize,
+            },
+        );
+        (Some(project_thunk), drop_thunk)
     }
 
     fn import_sequence_storage(

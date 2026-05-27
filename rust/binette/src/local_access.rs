@@ -22,7 +22,8 @@ pub use c_abi::{
     BinetteLocalSchemaRefAbi, BinetteLocalSchemaRefTag, BinetteLocalSequenceAbi,
     BinetteLocalSequenceStorageAbi, BinetteLocalSequenceStorageTag, BinetteLocalSequenceThunksAbi,
     BinetteLocalStrAbi, BinetteLocalStructAbi, BinetteLocalVariantAbi,
-    BinetteLocalVariantConstructAbi, BinetteLocalVariantProjectAccessAbi,
+    BinetteLocalVariantConstructAbi, BinetteLocalVariantDropAbi,
+    BinetteLocalVariantProjectAccessAbi, BinetteLocalVariantProjectIntoAbi,
     BinetteLocalVariantProjectThunkAbi, LocalDescriptorAbiError, LocalDescriptorAbiImport,
 };
 pub use import::{
@@ -106,6 +107,8 @@ pub struct LocalVariantDescriptor {
     pub name: String,
     pub index: u32,
     pub access: LocalAccess,
+    pub project_into: Option<LocalThunk>,
+    pub drop_projected: Option<LocalThunk>,
     pub construct: Option<LocalThunk>,
     pub payload: Option<Box<LocalTypeDescriptor>>,
 }
@@ -148,6 +151,14 @@ pub type LocalOptionWriteSomeBytesThunk =
 pub type LocalEnumTagThunk = unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> u32;
 pub type LocalVariantProjectThunk =
     unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> *const u8;
+pub type LocalVariantProjectIntoThunk = unsafe extern "C" fn(
+    value: *const u8,
+    out: *mut u8,
+    out_len: usize,
+    context: *mut c_void,
+) -> bool;
+pub type LocalVariantDropProjectedThunk =
+    unsafe extern "C" fn(value: *mut u8, context: *mut c_void);
 pub type LocalVariantConstructThunk = unsafe extern "C" fn(
     value: *mut u8,
     payload: *const u8,
@@ -205,6 +216,14 @@ pub struct LocalEnumTagThunks {
 pub struct LocalVariantProjectThunks {
     pub project: LocalVariantProjectThunk,
     pub context: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LocalVariantProjectIntoThunks {
+    pub project_into: LocalVariantProjectIntoThunk,
+    pub drop_projected: Option<LocalVariantDropProjectedThunk>,
+    pub project_context: usize,
+    pub drop_context: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -266,6 +285,13 @@ pub struct LocalVariantProjectThunkBinding {
 }
 
 #[derive(Debug, Clone)]
+pub struct LocalVariantProjectIntoThunkBinding {
+    pub project_into: LocalThunk,
+    pub drop_projected: Option<LocalThunk>,
+    pub thunks: LocalVariantProjectIntoThunks,
+}
+
+#[derive(Debug, Clone)]
 pub struct LocalVariantConstructThunkBinding {
     pub construct: LocalThunk,
     pub thunks: LocalVariantConstructThunks,
@@ -281,6 +307,7 @@ pub struct LocalThunkBindings {
     option_sequence_decode: Vec<LocalOptionSequenceDecodeThunkBinding>,
     enum_tag: Vec<LocalEnumTagThunkBinding>,
     variant_project: Vec<LocalVariantProjectThunkBinding>,
+    variant_project_into: Vec<LocalVariantProjectIntoThunkBinding>,
     variant_construct: Vec<LocalVariantConstructThunkBinding>,
 }
 
@@ -479,6 +506,21 @@ impl LocalThunkBindings {
         self
     }
 
+    pub fn with_variant_project_into(
+        mut self,
+        project_into: LocalThunk,
+        drop_projected: Option<LocalThunk>,
+        thunks: LocalVariantProjectIntoThunks,
+    ) -> Self {
+        self.variant_project_into
+            .push(LocalVariantProjectIntoThunkBinding {
+                project_into,
+                drop_projected,
+                thunks,
+            });
+        self
+    }
+
     pub fn with_variant_construct(
         mut self,
         construct: LocalThunk,
@@ -563,6 +605,20 @@ impl LocalThunkBindings {
         self.variant_project
             .iter()
             .find(|binding| &binding.project == project)
+            .map(|binding| binding.thunks)
+    }
+
+    pub fn variant_project_into(
+        &self,
+        project_into: &LocalThunk,
+        drop_projected: Option<&LocalThunk>,
+    ) -> Option<LocalVariantProjectIntoThunks> {
+        self.variant_project_into
+            .iter()
+            .find(|binding| {
+                &binding.project_into == project_into
+                    && binding.drop_projected.as_ref() == drop_projected
+            })
             .map(|binding| binding.thunks)
     }
 
@@ -896,6 +952,8 @@ mod rust_layout {
                                 name: schema_variant.name.clone(),
                                 index,
                                 access,
+                                project_into: None,
+                                drop_projected: None,
                                 construct: None,
                                 payload,
                             })
@@ -1902,6 +1960,8 @@ mod tests {
                             LocalBackend::SwiftProbe,
                             "ProbeEnum.project.empty",
                         )),
+                        project_into: None,
+                        drop_projected: None,
                         construct: Some(LocalThunk::new(
                             LocalBackend::SwiftProbe,
                             "ProbeEnum.init.empty",
@@ -1915,6 +1975,8 @@ mod tests {
                             LocalBackend::SwiftProbe,
                             "ProbeEnum.project.titled",
                         )),
+                        project_into: None,
+                        drop_projected: None,
                         construct: Some(LocalThunk::new(
                             LocalBackend::SwiftProbe,
                             "ProbeEnum.init.titled.utf8",
@@ -1928,6 +1990,8 @@ mod tests {
                             LocalBackend::SwiftProbe,
                             "ProbeEnum.project.nested",
                         )),
+                        project_into: None,
+                        drop_projected: None,
                         construct: Some(LocalThunk::new(
                             LocalBackend::SwiftProbe,
                             "ProbeEnum.init.nested",

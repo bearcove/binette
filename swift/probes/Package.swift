@@ -15,6 +15,17 @@ let package = Package(
         ),
     ],
     targets: [
+        .target(
+            name: "CBinette",
+            linkerSettings: [
+                .unsafeFlags([
+                    "-L", "../../target/debug",
+                    "-lbinette",
+                    "-Xlinker", "-rpath",
+                    "-Xlinker", "../../target/debug",
+                ]),
+            ]
+        ),
         .target(name: "BinetteSwiftProbes"),
         .executableTarget(
             name: "BinetteSwiftProbeDump",
@@ -22,7 +33,7 @@ let package = Package(
         ),
         .testTarget(
             name: "BinetteSwiftProbesTests",
-            dependencies: ["BinetteSwiftProbes"]
+            dependencies: ["BinetteSwiftProbes", "CBinette"]
         ),
     ]
 )

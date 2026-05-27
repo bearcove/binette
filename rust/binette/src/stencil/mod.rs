@@ -17,8 +17,9 @@ use crate::hash::primitive_for_type_id;
 use crate::local_access::{
     LocalEnumTagThunks, LocalOptionEncodeThunks, LocalOptionSequenceDecodeThunks,
     LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks,
-    LocalSequenceFixedDecodeThunks, LocalThunkBindings, LocalTypeDescriptor,
-    LocalVariantConstructThunks, LocalVariantProjectThunks, rust_facet_descriptor_for,
+    LocalSequenceFixedDecodeThunks, LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout,
+    LocalVariantConstructThunks, LocalVariantProjectIntoThunks, LocalVariantProjectThunks,
+    rust_facet_descriptor_for,
 };
 use crate::plan::{
     EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, ReaderPlan, StructFieldPlan,

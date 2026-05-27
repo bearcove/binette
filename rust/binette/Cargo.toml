@@ -13,6 +13,9 @@ readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
 
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
 [dependencies]
 blake3.workspace = true
 facet.workspace = true

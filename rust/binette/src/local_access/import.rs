@@ -51,6 +51,8 @@ pub struct LocalVariantImport {
     pub name: String,
     pub index: u32,
     pub access: LocalAccess,
+    pub project_into: Option<LocalThunk>,
+    pub drop_projected: Option<LocalThunk>,
     pub construct: Option<LocalThunk>,
     pub payload: Option<LocalDescriptorImport>,
 }
@@ -377,6 +379,8 @@ impl LocalVariantExport {
             name: self.name,
             index: self.index,
             access: self.access.into_access(backend, &path)?,
+            project_into: None,
+            drop_projected: None,
             construct: self.construct.map(|name| LocalThunk::new(backend, name)),
             payload: self
                 .payload
@@ -579,6 +583,12 @@ impl LocalVariantImport {
     ) -> Result<LocalVariantDescriptor, LocalDescriptorImportError> {
         let path = format!("{parent_path}::{}", self.name);
         self.access.validate_backend(backend, &path)?;
+        if let Some(project_into) = &self.project_into {
+            project_into.validate_backend(backend, &path)?;
+        }
+        if let Some(drop_projected) = &self.drop_projected {
+            drop_projected.validate_backend(backend, &path)?;
+        }
         if let Some(construct) = &self.construct {
             construct.validate_backend(backend, &path)?;
         }
@@ -586,6 +596,8 @@ impl LocalVariantImport {
             name: self.name,
             index: self.index,
             access: self.access,
+            project_into: self.project_into,
+            drop_projected: self.drop_projected,
             construct: self.construct,
             payload: self
                 .payload
