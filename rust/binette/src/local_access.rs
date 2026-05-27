@@ -5,9 +5,11 @@ use crate::schema::TypeRef;
 
 mod import;
 pub use import::{
-    LocalAccessExport, LocalDescriptorExport, LocalDescriptorExportError, LocalDescriptorImport,
-    LocalDescriptorImportError, LocalDescriptorImportKind, LocalFieldExport, LocalFieldImport,
-    LocalKindExport, LocalLayoutExport, LocalStorageExport, LocalVariantExport, LocalVariantImport,
+    LocalAccessExport, LocalDescriptorExport, LocalDescriptorExportError,
+    LocalDescriptorHandoffError, LocalDescriptorImport, LocalDescriptorImportError,
+    LocalDescriptorImportKind, LocalFieldExport, LocalFieldImport, LocalKindExport,
+    LocalLayoutExport, LocalStorageExport, LocalVariantExport, LocalVariantImport,
+    local_descriptor_exports_from_json,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1592,6 +1594,95 @@ mod tests {
     }
 
     // r[verify binette.local-access.swift-probes]
+    // r[verify binette.local-access.descriptor]
+    #[test]
+    fn swift_probe_json_handoff_lowers_to_runtime_descriptor_tree() {
+        let exports = local_descriptor_exports_from_json(include_str!(
+            "../tests/fixtures/swift-probe-descriptors.json"
+        ))
+        .unwrap();
+        assert_eq!(exports.len(), 2);
+        let mut descriptors = exports
+            .into_iter()
+            .map(|export| LocalTypeDescriptor::from_export(export, resolve_swift_handoff_schema))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .into_iter();
+        let descriptor = descriptors.next().unwrap();
+        let option_descriptor = descriptors.next().unwrap();
+
+        assert_eq!(descriptor.backend, LocalBackend::SwiftProbe);
+        let LocalTypeKind::Struct { fields } = descriptor.kind else {
+            panic!("expected Swift handoff root struct");
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["title", "leaf", "values"]
+        );
+        assert_eq!(fields[0].access, LocalAccess::Direct { offset: 0 });
+        assert!(matches!(
+            fields[0].descriptor.kind,
+            LocalTypeKind::Scalar(LocalScalarAccess::String(
+                LocalSequenceStorage::Thunk { .. }
+            ))
+        ));
+        assert!(matches!(
+            fields[1].descriptor.kind,
+            LocalTypeKind::Struct { .. }
+        ));
+        assert!(matches!(
+            fields[2].descriptor.kind,
+            LocalTypeKind::Sequence {
+                storage: LocalSequenceStorage::Thunk { .. },
+                ..
+            }
+        ));
+
+        assert_eq!(option_descriptor.backend, LocalBackend::SwiftProbe);
+        let LocalTypeKind::Option {
+            some,
+            representation:
+                LocalOptionRepresentation::Thunk {
+                    is_some,
+                    some: some_thunk,
+                    write_none: Some(write_none),
+                    write_some_bytes: Some(write_some_bytes),
+                },
+        } = option_descriptor.kind
+        else {
+            panic!("expected Swift handoff option descriptor");
+        };
+        assert!(matches!(
+            some.kind,
+            LocalTypeKind::Scalar(LocalScalarAccess::String(
+                LocalSequenceStorage::Thunk { .. }
+            ))
+        ));
+        assert_eq!(
+            is_some,
+            LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Optional.isSome")
+        );
+        assert_eq!(
+            some_thunk,
+            LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Optional.some")
+        );
+        assert_eq!(
+            write_none,
+            LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Optional.init.none")
+        );
+        assert_eq!(
+            write_some_bytes,
+            LocalThunk::new(
+                LocalBackend::SwiftProbe,
+                "Swift.Optional<String>.init.some.utf8"
+            )
+        );
+    }
+
+    // r[verify binette.local-access.swift-probes]
     #[test]
     fn imported_descriptor_rejects_cross_backend_thunks() {
         let import = LocalDescriptorImport::swift_probe(
@@ -1615,6 +1706,21 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn resolve_swift_handoff_schema(schema_name: &str) -> Option<LocalSchemaRef> {
+        let type_ref = match schema_name {
+            "bool" => TypeRef::concrete(primitive_type_id(Primitive::Bool)),
+            "i32" => TypeRef::concrete(primitive_type_id(Primitive::I32)),
+            "i64" => TypeRef::concrete(primitive_type_id(Primitive::I64)),
+            "string" => TypeRef::concrete(primitive_type_id(Primitive::String)),
+            "ProbeLeaf" => TypeRef::concrete(TypeId(0x5E_AE_00_01)),
+            "ProbeNested" => TypeRef::concrete(TypeId(0x5E_AE_00_02)),
+            "array<i64>" => TypeRef::concrete(TypeId(0x5E_AE_00_04)),
+            "option<string>" => TypeRef::concrete(TypeId(0x5E_AE_00_05)),
+            _ => return None,
+        };
+        Some(LocalSchemaRef::Type(type_ref))
     }
 
     // r[verify binette.local-access.backends]

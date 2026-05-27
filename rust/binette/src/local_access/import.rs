@@ -3,6 +3,7 @@ use super::{
     LocalSchemaRef, LocalSequenceStorage, LocalThunk, LocalTypeDescriptor, LocalTypeKind,
     LocalValueLayout, LocalVariantDescriptor,
 };
+use facet::Facet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalDescriptorImport {
@@ -54,7 +55,7 @@ pub struct LocalVariantImport {
     pub payload: Option<LocalDescriptorImport>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
 pub struct LocalDescriptorExport {
     pub schema_name: String,
     pub backend: String,
@@ -62,14 +63,14 @@ pub struct LocalDescriptorExport {
     pub kind: LocalKindExport,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Facet)]
 pub struct LocalLayoutExport {
     pub size: usize,
     pub alignment: usize,
     pub stride: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
 pub struct LocalKindExport {
     pub tag: String,
     pub fields: Option<Vec<LocalFieldExport>>,
@@ -80,14 +81,14 @@ pub struct LocalKindExport {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
 pub struct LocalFieldExport {
     pub name: String,
     pub access: LocalAccessExport,
     pub descriptor: Box<LocalDescriptorExport>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
 pub struct LocalVariantExport {
     pub name: String,
     pub index: u32,
@@ -96,14 +97,14 @@ pub struct LocalVariantExport {
     pub payload: Option<Box<LocalDescriptorExport>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
 pub struct LocalAccessExport {
     pub tag: String,
     pub offset: Option<usize>,
     pub thunk: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Facet)]
 pub struct LocalStorageExport {
     pub tag: String,
     pub pointer_offset: Option<usize>,
@@ -155,6 +156,19 @@ pub enum LocalDescriptorExportError {
 
     #[error(transparent)]
     Import(#[from] LocalDescriptorImportError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LocalDescriptorHandoffError {
+    #[error(transparent)]
+    Json(#[from] facet_json::DeserializeError),
+}
+
+// r[impl binette.local-access.swift-probes]
+pub fn local_descriptor_exports_from_json(
+    input: &str,
+) -> Result<Vec<LocalDescriptorExport>, LocalDescriptorHandoffError> {
+    Ok(facet_json::from_str(input)?)
 }
 
 impl LocalTypeDescriptor {
