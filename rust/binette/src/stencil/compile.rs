@@ -2,7 +2,6 @@ use super::*;
 use crate::local_access::{
     LocalAccess, LocalFieldDescriptor, LocalOptionRepresentation, LocalSequenceStorage,
     LocalTypeDescriptor, LocalTypeKind, rust_facet_descriptor_for_shape,
-    rust_option_string_representation, rust_vec_storage,
 };
 
 pub(super) struct StencilCompiler<'registry> {
@@ -1040,16 +1039,29 @@ pub(super) struct StencilEncodeCompiler {
     pub(super) failures: Vec<StencilFailure>,
 }
 
+#[derive(Clone, Copy)]
+struct EncodeLocal<'a> {
+    shape: &'static Shape,
+    descriptor: &'a LocalTypeDescriptor,
+}
+
+#[derive(Clone, Copy)]
+struct VariantElementLocal<'a> {
+    descriptor: &'a LocalTypeDescriptor,
+    access: Option<&'a LocalAccess>,
+}
+
 impl StencilEncodeCompiler {
     pub(super) fn compile_root<T: Facet<'static>>(
         &mut self,
         root: &WriterNode,
     ) -> Result<(), StencilError> {
+        let writer = rust_facet_descriptor(T::SHAPE, "$")?;
         let mut pending = FixedEncodeSegment {
             ops: Vec::new(),
             output_len: 0,
         };
-        self.compile_node(T::SHAPE, root, 0, "$", &mut pending)?;
+        self.compile_node(T::SHAPE, &writer, root, 0, "$", &mut pending)?;
         self.flush_direct_segment(&mut pending);
         Ok(())
     }
@@ -1057,12 +1069,20 @@ impl StencilEncodeCompiler {
     fn compile_node(
         &mut self,
         shape: &'static Shape,
+        descriptor: &LocalTypeDescriptor,
         node: &WriterNode,
         input_offset: usize,
         path: &str,
         pending: &mut FixedEncodeSegment,
     ) -> Result<(), StencilError> {
-        match fixed_encode_segment(shape, node, input_offset, pending.output_len, path) {
+        match fixed_encode_segment(
+            shape,
+            descriptor,
+            node,
+            input_offset,
+            pending.output_len,
+            path,
+        ) {
             Ok(segment) if copy_ops_fit_direct_code(&segment.ops) => {
                 pending.ops.extend(segment.ops);
                 pending.output_len = checked_offset(pending.output_len, segment.output_len, path)?;
@@ -1070,7 +1090,7 @@ impl StencilEncodeCompiler {
             }
             Ok(_) => {
                 self.flush_direct_segment(pending);
-                match fixed_encode_segment(shape, node, input_offset, 0, path) {
+                match fixed_encode_segment(shape, descriptor, node, input_offset, 0, path) {
                     Ok(segment) if copy_ops_fit_direct_code(&segment.ops) => {
                         self.push_direct_segment(segment);
                         return Ok(());
@@ -1103,18 +1123,25 @@ impl StencilEncodeCompiler {
                 Ok(())
             }
             WriterNode::Struct { fields } => {
-                self.compile_struct_root(shape, fields, input_offset, path, pending)
+                self.compile_struct_root(shape, descriptor, fields, input_offset, path, pending)
             }
             WriterNode::Tuple { elements } => {
-                self.compile_tuple_root(shape, elements, input_offset, path, pending)
+                self.compile_tuple_root(shape, descriptor, elements, input_offset, path, pending)
             }
             WriterNode::Array {
                 dimensions,
                 element,
-            } => self.compile_array_root(shape, dimensions, element, input_offset, path, pending),
+            } => self.compile_array_root(
+                EncodeLocal { shape, descriptor },
+                dimensions,
+                element,
+                input_offset,
+                path,
+                pending,
+            ),
             WriterNode::Option { element } => {
                 self.flush_direct_segment(pending);
-                if self.push_option(shape, input_offset, element, path)? {
+                if self.push_option(shape, descriptor, input_offset, element, path)? {
                     Ok(())
                 } else {
                     self.push_node_helper(shape, node, input_offset, path)
@@ -1122,7 +1149,7 @@ impl StencilEncodeCompiler {
             }
             WriterNode::List { element } => {
                 self.flush_direct_segment(pending);
-                if self.push_list(shape, input_offset, element, path)? {
+                if self.push_list(shape, descriptor, input_offset, element, path)? {
                     Ok(())
                 } else {
                     self.push_node_helper(shape, node, input_offset, path)
@@ -1130,7 +1157,7 @@ impl StencilEncodeCompiler {
             }
             WriterNode::Enum { variants } => {
                 self.flush_direct_segment(pending);
-                self.push_enum(shape, input_offset, variants, path)
+                self.push_enum(shape, descriptor, input_offset, variants, path)
             }
             _ => {
                 self.flush_direct_segment(pending);
@@ -1143,12 +1170,14 @@ impl StencilEncodeCompiler {
     fn compile_struct_root(
         &mut self,
         shape: &'static Shape,
+        descriptor: &LocalTypeDescriptor,
         fields: &[WriterFieldPlan],
         input_offset: usize,
         path: &str,
         pending: &mut FixedEncodeSegment,
     ) -> Result<(), StencilError> {
         let facet_fields = shape_struct_fields(shape, path)?;
+        let descriptor_fields = local_struct_fields(descriptor, path)?;
         for field in fields {
             let field_path = format!("{path}.{}", field.name);
             let Some(facet_field) = facet_fields.get(field.facet_index) else {
@@ -1157,9 +1186,20 @@ impl StencilEncodeCompiler {
                     reason: "writer field index is out of range",
                 });
             };
-            let field_offset = checked_offset(input_offset, facet_field.offset, path)?;
+            let field_descriptor = descriptor_fields.get(field.facet_index).ok_or_else(|| {
+                StencilError::Unsupported {
+                    path: field_path.clone(),
+                    reason: "writer descriptor field index is out of range",
+                }
+            })?;
+            let field_offset = checked_offset(
+                input_offset,
+                local_direct_offset(&field_descriptor.access, path)?,
+                path,
+            )?;
             self.compile_node(
                 facet_field.shape.get(),
+                &field_descriptor.descriptor,
                 &field.node,
                 field_offset,
                 &field_path,
@@ -1173,12 +1213,14 @@ impl StencilEncodeCompiler {
     fn compile_tuple_root(
         &mut self,
         shape: &'static Shape,
+        descriptor: &LocalTypeDescriptor,
         elements: &[WriterTupleElementPlan],
         input_offset: usize,
         path: &str,
         pending: &mut FixedEncodeSegment,
     ) -> Result<(), StencilError> {
         let facet_fields = shape_struct_fields(shape, path)?;
+        let descriptor_fields = local_struct_fields(descriptor, path)?;
         if facet_fields.len() != elements.len() {
             return Err(StencilError::Unsupported {
                 path: path.to_owned(),
@@ -1193,9 +1235,21 @@ impl StencilEncodeCompiler {
                     reason: "writer tuple field index is out of range",
                 });
             };
-            let element_offset = checked_offset(input_offset, facet_field.offset, path)?;
+            let element_descriptor =
+                descriptor_fields.get(element.facet_index).ok_or_else(|| {
+                    StencilError::Unsupported {
+                        path: path.to_owned(),
+                        reason: "writer tuple descriptor field index is out of range",
+                    }
+                })?;
+            let element_offset = checked_offset(
+                input_offset,
+                local_direct_offset(&element_descriptor.access, path)?,
+                path,
+            )?;
             self.compile_node(
                 facet_field.shape.get(),
+                &element_descriptor.descriptor,
                 &element.node,
                 element_offset,
                 &element_path,
@@ -1208,7 +1262,7 @@ impl StencilEncodeCompiler {
     // r[impl binette.aggregate.array]
     fn compile_array_root(
         &mut self,
-        shape: &'static Shape,
+        local: EncodeLocal<'_>,
         dimensions: &[u64],
         element: &WriterNode,
         input_offset: usize,
@@ -1216,12 +1270,21 @@ impl StencilEncodeCompiler {
         pending: &mut FixedEncodeSegment,
     ) -> Result<(), StencilError> {
         let (element_shape, count, stride) =
-            fixed_array_parts(shape, dimensions, path, "writer array")?;
+            fixed_array_parts(local.shape, dimensions, path, "writer array")?;
+        let (element_descriptor, descriptor_count, descriptor_stride) =
+            local_inline_fixed_array(local.descriptor, path)?;
+        if descriptor_count != count || descriptor_stride != stride {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "writer array descriptor differs from Facet array layout",
+            });
+        }
         for index in 0..count {
             let element_input_offset =
                 checked_offset(input_offset, checked_mul(index, stride, path)?, path)?;
             self.compile_node(
                 element_shape,
+                element_descriptor,
                 element,
                 element_input_offset,
                 &format!("{path}[{index}]"),
@@ -1235,6 +1298,7 @@ impl StencilEncodeCompiler {
     fn push_option(
         &mut self,
         shape: &'static Shape,
+        descriptor: &LocalTypeDescriptor,
         input_offset: usize,
         element: &WriterNode,
         path: &str,
@@ -1246,6 +1310,7 @@ impl StencilEncodeCompiler {
             });
         };
 
+        let (some_descriptor, representation) = local_option_descriptor(descriptor, path)?;
         let mut compiler = StencilEncodeCompiler {
             ops: Vec::new(),
             helpers: Vec::new(),
@@ -1257,6 +1322,7 @@ impl StencilEncodeCompiler {
         };
         compiler.compile_node(
             option.t(),
+            some_descriptor,
             element,
             0,
             &format!("{path}.some"),
@@ -1269,8 +1335,8 @@ impl StencilEncodeCompiler {
 
         let layout = if matches!(element, WriterNode::Primitive(Primitive::String))
             && matches!(
-                rust_option_string_representation(),
-                Some(LocalOptionRepresentation::NicheString { .. })
+                representation,
+                LocalOptionRepresentation::NicheString { .. }
             ) {
             EncodeOptionLayout::NicheString
         } else {
@@ -1290,6 +1356,7 @@ impl StencilEncodeCompiler {
     fn push_list(
         &mut self,
         shape: &'static Shape,
+        descriptor: &LocalTypeDescriptor,
         input_offset: usize,
         element: &WriterNode,
         path: &str,
@@ -1301,6 +1368,7 @@ impl StencilEncodeCompiler {
             });
         };
 
+        let (element_descriptor, element_stride) = local_sequence_element(descriptor, path)?;
         let mut compiler = StencilEncodeCompiler {
             ops: Vec::new(),
             helpers: Vec::new(),
@@ -1310,29 +1378,27 @@ impl StencilEncodeCompiler {
             ops: Vec::new(),
             output_len: 0,
         };
-        compiler.compile_node(list.t(), element, 0, &format!("{path}[]"), &mut pending)?;
+        compiler.compile_node(
+            list.t(),
+            element_descriptor,
+            element,
+            0,
+            &format!("{path}[]"),
+            &mut pending,
+        )?;
         compiler.flush_direct_segment(&mut pending);
         if !compiler.helpers.is_empty() {
             return Ok(false);
         }
 
-        let element_stride = list
-            .t()
-            .layout
-            .sized_layout()
-            .map_err(|_| StencilError::Unsupported {
-                path: format!("{path}[]"),
-                reason: "writer list element shape is unsized",
-            })?
-            .size();
-        let layout = match rust_vec_storage(element_stride) {
-            Some(LocalSequenceStorage::DirectContiguous {
+        let layout = match local_sequence_storage(descriptor, path)? {
+            LocalSequenceStorage::DirectContiguous {
                 pointer: LocalAccess::Direct { offset: ptr_offset },
                 length: LocalAccess::Direct { offset: len_offset },
                 ..
-            }) => EncodeListLayout::Vec {
-                ptr_offset,
-                len_offset,
+            } => EncodeListLayout::Vec {
+                ptr_offset: *ptr_offset,
+                len_offset: *len_offset,
                 element_stride,
             },
             _ => EncodeListLayout::Facet,
@@ -1377,6 +1443,7 @@ impl StencilEncodeCompiler {
     fn push_enum(
         &mut self,
         shape: &'static Shape,
+        descriptor: &LocalTypeDescriptor,
         input_offset: usize,
         variants: &[WriterVariantPlan],
         path: &str,
@@ -1397,9 +1464,11 @@ impl StencilEncodeCompiler {
                 });
             };
             let variant_path = format!("{path}.{}", facet_variant.effective_name());
+            let local_variant = local_enum_variant(descriptor, variant.facet_index, path)?;
             let ops = self.compile_variant_payload_ops(
                 &variant.payload,
                 facet_variant.data,
+                local_variant.payload.as_deref(),
                 input_offset,
                 &variant_path,
             )?;
@@ -1422,6 +1491,7 @@ impl StencilEncodeCompiler {
         &mut self,
         payload: &WriterVariantPayloadPlan,
         data: facet_core::StructType,
+        payload_descriptor: Option<&LocalTypeDescriptor>,
         input_offset: usize,
         path: &str,
     ) -> Result<Vec<EncodeStencilOp>, StencilError> {
@@ -1434,8 +1504,17 @@ impl StencilEncodeCompiler {
             match payload {
                 WriterVariantPayloadPlan::Unit => {}
                 WriterVariantPayloadPlan::Newtype(element) => {
+                    let payload_descriptor =
+                        payload_descriptor.ok_or_else(|| StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "writer enum newtype payload is missing local descriptor",
+                        })?;
                     self.compile_variant_tuple_element(
                         data.fields,
+                        VariantElementLocal {
+                            descriptor: payload_descriptor,
+                            access: None,
+                        },
                         element,
                         input_offset,
                         path,
@@ -1443,9 +1522,26 @@ impl StencilEncodeCompiler {
                     )?;
                 }
                 WriterVariantPayloadPlan::Tuple(elements) => {
+                    let descriptor_fields = local_struct_fields(
+                        payload_descriptor.ok_or_else(|| StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "writer enum tuple payload is missing local descriptor",
+                        })?,
+                        path,
+                    )?;
                     for element in elements {
+                        let field_descriptor = descriptor_fields
+                            .get(element.facet_index)
+                            .ok_or_else(|| StencilError::Unsupported {
+                                path: path.to_owned(),
+                                reason: "writer enum tuple descriptor field index is out of range",
+                            })?;
                         self.compile_variant_tuple_element(
                             data.fields,
+                            VariantElementLocal {
+                                descriptor: &field_descriptor.descriptor,
+                                access: Some(&field_descriptor.access),
+                            },
                             element,
                             input_offset,
                             path,
@@ -1454,9 +1550,17 @@ impl StencilEncodeCompiler {
                     }
                 }
                 WriterVariantPayloadPlan::Struct(fields) => {
+                    let descriptor_fields = local_struct_fields(
+                        payload_descriptor.ok_or_else(|| StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "writer enum struct payload is missing local descriptor",
+                        })?,
+                        path,
+                    )?;
                     for field in fields {
                         self.compile_variant_struct_field(
                             data.fields,
+                            descriptor_fields,
                             field,
                             input_offset,
                             path,
@@ -1475,6 +1579,7 @@ impl StencilEncodeCompiler {
     fn compile_variant_tuple_element(
         &mut self,
         facet_fields: &'static [facet_core::Field],
+        local: VariantElementLocal<'_>,
         element: &WriterTupleElementPlan,
         input_offset: usize,
         path: &str,
@@ -1487,9 +1592,17 @@ impl StencilEncodeCompiler {
                 reason: "writer enum tuple field index is out of range",
             });
         };
-        let field_offset = checked_offset(input_offset, facet_field.offset, path)?;
+        let field_offset = checked_offset(
+            input_offset,
+            match local.access {
+                Some(access) => local_direct_offset(access, path)?,
+                None => facet_field.offset,
+            },
+            path,
+        )?;
         self.compile_node(
             facet_field.shape(),
+            local.descriptor,
             &element.node,
             field_offset,
             &element_path,
@@ -1500,6 +1613,7 @@ impl StencilEncodeCompiler {
     fn compile_variant_struct_field(
         &mut self,
         facet_fields: &'static [facet_core::Field],
+        descriptor_fields: &[LocalFieldDescriptor],
         field: &WriterFieldPlan,
         input_offset: usize,
         path: &str,
@@ -1512,9 +1626,21 @@ impl StencilEncodeCompiler {
                 reason: "writer enum struct field index is out of range",
             });
         };
-        let field_offset = checked_offset(input_offset, facet_field.offset, path)?;
+        let field_descriptor =
+            descriptor_fields
+                .get(field.facet_index)
+                .ok_or_else(|| StencilError::Unsupported {
+                    path: field_path.clone(),
+                    reason: "writer enum struct descriptor field index is out of range",
+                })?;
+        let field_offset = checked_offset(
+            input_offset,
+            local_direct_offset(&field_descriptor.access, path)?,
+            path,
+        )?;
         self.compile_node(
             facet_field.shape(),
+            &field_descriptor.descriptor,
             &field.node,
             field_offset,
             &field_path,
@@ -1562,13 +1688,15 @@ impl FixedEncodeCompiler {
         &mut self,
         root: &WriterNode,
     ) -> Result<usize, StencilError> {
-        self.compile_node(T::SHAPE, root, 0, "$")?;
+        let writer = rust_facet_descriptor(T::SHAPE, "$")?;
+        self.compile_node(T::SHAPE, &writer, root, 0, "$")?;
         Ok(self.output_offset)
     }
 
     fn compile_node(
         &mut self,
         shape: &'static Shape,
+        descriptor: &LocalTypeDescriptor,
         node: &WriterNode,
         input_offset: usize,
         path: &str,
@@ -1581,14 +1709,16 @@ impl FixedEncodeCompiler {
             WriterNode::Primitive(primitive) => {
                 self.compile_primitive(*primitive, input_offset, path)
             }
-            WriterNode::Struct { fields } => self.compile_struct(shape, fields, input_offset, path),
+            WriterNode::Struct { fields } => {
+                self.compile_struct(shape, descriptor, fields, input_offset, path)
+            }
             WriterNode::Tuple { elements } => {
-                self.compile_tuple(shape, elements, input_offset, path)
+                self.compile_tuple(shape, descriptor, elements, input_offset, path)
             }
             WriterNode::Array {
                 dimensions,
                 element,
-            } => self.compile_array(shape, dimensions, element, input_offset, path),
+            } => self.compile_array(shape, descriptor, dimensions, element, input_offset, path),
             WriterNode::External => Ok(()),
             WriterNode::Enum { .. }
             | WriterNode::Result { .. }
@@ -1607,11 +1737,13 @@ impl FixedEncodeCompiler {
     fn compile_struct(
         &mut self,
         shape: &'static Shape,
+        descriptor: &LocalTypeDescriptor,
         fields: &[WriterFieldPlan],
         input_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
         let facet_fields = shape_struct_fields(shape, path)?;
+        let descriptor_fields = local_struct_fields(descriptor, path)?;
         for field in fields {
             let facet_field =
                 facet_fields
@@ -1620,9 +1752,20 @@ impl FixedEncodeCompiler {
                         path: format!("{path}.{}", field.name),
                         reason: "writer field index is out of range",
                     })?;
-            let field_offset = checked_offset(input_offset, facet_field.offset, path)?;
+            let field_descriptor = descriptor_fields.get(field.facet_index).ok_or_else(|| {
+                StencilError::Unsupported {
+                    path: format!("{path}.{}", field.name),
+                    reason: "writer descriptor field index is out of range",
+                }
+            })?;
+            let field_offset = checked_offset(
+                input_offset,
+                local_direct_offset(&field_descriptor.access, path)?,
+                path,
+            )?;
             self.compile_node(
                 facet_field.shape.get(),
+                &field_descriptor.descriptor,
                 &field.node,
                 field_offset,
                 &format!("{path}.{}", field.name),
@@ -1635,11 +1778,13 @@ impl FixedEncodeCompiler {
     fn compile_tuple(
         &mut self,
         shape: &'static Shape,
+        descriptor: &LocalTypeDescriptor,
         elements: &[WriterTupleElementPlan],
         input_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
         let facet_fields = shape_struct_fields(shape, path)?;
+        let descriptor_fields = local_struct_fields(descriptor, path)?;
         if facet_fields.len() != elements.len() {
             return Err(StencilError::Unsupported {
                 path: path.to_owned(),
@@ -1654,9 +1799,21 @@ impl FixedEncodeCompiler {
                         path: path.to_owned(),
                         reason: "writer tuple field index is out of range",
                     })?;
-            let field_offset = checked_offset(input_offset, facet_field.offset, path)?;
+            let element_descriptor =
+                descriptor_fields.get(element.facet_index).ok_or_else(|| {
+                    StencilError::Unsupported {
+                        path: path.to_owned(),
+                        reason: "writer tuple descriptor field index is out of range",
+                    }
+                })?;
+            let field_offset = checked_offset(
+                input_offset,
+                local_direct_offset(&element_descriptor.access, path)?,
+                path,
+            )?;
             self.compile_node(
                 facet_field.shape.get(),
+                &element_descriptor.descriptor,
                 &element.node,
                 field_offset,
                 &format!("{path}.{}", element.facet_index),
@@ -1669,6 +1826,7 @@ impl FixedEncodeCompiler {
     fn compile_array(
         &mut self,
         shape: &'static Shape,
+        descriptor: &LocalTypeDescriptor,
         dimensions: &[u64],
         element: &WriterNode,
         input_offset: usize,
@@ -1676,11 +1834,20 @@ impl FixedEncodeCompiler {
     ) -> Result<(), StencilError> {
         let (element_shape, count, stride) =
             fixed_array_parts(shape, dimensions, path, "writer array")?;
+        let (element_descriptor, descriptor_count, descriptor_stride) =
+            local_inline_fixed_array(descriptor, path)?;
+        if descriptor_count != count || descriptor_stride != stride {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "writer array descriptor differs from Facet array layout",
+            });
+        }
         for index in 0..count {
             let element_input_offset =
                 checked_offset(input_offset, checked_mul(index, stride, path)?, path)?;
             self.compile_node(
                 element_shape,
+                element_descriptor,
                 element,
                 element_input_offset,
                 &format!("{path}[{index}]"),
@@ -1719,6 +1886,7 @@ impl FixedEncodeCompiler {
 
 fn fixed_encode_segment(
     shape: &'static Shape,
+    descriptor: &LocalTypeDescriptor,
     node: &WriterNode,
     input_offset: usize,
     output_offset: usize,
@@ -1728,7 +1896,7 @@ fn fixed_encode_segment(
         ops: Vec::new(),
         output_offset,
     };
-    compiler.compile_node(shape, node, input_offset, path)?;
+    compiler.compile_node(shape, descriptor, node, input_offset, path)?;
     let output_len = compiler
         .output_offset
         .checked_sub(output_offset)
@@ -1883,6 +2051,36 @@ fn local_sequence_element<'a>(
         }
     };
     Ok((element, element_stride))
+}
+
+fn local_sequence_storage<'a>(
+    descriptor: &'a LocalTypeDescriptor,
+    path: &str,
+) -> Result<&'a LocalSequenceStorage, StencilError> {
+    let LocalTypeKind::Sequence { storage, .. } = &descriptor.kind else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor is not a sequence layout",
+        });
+    };
+    Ok(storage)
+}
+
+fn local_option_descriptor<'a>(
+    descriptor: &'a LocalTypeDescriptor,
+    path: &str,
+) -> Result<(&'a LocalTypeDescriptor, &'a LocalOptionRepresentation), StencilError> {
+    let LocalTypeKind::Option {
+        some,
+        representation,
+    } = &descriptor.kind
+    else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor is not an option layout",
+        });
+    };
+    Ok((some, representation))
 }
 
 fn local_inline_fixed_array<'a>(
