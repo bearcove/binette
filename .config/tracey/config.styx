@@ -32,6 +32,20 @@ specs (
                 name rust
                 include (rust/**/*.rs)
             }
+            {
+                name swift
+                include (swift/**/*.swift)
+            }
+        )
+    }
+    {
+        name binette-local-execution
+        include (docs/content/spec/local-execution.md)
+        impls (
+            {
+                name rust
+                include (rust/**/*.rs)
+            }
         )
     }
 )

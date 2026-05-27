@@ -2,6 +2,7 @@ public enum BinetteProbeBackend: Equatable {
     case swiftProbe
 }
 
+// r[impl binette.local-access.descriptor+2]
 public struct BinetteLocalLayout: Equatable {
     public var size: Int
     public var alignment: Int
@@ -14,6 +15,8 @@ public struct BinetteLocalLayout: Equatable {
     }
 }
 
+// r[impl binette.local-access.boundary]
+// r[impl binette.local-access.descriptor+2]
 public struct BinetteLocalDescriptor: Equatable {
     public var schemaName: String
     public var backend: BinetteProbeBackend
@@ -21,6 +24,8 @@ public struct BinetteLocalDescriptor: Equatable {
     public var kind: BinetteLocalKind
 }
 
+// r[impl binette.local-access.boundary]
+// r[impl binette.local-access.descriptor+2]
 public final class BinetteDescriptorExport: Codable, Equatable {
     public var schemaName: String
     public var backend: String
@@ -260,10 +265,13 @@ public func makeProbeDescriptors() -> [BinetteLocalDescriptor] {
     ]
 }
 
+// r[impl binette.local-access.swift-probes+2]
 public func exportProbeDescriptors() -> [BinetteDescriptorExport] {
     makeProbeDescriptors().map(\.export)
 }
 
+// r[impl binette.local-access.backends]
+// r[impl binette.local-access.swift-probes+2]
 public func validateProbeDescriptors(_ descriptors: [BinetteLocalDescriptor]) -> Bool {
     let names = Set(descriptors.map(\.schemaName))
     return [
@@ -278,6 +286,8 @@ public func validateProbeDescriptors(_ descriptors: [BinetteLocalDescriptor]) ->
     ].allSatisfy(names.contains)
 }
 
+// r[impl binette.local-access.runtime-facts]
+// r[impl binette.local-access.swift-probes+2]
 public func validateProbeRuntimeFacts() -> Bool {
     let descriptors = makeProbeDescriptors()
     guard
@@ -444,6 +454,8 @@ private func loadValue<Root, Field>(from value: Root, offset: Int, as _: Field.T
 }
 
 private extension BinetteLocalDescriptor {
+    // r[impl binette.local-access.boundary]
+    // r[impl binette.local-access.descriptor+2]
     var export: BinetteDescriptorExport {
         BinetteDescriptorExport(
             schemaName: schemaName,
@@ -634,6 +646,7 @@ private func stringDescriptor() -> BinetteLocalDescriptor {
     )
 }
 
+// r[impl binette.local-access.backends]
 private func arrayDescriptor(element: BinetteLocalDescriptor) -> BinetteLocalDescriptor {
     BinetteLocalDescriptor(
         schemaName: "array<i64>",
@@ -681,6 +694,7 @@ private func optionalBoolDescriptor(some: BinetteLocalDescriptor) -> BinetteLoca
     )
 }
 
+// r[impl binette.local-access.runtime-facts]
 private func probeOptionalBoolStorage() -> BinetteOptionalStorage {
     let none: Bool? = nil
     let someFalse: Bool? = false
@@ -722,6 +736,7 @@ private func optionalUInt16Descriptor(some: BinetteLocalDescriptor) -> BinetteLo
     )
 }
 
+// r[impl binette.local-access.runtime-facts]
 private func probeOptionalUInt16Storage() -> BinetteOptionalStorage {
     let none: UInt16? = nil
     let zero: UInt16? = 0
@@ -782,6 +797,7 @@ private func leafDescriptor(
     )
 }
 
+// r[impl binette.local-access.backends]
 private func nestedDescriptor(
     title: BinetteLocalDescriptor,
     leaf: BinetteLocalDescriptor,
@@ -811,6 +827,7 @@ private func nestedDescriptor(
     )
 }
 
+// r[impl binette.local-access.backends]
 private func enumDescriptor() -> BinetteLocalDescriptor {
     let string = stringDescriptor()
     let leaf = leafDescriptor(

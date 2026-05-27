@@ -3,6 +3,8 @@ import Foundation
 import XCTest
 
 final class BinetteSwiftProbesTests: XCTestCase {
+    // r[verify binette.local-access.backends]
+    // r[verify binette.local-access.swift-probes+2]
     func testRepresentativeDescriptorsAreProduced() {
         let descriptors = makeProbeDescriptors()
 
@@ -10,10 +12,15 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertTrue(descriptors.allSatisfy { $0.backend == .swiftProbe })
     }
 
+    // r[verify binette.local-access.runtime-facts]
+    // r[verify binette.local-access.swift-probes+2]
     func testProbeDescriptorsValidateAgainstLiveRuntimeValues() {
         XCTAssertTrue(validateProbeRuntimeFacts())
     }
 
+    // r[verify binette.local-access.boundary]
+    // r[verify binette.local-access.descriptor+2]
+    // r[verify binette.local-access.swift-probes+2]
     func testProbeDescriptorsExportAsCodableHandoff() throws {
         let exports = exportProbeDescriptors()
         let data = try JSONEncoder().encode(exports)
@@ -48,6 +55,8 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertEqual(optionalBool.kind.storage?.optionTagWidth, MemoryLayout<UInt8>.size)
     }
 
+    // r[verify binette.local-access.descriptor+2]
+    // r[verify binette.local-access.runtime-facts]
     func testStoredStructFieldsUseDirectOffsets() throws {
         let descriptor = try XCTUnwrap(
             makeProbeDescriptors().first { $0.schemaName == "ProbeNested" }
@@ -65,6 +74,8 @@ final class BinetteSwiftProbesTests: XCTestCase {
         ])
     }
 
+    // r[verify binette.local-access.backends]
+    // r[verify binette.local-access.descriptor+2]
     func testSwiftStandardLibraryShapesStartAsExplicitThunkFallbacks() throws {
         let descriptors = makeProbeDescriptors()
         let string = try XCTUnwrap(descriptors.first { $0.schemaName == "string" })
@@ -122,6 +133,7 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertEqual(variants[2].payload?.schemaName, "ProbeLeaf")
     }
 
+    // r[verify binette.local-access.descriptor+2]
     func testStringThunkNamesCoverEncodeProjectionAndDecodeConstruction() throws {
         let descriptor = try XCTUnwrap(makeProbeDescriptors().first { $0.schemaName == "string" })
 
@@ -138,6 +150,7 @@ final class BinetteSwiftProbesTests: XCTestCase {
         )
     }
 
+    // r[verify binette.local-access.descriptor+2]
     func testOptionalThunkNamesCoverEncodeProjectionAndDecodeConstruction() throws {
         let descriptor = try XCTUnwrap(
             makeProbeDescriptors().first { $0.schemaName == "option<string>" }
@@ -158,6 +171,9 @@ final class BinetteSwiftProbesTests: XCTestCase {
         )
     }
 
+    // r[verify binette.local-access.descriptor+2]
+    // r[verify binette.local-access.runtime-facts]
+    // r[verify binette.local-access.swift-probes+2]
     func testSwiftOptionalUInt16DescriptorExportsProbedDirectTagLayout() throws {
         let descriptor = try XCTUnwrap(
             makeProbeDescriptors().first { $0.schemaName == "option<u16>" }
@@ -186,6 +202,9 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertEqual(export.kind.storage?.someOffset, someOffset)
     }
 
+    // r[verify binette.local-access.descriptor+2]
+    // r[verify binette.local-access.runtime-facts]
+    // r[verify binette.local-access.swift-probes+2]
     func testSwiftOptionalBoolDescriptorExportsProbedNicheLayout() throws {
         let descriptor = try XCTUnwrap(
             makeProbeDescriptors().first { $0.schemaName == "option<bool>" }
