@@ -1,9 +1,10 @@
 use super::*;
 use crate::hash::primitive_type_id;
 use crate::local_access::{
-    LocalAccess, LocalFieldDescriptor, LocalOptionRepresentation, LocalScalarAccess,
-    LocalSchemaRef, LocalSequenceDecodeThunks, LocalSequenceEncodeThunks, LocalSequenceStorage,
-    LocalThunkBindings, LocalTypeDescriptor, LocalTypeKind, rust_facet_descriptor_for_shape,
+    LocalAccess, LocalFieldDescriptor, LocalOptionEncodeThunks, LocalOptionRepresentation,
+    LocalOptionSequenceDecodeThunks, LocalScalarAccess, LocalSchemaRef, LocalSequenceDecodeThunks,
+    LocalSequenceEncodeThunks, LocalSequenceStorage, LocalThunkBindings, LocalTypeDescriptor,
+    LocalTypeKind, rust_facet_descriptor_for_shape,
 };
 use crate::schema::TypeRef;
 
@@ -983,12 +984,14 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
                 dimensions,
                 element,
             } => self.compile_array(reader, dimensions, element, output_offset, path),
+            PlanNode::Option { element } => {
+                self.push_option_sequence_bytes(reader, element, output_offset, path)
+            }
             PlanNode::External { .. } => Ok(()),
             PlanNode::List { .. }
             | PlanNode::Set { .. }
             | PlanNode::Map { .. }
             | PlanNode::Enum { .. }
-            | PlanNode::Option { .. }
             | PlanNode::Primitive { .. }
             | PlanNode::Dynamic => Err(StencilError::Unsupported {
                 path: path.to_owned(),
@@ -1144,6 +1147,36 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
             input_len,
             failure_index,
         });
+        Ok(())
+    }
+
+    fn push_option_sequence_bytes(
+        &mut self,
+        reader: &LocalTypeDescriptor,
+        element: &PlanNode,
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        if !matches!(
+            element,
+            PlanNode::Primitive {
+                primitive: Primitive::String | Primitive::Bytes | Primitive::Payload
+            }
+        ) {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "local option thunk decode currently supports byte-sequence payloads",
+            });
+        }
+        let thunks = local_option_sequence_bytes_decode_thunks(reader, self.thunks, path)?;
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilHelper::LocalOptionSequenceBytes {
+            output_offset,
+            thunks,
+            failure_index,
+        });
+        self.ops.push(HybridStencilOp::Helper { helper_index });
         Ok(())
     }
 
@@ -2259,6 +2292,10 @@ impl LocalEncodeStencilCompiler<'_> {
                 dimensions,
                 element,
             } => self.compile_array(descriptor, dimensions, element, input_offset, path, pending),
+            WriterNode::Option { element } => {
+                self.flush_direct_segment(pending);
+                self.push_option_sequence_bytes(descriptor, element, input_offset, path)
+            }
             WriterNode::External => Ok(()),
             WriterNode::Ref { .. }
             | WriterNode::Enum { .. }
@@ -2266,7 +2303,6 @@ impl LocalEncodeStencilCompiler<'_> {
             | WriterNode::List { .. }
             | WriterNode::Set { .. }
             | WriterNode::Map { .. }
-            | WriterNode::Option { .. }
             | WriterNode::Primitive(_)
             | WriterNode::Dynamic => Err(StencilError::Unsupported {
                 path: path.to_owned(),
@@ -2397,6 +2433,37 @@ impl LocalEncodeStencilCompiler<'_> {
             thunks,
             failure_index,
         });
+        self.ops.push(EncodeStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
+    fn push_option_sequence_bytes(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        element: &WriterNode,
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        if !matches!(
+            element,
+            WriterNode::Primitive(Primitive::String | Primitive::Bytes | Primitive::Payload)
+        ) {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "local option thunk encode currently supports byte-sequence payloads",
+            });
+        }
+        let (option_thunks, sequence_thunks) =
+            local_option_sequence_bytes_encode_thunks(descriptor, self.thunks, path)?;
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers
+            .push(StencilEncodeHelper::LocalOptionSequenceBytes {
+                input_offset,
+                option_thunks,
+                sequence_thunks,
+                failure_index,
+            });
         self.ops.push(EncodeStencilOp::Helper { helper_index });
         Ok(())
     }
@@ -3118,6 +3185,84 @@ fn local_sequence_decode_thunks(
             path: path.to_owned(),
             reason: "local byte sequence decode thunk is not bound",
         })
+}
+
+fn local_option_sequence_bytes_encode_thunks(
+    descriptor: &LocalTypeDescriptor,
+    bindings: &LocalThunkBindings,
+    path: &str,
+) -> Result<(LocalOptionEncodeThunks, LocalSequenceEncodeThunks), StencilError> {
+    let (some, representation) = local_option_descriptor(descriptor, path)?;
+    let LocalOptionRepresentation::Thunk {
+        is_some,
+        some: some_thunk,
+        ..
+    } = representation
+    else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local option descriptor does not use backend thunks",
+        });
+    };
+    let option = bindings
+        .option(is_some, some_thunk)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local option backend thunks are not bound",
+        })?;
+    let sequence = local_sequence_bytes_thunks(some, bindings, &format!("{path}.some"))?;
+    Ok((option, sequence))
+}
+
+fn local_option_sequence_bytes_decode_thunks(
+    descriptor: &LocalTypeDescriptor,
+    bindings: &LocalThunkBindings,
+    path: &str,
+) -> Result<LocalOptionSequenceDecodeThunks, StencilError> {
+    let (some, representation) = local_option_descriptor(descriptor, path)?;
+    local_byte_sequence_descriptor(some, &format!("{path}.some"))?;
+    let LocalOptionRepresentation::Thunk {
+        write_none: Some(write_none),
+        write_some_bytes: Some(write_some_bytes),
+        ..
+    } = representation
+    else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local option descriptor has no backend decode thunks",
+        });
+    };
+    bindings
+        .option_sequence_decode(write_none, write_some_bytes)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local option decode thunks are not bound",
+        })
+}
+
+fn local_byte_sequence_descriptor(
+    descriptor: &LocalTypeDescriptor,
+    path: &str,
+) -> Result<(), StencilError> {
+    let storage = match &descriptor.kind {
+        LocalTypeKind::Scalar(
+            LocalScalarAccess::String(storage) | LocalScalarAccess::Bytes(storage),
+        ) => storage,
+        _ => {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "local option byte-sequence payload is not a byte sequence",
+            });
+        }
+    };
+    if matches!(storage, LocalSequenceStorage::Thunk { .. }) {
+        Ok(())
+    } else {
+        Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local option byte-sequence payload is not thunk-backed",
+        })
+    }
 }
 
 fn local_enum_variant<'a>(

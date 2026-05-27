@@ -55,7 +55,7 @@ public enum BinetteSequenceStorage: Equatable {
 
 public enum BinetteOptionalStorage: Equatable {
     case directTag(offset: Int, noneValue: UInt)
-    case thunk(isSome: String, some: String)
+    case thunk(isSome: String, some: String, writeNone: String?, writeSomeBytes: String?)
 }
 
 public struct ProbeLeaf {
@@ -176,7 +176,12 @@ private func optionalDescriptor<T>(
         layout: BinetteLocalLayout(of: T.self),
         kind: .optional(
             some: some,
-            storage: .thunk(isSome: "Swift.Optional.isSome", some: "Swift.Optional.some")
+            storage: .thunk(
+                isSome: "Swift.Optional.isSome",
+                some: "Swift.Optional.some",
+                writeNone: "Swift.Optional.init.none",
+                writeSomeBytes: "Swift.Optional<String>.init.some.utf8"
+            )
         )
     )
 }

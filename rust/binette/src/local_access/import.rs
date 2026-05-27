@@ -298,9 +298,21 @@ impl LocalOptionRepresentation {
                 string.validate_backend(backend, path)?;
                 none_tag.validate_backend(backend, path)
             }
-            Self::Thunk { is_some, some } => {
+            Self::Thunk {
+                is_some,
+                some,
+                write_none,
+                write_some_bytes,
+            } => {
                 is_some.validate_backend(backend, path)?;
-                some.validate_backend(backend, path)
+                some.validate_backend(backend, path)?;
+                if let Some(write_none) = write_none {
+                    write_none.validate_backend(backend, path)?;
+                }
+                if let Some(write_some_bytes) = write_some_bytes {
+                    write_some_bytes.validate_backend(backend, path)?;
+                }
+                Ok(())
             }
         }
     }

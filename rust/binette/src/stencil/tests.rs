@@ -5,6 +5,7 @@ use crate::encode::{encode_to_vec_with_plan, writer_plan_for};
 use crate::hash::primitive_type_id;
 use crate::local_access::{
     LocalAccess, LocalBackend, LocalDescriptorImport, LocalDescriptorImportKind, LocalFieldImport,
+    LocalOptionEncodeThunks, LocalOptionRepresentation, LocalOptionSequenceDecodeThunks,
     LocalScalarAccess, LocalSequenceDecodeThunks, LocalSequenceEncodeThunks, LocalSequenceStorage,
     LocalThunk, LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout,
 };
@@ -31,6 +32,14 @@ struct SwiftFixed {
 struct SwiftText {
     id: u64,
     title: String,
+    code: u16,
+}
+
+#[derive(Debug, PartialEq, Facet)]
+#[repr(C)]
+struct SwiftMaybeText {
+    id: u64,
+    maybe: Option<String>,
     code: u16,
 }
 
@@ -173,6 +182,103 @@ fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_string_subtree() {
     assert_eq!(decoded.code, value.code);
 }
 
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_optional_string_subtree() {
+    let values = [
+        SwiftMaybeText {
+            id: 0x0102_0304_0506_0708,
+            maybe: Some("optional payload".to_owned()),
+            code: 0x1122,
+        },
+        SwiftMaybeText {
+            id: 0x2122_2324_2526_2728,
+            maybe: None,
+            code: 0x3344,
+        },
+    ];
+    let plan = writer_plan_for::<SwiftMaybeText>().unwrap();
+    let descriptor = swift_maybe_text_descriptor(plan.root());
+
+    let strict_error = match strict_local_stencil_encoder_from_plan(&plan, &descriptor) {
+        Ok(_) => panic!("strict local encode must reject thunk-backed optional string fields"),
+        Err(err) => err,
+    };
+    assert!(matches!(strict_error, StencilError::Unsupported { .. }));
+
+    let thunks = swift_string_thunk_bindings();
+    let encoder = hybrid_local_stencil_encoder_from_plan(&plan, &descriptor, &thunks).unwrap();
+
+    assert_eq!(encoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(encoder.report().helper_count, 1);
+    assert_eq!(encoder.report().helper_paths, vec!["$.maybe".to_owned()]);
+    for value in values {
+        let actual =
+            unsafe { encoder.encode_raw_to_vec((&value as *const SwiftMaybeText).cast()) }.unwrap();
+        assert_eq!(actual, encode_to_vec_with_plan(&value, &plan).unwrap());
+    }
+}
+
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_optional_string_subtree() {
+    let values = [
+        SwiftMaybeText {
+            id: 0x1112_1314_1516_1718,
+            maybe: Some("decode optional".to_owned()),
+            code: 0x3344,
+        },
+        SwiftMaybeText {
+            id: 0x4142_4344_4546_4748,
+            maybe: None,
+            code: 0x5566,
+        },
+    ];
+    let writer_plan = writer_plan_for::<SwiftMaybeText>().unwrap();
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        writer_plan.root(),
+        &writer_registry,
+    )
+    .unwrap();
+    let descriptor = swift_maybe_text_descriptor(reader_plan.reader_root());
+
+    let strict_error =
+        match strict_local_stencil_decoder_from_plan(&reader_plan, &writer_registry, &descriptor) {
+            Ok(_) => panic!("strict local decode must reject thunk-backed optional string fields"),
+            Err(err) => err,
+        };
+    assert!(matches!(strict_error, StencilError::Unsupported { .. }));
+
+    let thunks = swift_string_thunk_bindings();
+    let decoder = hybrid_local_stencil_decoder_from_plan(
+        &reader_plan,
+        &writer_registry,
+        &descriptor,
+        &thunks,
+    )
+    .unwrap();
+
+    assert_eq!(decoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(decoder.report().helper_count, 1);
+    assert_eq!(decoder.report().helper_paths, vec!["$.maybe".to_owned()]);
+
+    for value in values {
+        let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+        let mut decoded = std::mem::MaybeUninit::<SwiftMaybeText>::uninit();
+        unsafe { decoder.decode_raw_into(&bytes, decoded.as_mut_ptr().cast()) }.unwrap();
+        let decoded = unsafe { decoded.assume_init() };
+        assert_eq!(decoded, value);
+    }
+}
+
 fn swift_fixed_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
     LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
         root.clone(),
@@ -239,6 +345,39 @@ fn swift_text_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
     .unwrap()
 }
 
+fn swift_maybe_text_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
+    LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
+        root.clone(),
+        LocalValueLayout::of::<SwiftMaybeText>(),
+        LocalDescriptorImportKind::Struct {
+            fields: vec![
+                LocalFieldImport {
+                    name: "id".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftMaybeText, id),
+                    },
+                    descriptor: primitive_import(Primitive::U64, LocalValueLayout::of::<u64>()),
+                },
+                LocalFieldImport {
+                    name: "maybe".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftMaybeText, maybe),
+                    },
+                    descriptor: swift_option_string_import(root),
+                },
+                LocalFieldImport {
+                    name: "code".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftMaybeText, code),
+                    },
+                    descriptor: primitive_import(Primitive::U16, LocalValueLayout::of::<u16>()),
+                },
+            ],
+        },
+    ))
+    .unwrap()
+}
+
 fn swift_thunk_string_import() -> LocalDescriptorImport {
     LocalDescriptorImport {
         schema: TypeRef::concrete(primitive_type_id(Primitive::String)).into(),
@@ -251,6 +390,26 @@ fn swift_thunk_string_import() -> LocalDescriptorImport {
                 write: Some(swift_string_write_thunk()),
             },
         )),
+    }
+}
+
+fn swift_option_string_import(owner: &TypeRef) -> LocalDescriptorImport {
+    LocalDescriptorImport {
+        schema: crate::local_access::LocalSchemaRef::Position {
+            owner: owner.clone(),
+            path: "maybe".to_owned(),
+        },
+        backend: LocalBackend::SwiftProbe,
+        layout: LocalValueLayout::of::<Option<String>>(),
+        kind: LocalDescriptorImportKind::Option {
+            some: Box::new(swift_thunk_string_import()),
+            representation: LocalOptionRepresentation::Thunk {
+                is_some: swift_option_is_some_thunk(),
+                some: swift_option_some_thunk(),
+                write_none: Some(swift_option_write_none_thunk()),
+                write_some_bytes: Some(swift_option_write_some_bytes_thunk()),
+            },
+        },
     }
 }
 
@@ -272,6 +431,24 @@ fn swift_string_thunk_bindings() -> LocalThunkBindings {
                 context: 0,
             },
         )
+        .with_option(
+            swift_option_is_some_thunk(),
+            swift_option_some_thunk(),
+            LocalOptionEncodeThunks {
+                is_some: test_swift_option_is_some,
+                some: test_swift_option_some,
+                context: 0,
+            },
+        )
+        .with_option_sequence_decode(
+            swift_option_write_none_thunk(),
+            swift_option_write_some_bytes_thunk(),
+            LocalOptionSequenceDecodeThunks {
+                write_none: test_swift_option_write_none,
+                write_some_bytes: test_swift_option_write_some_bytes,
+                context: 0,
+            },
+        )
 }
 
 fn swift_string_len_thunk() -> LocalThunk {
@@ -284,6 +461,25 @@ fn swift_string_element_thunk() -> LocalThunk {
 
 fn swift_string_write_thunk() -> LocalThunk {
     LocalThunk::new(LocalBackend::SwiftProbe, "Swift.String.init.utf8")
+}
+
+fn swift_option_is_some_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Optional.isSome")
+}
+
+fn swift_option_some_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Optional.some")
+}
+
+fn swift_option_write_none_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Optional.init.none")
+}
+
+fn swift_option_write_some_bytes_thunk() -> LocalThunk {
+    LocalThunk::new(
+        LocalBackend::SwiftProbe,
+        "Swift.Optional<String>.init.some.utf8",
+    )
 }
 
 unsafe extern "C" fn test_swift_string_len(
@@ -312,6 +508,48 @@ unsafe extern "C" fn test_swift_string_write(
         return false;
     };
     unsafe { value.cast::<String>().write(string) };
+    true
+}
+
+unsafe extern "C" fn test_swift_option_is_some(
+    value: *const u8,
+    _context: *mut std::ffi::c_void,
+) -> bool {
+    unsafe { (&*value.cast::<Option<String>>()).is_some() }
+}
+
+unsafe extern "C" fn test_swift_option_some(
+    value: *const u8,
+    _context: *mut std::ffi::c_void,
+) -> *const u8 {
+    unsafe {
+        (&*value.cast::<Option<String>>())
+            .as_ref()
+            .map_or(std::ptr::null(), |value| {
+                value as *const String as *const u8
+            })
+    }
+}
+
+unsafe extern "C" fn test_swift_option_write_none(
+    value: *mut u8,
+    _context: *mut std::ffi::c_void,
+) -> bool {
+    unsafe { value.cast::<Option<String>>().write(None) };
+    true
+}
+
+unsafe extern "C" fn test_swift_option_write_some_bytes(
+    value: *mut u8,
+    ptr: *const u8,
+    len: usize,
+    _context: *mut std::ffi::c_void,
+) -> bool {
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let Ok(string) = String::from_utf8(bytes.to_vec()) else {
+        return false;
+    };
+    unsafe { value.cast::<Option<String>>().write(Some(string)) };
     true
 }
 

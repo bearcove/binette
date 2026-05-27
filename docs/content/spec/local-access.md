@@ -73,6 +73,10 @@ inside the current process.
 > Decode-side fallback thunks construct or write the local representation for
 > the unsupported subtree. Encode-side fallback thunks project local bytes or
 > elements from the same subtree. Both directions are explicit backend calls.
+> For an optional subtree, a backend may provide presence/projector thunks for
+> encode and construction thunks for decode; hybrid execution treats the
+> optional node as the fallback boundary unless the engine has proven direct
+> local layout facts for that optional representation.
 
 > r[binette.local-access.runtime-facts]
 >

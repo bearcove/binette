@@ -83,6 +83,44 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
             }
             end
         }
+        StencilHelper::LocalOptionSequenceBytes {
+            output_offset,
+            thunks,
+            ..
+        } => {
+            let Some(tag) = tail.first().copied() else {
+                return hybrid_error_for_helper(helper);
+            };
+            let output = unsafe { out.add(*output_offset) };
+            let context = thunks.context as *mut std::ffi::c_void;
+            match tag {
+                STENCIL_OPTION_NONE_U8 => {
+                    if !unsafe { (thunks.write_none)(output, context) } {
+                        return hybrid_error_for_helper(helper);
+                    }
+                    1
+                }
+                STENCIL_OPTION_SOME_U8 => {
+                    if tail.len() < 5 {
+                        return hybrid_error_for_helper(helper);
+                    }
+                    let len = u32::from_le_bytes(tail[1..5].try_into().unwrap()) as usize;
+                    let Some(end) = 5usize.checked_add(len) else {
+                        return hybrid_error_for_helper(helper);
+                    };
+                    let Some(bytes) = tail.get(5..end) else {
+                        return hybrid_error_for_helper(helper);
+                    };
+                    if !unsafe {
+                        (thunks.write_some_bytes)(output, bytes.as_ptr(), bytes.len(), context)
+                    } {
+                        return hybrid_error_for_helper(helper);
+                    }
+                    end
+                }
+                _ => return hybrid_error_for_helper(helper),
+            }
+        }
         StencilHelper::Skip { writer_type, .. } => {
             let mut reader = CompactReader::new(tail);
             if reader
@@ -104,6 +142,7 @@ fn hybrid_error_for_helper(helper: &StencilHelper) -> usize {
     match helper {
         StencilHelper::Decode { failure_index, .. }
         | StencilHelper::LocalSequenceBytes { failure_index, .. }
+        | StencilHelper::LocalOptionSequenceBytes { failure_index, .. }
         | StencilHelper::Skip { failure_index, .. } => hybrid_error_for_failure(*failure_index),
     }
 }
@@ -126,7 +165,8 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
 
     let status = match helper {
         StencilEncodeHelper::Node { failure_index, .. }
-        | StencilEncodeHelper::LocalSequenceBytes { failure_index, .. } => {
+        | StencilEncodeHelper::LocalSequenceBytes { failure_index, .. }
+        | StencilEncodeHelper::LocalOptionSequenceBytes { failure_index, .. } => {
             status_for_failure(*failure_index).unwrap_or(1)
         }
     };
@@ -166,6 +206,37 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
             out.reserve(len);
             for index in 0..len {
                 out.push(unsafe { (thunks.element_u8)(value, index, context) });
+            }
+        }
+        StencilEncodeHelper::LocalOptionSequenceBytes {
+            input_offset,
+            option_thunks,
+            sequence_thunks,
+            ..
+        } => {
+            if value.is_null() {
+                return status;
+            }
+            let value = value.wrapping_add(*input_offset);
+            let option_context = option_thunks.context as *mut std::ffi::c_void;
+            if !unsafe { (option_thunks.is_some)(value, option_context) } {
+                out.push(STENCIL_OPTION_NONE_U8);
+                return STENCIL_OK;
+            }
+            let some = unsafe { (option_thunks.some)(value, option_context) };
+            if some.is_null() {
+                return status;
+            }
+            let sequence_context = sequence_thunks.context as *mut std::ffi::c_void;
+            let len = unsafe { (sequence_thunks.len)(some, sequence_context) };
+            let Ok(len_u32) = u32::try_from(len) else {
+                return status;
+            };
+            out.push(STENCIL_OPTION_SOME_U8);
+            out.extend_from_slice(&len_u32.to_le_bytes());
+            out.reserve(len);
+            for index in 0..len {
+                out.push(unsafe { (sequence_thunks.element_u8)(some, index, sequence_context) });
             }
         }
     }
@@ -277,6 +348,8 @@ pub(super) struct StencilOptionParts {
 pub(super) const STENCIL_OPTION_NONE: usize = 0;
 pub(super) const STENCIL_OPTION_SOME: usize = 1;
 pub(super) const STENCIL_OPTION_ERROR: usize = usize::MAX;
+pub(super) const STENCIL_OPTION_NONE_U8: u8 = 0;
+pub(super) const STENCIL_OPTION_SOME_U8: u8 = 1;
 
 pub(super) unsafe extern "C" fn stencil_option_parts(
     value: *const u8,

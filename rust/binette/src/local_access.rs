@@ -103,6 +103,14 @@ pub type LocalSequenceU8Thunk =
     unsafe extern "C" fn(value: *const u8, index: usize, context: *mut c_void) -> u8;
 pub type LocalSequenceWriteBytesThunk =
     unsafe extern "C" fn(value: *mut u8, ptr: *const u8, len: usize, context: *mut c_void) -> bool;
+pub type LocalOptionIsSomeThunk =
+    unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> bool;
+pub type LocalOptionSomeThunk =
+    unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> *const u8;
+pub type LocalOptionWriteNoneThunk =
+    unsafe extern "C" fn(value: *mut u8, context: *mut c_void) -> bool;
+pub type LocalOptionWriteSomeBytesThunk =
+    unsafe extern "C" fn(value: *mut u8, ptr: *const u8, len: usize, context: *mut c_void) -> bool;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LocalSequenceEncodeThunks {
@@ -114,6 +122,20 @@ pub struct LocalSequenceEncodeThunks {
 #[derive(Debug, Clone, Copy)]
 pub struct LocalSequenceDecodeThunks {
     pub write_bytes: LocalSequenceWriteBytesThunk,
+    pub context: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LocalOptionEncodeThunks {
+    pub is_some: LocalOptionIsSomeThunk,
+    pub some: LocalOptionSomeThunk,
+    pub context: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LocalOptionSequenceDecodeThunks {
+    pub write_none: LocalOptionWriteNoneThunk,
+    pub write_some_bytes: LocalOptionWriteSomeBytesThunk,
     pub context: usize,
 }
 
@@ -130,10 +152,26 @@ pub struct LocalSequenceDecodeThunkBinding {
     pub thunks: LocalSequenceDecodeThunks,
 }
 
+#[derive(Debug, Clone)]
+pub struct LocalOptionThunkBinding {
+    pub is_some: LocalThunk,
+    pub some: LocalThunk,
+    pub thunks: LocalOptionEncodeThunks,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalOptionSequenceDecodeThunkBinding {
+    pub write_none: LocalThunk,
+    pub write_some_bytes: LocalThunk,
+    pub thunks: LocalOptionSequenceDecodeThunks,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct LocalThunkBindings {
     sequence_u8: Vec<LocalSequenceThunkBinding>,
     sequence_decode: Vec<LocalSequenceDecodeThunkBinding>,
+    option: Vec<LocalOptionThunkBinding>,
+    option_sequence_decode: Vec<LocalOptionSequenceDecodeThunkBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +208,8 @@ pub enum LocalOptionRepresentation {
     Thunk {
         is_some: LocalThunk,
         some: LocalThunk,
+        write_none: Option<LocalThunk>,
+        write_some_bytes: Option<LocalThunk>,
     },
 }
 
@@ -255,6 +295,35 @@ impl LocalThunkBindings {
         self
     }
 
+    pub fn with_option(
+        mut self,
+        is_some: LocalThunk,
+        some: LocalThunk,
+        thunks: LocalOptionEncodeThunks,
+    ) -> Self {
+        self.option.push(LocalOptionThunkBinding {
+            is_some,
+            some,
+            thunks,
+        });
+        self
+    }
+
+    pub fn with_option_sequence_decode(
+        mut self,
+        write_none: LocalThunk,
+        write_some_bytes: LocalThunk,
+        thunks: LocalOptionSequenceDecodeThunks,
+    ) -> Self {
+        self.option_sequence_decode
+            .push(LocalOptionSequenceDecodeThunkBinding {
+                write_none,
+                write_some_bytes,
+                thunks,
+            });
+        self
+    }
+
     pub fn sequence_u8(
         &self,
         len: &LocalThunk,
@@ -270,6 +339,30 @@ impl LocalThunkBindings {
         self.sequence_decode
             .iter()
             .find(|binding| &binding.write == write)
+            .map(|binding| binding.thunks)
+    }
+
+    pub fn option(
+        &self,
+        is_some: &LocalThunk,
+        some: &LocalThunk,
+    ) -> Option<LocalOptionEncodeThunks> {
+        self.option
+            .iter()
+            .find(|binding| &binding.is_some == is_some && &binding.some == some)
+            .map(|binding| binding.thunks)
+    }
+
+    pub fn option_sequence_decode(
+        &self,
+        write_none: &LocalThunk,
+        write_some_bytes: &LocalThunk,
+    ) -> Option<LocalOptionSequenceDecodeThunks> {
+        self.option_sequence_decode
+            .iter()
+            .find(|binding| {
+                &binding.write_none == write_none && &binding.write_some_bytes == write_some_bytes
+            })
             .map(|binding| binding.thunks)
     }
 }
@@ -485,6 +578,8 @@ mod rust_layout {
                                     "Facet.Option.is_some",
                                 ),
                                 some: LocalThunk::new(LocalBackend::RustFacet, "Facet.Option.some"),
+                                write_none: None,
+                                write_some_bytes: None,
                             }
                         })
                     } else {
@@ -494,6 +589,8 @@ mod rust_layout {
                                 "Facet.Option.is_some",
                             ),
                             some: LocalThunk::new(LocalBackend::RustFacet, "Facet.Option.some"),
+                            write_none: None,
+                            write_some_bytes: None,
                         }
                     };
                     Ok(LocalTypeKind::Option {

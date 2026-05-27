@@ -16,7 +16,8 @@ use crate::encode::{
 };
 use crate::hash::primitive_for_type_id;
 use crate::local_access::{
-    LocalSequenceDecodeThunks, LocalSequenceEncodeThunks, LocalThunkBindings, LocalTypeDescriptor,
+    LocalOptionEncodeThunks, LocalOptionSequenceDecodeThunks, LocalSequenceDecodeThunks,
+    LocalSequenceEncodeThunks, LocalThunkBindings, LocalTypeDescriptor,
 };
 use crate::plan::{
     EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, ReaderPlan, StructFieldPlan,
@@ -832,6 +833,7 @@ fn decode_helper_paths(helpers: &[StencilHelper], failures: &[StencilFailure]) -
         .filter_map(|helper| match helper {
             StencilHelper::Decode { failure_index, .. }
             | StencilHelper::LocalSequenceBytes { failure_index, .. }
+            | StencilHelper::LocalOptionSequenceBytes { failure_index, .. }
             | StencilHelper::Skip { failure_index, .. } => helper_path(failures, *failure_index),
         })
         .collect()
@@ -845,7 +847,8 @@ fn encode_helper_paths(
         .iter()
         .filter_map(|helper| match helper {
             StencilEncodeHelper::Node { failure_index, .. }
-            | StencilEncodeHelper::LocalSequenceBytes { failure_index, .. } => {
+            | StencilEncodeHelper::LocalSequenceBytes { failure_index, .. }
+            | StencilEncodeHelper::LocalOptionSequenceBytes { failure_index, .. } => {
                 helper_path(failures, *failure_index)
             }
         })

@@ -57,7 +57,12 @@ final class BinetteSwiftProbesTests: XCTestCase {
         )
         XCTAssertEqual(
             optionalStorage,
-            .thunk(isSome: "Swift.Optional.isSome", some: "Swift.Optional.some")
+            .thunk(
+                isSome: "Swift.Optional.isSome",
+                some: "Swift.Optional.some",
+                writeNone: "Swift.Optional.init.none",
+                writeSomeBytes: "Swift.Optional<String>.init.some.utf8"
+            )
         )
         guard case let .enumPayloads(tag, variants) = enumDescriptor.kind else {
             return XCTFail("expected enum descriptor")
@@ -83,6 +88,26 @@ final class BinetteSwiftProbesTests: XCTestCase {
                 count: "Swift.String.utf8.count",
                 element: "Swift.String.utf8.element",
                 write: "Swift.String.init.utf8"
+            )
+        )
+    }
+
+    func testOptionalThunkNamesCoverEncodeProjectionAndDecodeConstruction() throws {
+        let descriptor = try XCTUnwrap(
+            makeProbeDescriptors().first { $0.schemaName == "option<string>" }
+        )
+
+        guard case let .optional(some, storage) = descriptor.kind else {
+            return XCTFail("expected optional descriptor")
+        }
+        XCTAssertEqual(some.schemaName, "string")
+        XCTAssertEqual(
+            storage,
+            .thunk(
+                isSome: "Swift.Optional.isSome",
+                some: "Swift.Optional.some",
+                writeNone: "Swift.Optional.init.none",
+                writeSomeBytes: "Swift.Optional<String>.init.some.utf8"
             )
         )
     }

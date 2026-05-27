@@ -90,6 +90,11 @@ pub(super) enum StencilHelper {
         thunks: LocalSequenceDecodeThunks,
         failure_index: usize,
     },
+    LocalOptionSequenceBytes {
+        output_offset: usize,
+        thunks: LocalOptionSequenceDecodeThunks,
+        failure_index: usize,
+    },
     Skip {
         writer_type: TypeRef,
         failure_index: usize,
@@ -183,6 +188,12 @@ pub(super) enum StencilEncodeHelper {
     LocalSequenceBytes {
         input_offset: usize,
         thunks: LocalSequenceEncodeThunks,
+        failure_index: usize,
+    },
+    LocalOptionSequenceBytes {
+        input_offset: usize,
+        option_thunks: LocalOptionEncodeThunks,
+        sequence_thunks: LocalSequenceEncodeThunks,
         failure_index: usize,
     },
 }
