@@ -3,7 +3,28 @@ use std::mem::{align_of, size_of};
 
 use crate::schema::TypeRef;
 
+mod c_abi;
 mod import;
+pub use c_abi::{
+    BINETTE_LOCAL_ACCESS_DIRECT, BINETTE_LOCAL_ACCESS_THUNK, BINETTE_LOCAL_BACKEND_RUST_FACET,
+    BINETTE_LOCAL_BACKEND_SWIFT, BINETTE_LOCAL_KIND_ENUM, BINETTE_LOCAL_KIND_EXTERNAL_ATTACHMENT,
+    BINETTE_LOCAL_KIND_OPAQUE, BINETTE_LOCAL_KIND_OPTION, BINETTE_LOCAL_KIND_SCALAR,
+    BINETTE_LOCAL_KIND_SEQUENCE, BINETTE_LOCAL_KIND_STRUCT, BINETTE_LOCAL_OPTION_DIRECT_TAG,
+    BINETTE_LOCAL_OPTION_NICHE, BINETTE_LOCAL_OPTION_THUNK, BINETTE_LOCAL_SCALAR_BYTES,
+    BINETTE_LOCAL_SCALAR_PLAIN, BINETTE_LOCAL_SCALAR_STRING, BINETTE_LOCAL_SCHEMA_REF_POSITION,
+    BINETTE_LOCAL_SCHEMA_REF_TYPE, BINETTE_LOCAL_SEQUENCE_DIRECT_CONTIGUOUS,
+    BINETTE_LOCAL_SEQUENCE_INLINE_FIXED, BINETTE_LOCAL_SEQUENCE_THUNK, BinetteLocalAccessTag,
+    BinetteLocalBackendAbi, BinetteLocalDescriptorAbi, BinetteLocalEnumAbi,
+    BinetteLocalEnumTagAccessAbi, BinetteLocalEnumTagThunkAbi, BinetteLocalFieldAbi,
+    BinetteLocalKindAbi, BinetteLocalKindTag, BinetteLocalLayoutAbi, BinetteLocalOptionAbi,
+    BinetteLocalOptionRepresentationAbi, BinetteLocalOptionRepresentationTag,
+    BinetteLocalOptionThunksAbi, BinetteLocalScalarAbi, BinetteLocalScalarTag,
+    BinetteLocalSchemaRefAbi, BinetteLocalSchemaRefTag, BinetteLocalSequenceAbi,
+    BinetteLocalSequenceStorageAbi, BinetteLocalSequenceStorageTag, BinetteLocalSequenceThunksAbi,
+    BinetteLocalStrAbi, BinetteLocalStructAbi, BinetteLocalVariantAbi,
+    BinetteLocalVariantConstructAbi, BinetteLocalVariantProjectAccessAbi,
+    BinetteLocalVariantProjectThunkAbi, LocalDescriptorAbiError, LocalDescriptorAbiImport,
+};
 pub use import::{
     LocalAccessExport, LocalDescriptorExport, LocalDescriptorExportError,
     LocalDescriptorHandoffError, LocalDescriptorImport, LocalDescriptorImportError,
