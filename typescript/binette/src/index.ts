@@ -17,8 +17,16 @@ export {
 
 export {
   concat,
+  decodeEnumVariant,
   decodeOption,
+  decodeTuple2,
+  decodeTuple3,
+  decodeVec,
+  encodeEnumVariant,
   encodeOption,
+  encodeTuple2,
+  encodeTuple3,
+  encodeVec,
 } from "./helpers.js";
 
 export {

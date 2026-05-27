@@ -4,18 +4,24 @@ import test from "node:test";
 import {
   decodeBool,
   decodeBytes,
+  decodeEnumVariant,
   decodeI32,
   decodeOption,
   decodeString,
+  decodeTuple2,
   decodeU32,
   decodeU64,
+  decodeVec,
   encodeBool,
   encodeBytes,
+  encodeEnumVariant,
   encodeI32,
   encodeOption,
   encodeString,
+  encodeTuple2,
   encodeU32,
   encodeU64,
+  encodeVec,
 } from "../src/index.js";
 
 test("fixed-width primitive helpers use little-endian binette bytes", () => {
@@ -70,5 +76,27 @@ test("option helpers use compact option tags", () => {
   assert.deepEqual(decodeOption(Uint8Array.of(1, 42, 0, 0, 0), 0, decodeU32), {
     value: 42,
     next: 5,
+  });
+});
+
+test("sequence tuple and enum helpers use compact aggregate bytes", () => {
+  assert.deepEqual([...encodeVec([1, 2, 3], encodeU32)], [
+    3, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0,
+  ]);
+  assert.deepEqual(decodeVec(encodeVec([1, 2, 3], encodeU32), 0, decodeU32), {
+    value: [1, 2, 3],
+    next: 16,
+  });
+
+  const tuple = encodeTuple2(42, "hello", encodeU32, encodeString);
+  assert.deepEqual(decodeTuple2(tuple, 0, decodeU32, decodeString), {
+    value: [42, "hello"],
+    next: tuple.length,
+  });
+
+  assert.deepEqual([...encodeEnumVariant(2)], [2, 0, 0, 0]);
+  assert.deepEqual(decodeEnumVariant(Uint8Array.of(2, 0, 0, 0), 0), {
+    value: 2,
+    next: 4,
   });
 });
