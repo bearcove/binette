@@ -338,6 +338,33 @@ fn strict_local_decode_stencil_accepts_swift_imported_fixed_descriptor() {
     assert_eq!(decoded, value);
 }
 
+fn assert_schema_only_hybrid_encode_matches<T>(
+    value: &T,
+    descriptor_for: fn(&TypeRef) -> LocalTypeDescriptor,
+    helper_paths: &[&str],
+) where
+    T: Facet<'static>,
+{
+    let facet_plan = writer_plan_for::<T>().unwrap();
+    let schema_plan = writer_plan_for_bundle(facet_plan.schema_bundle()).unwrap();
+    let descriptor = descriptor_for(schema_plan.root());
+    let thunks = swift_string_thunk_bindings();
+    let encoder =
+        hybrid_local_stencil_encoder_from_plan(&schema_plan, &descriptor, &thunks).unwrap();
+
+    assert_eq!(encoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(
+        encoder.report().helper_paths,
+        helper_paths
+            .iter()
+            .map(|path| (*path).to_owned())
+            .collect::<Vec<_>>()
+    );
+
+    let actual = unsafe { encoder.encode_raw_to_vec((value as *const T).cast()) }.unwrap();
+    assert_eq!(actual, encode_to_vec_with_plan(value, &facet_plan).unwrap());
+}
+
 // r[verify binette.local-access.descriptor]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
@@ -522,6 +549,55 @@ fn schema_only_writer_plan_drives_swift_local_encode_stencil() {
             reason: "schema-only writer plans require a local access descriptor",
         }
     ));
+}
+
+// r[verify binette.local-access.boundary]
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+// r[verify binette.aggregate.option]
+// r[verify binette.aggregate.list]
+// r[verify binette.aggregate.enum.compact]
+#[test]
+fn schema_only_writer_plans_cover_swift_option_array_and_enum_subtrees() {
+    assert_schema_only_hybrid_encode_matches(
+        &SwiftMaybeText {
+            id: 0x0102_0304_0506_0708,
+            maybe: Some("schema option".to_owned()),
+            code: 0x1122,
+        },
+        swift_maybe_text_descriptor,
+        &["$.maybe"],
+    );
+    assert_schema_only_hybrid_encode_matches(
+        &SwiftMaybeText {
+            id: 0x2122_2324_2526_2728,
+            maybe: None,
+            code: 0x3344,
+        },
+        swift_maybe_text_descriptor,
+        &["$.maybe"],
+    );
+    assert_schema_only_hybrid_encode_matches(
+        &SwiftNumbers {
+            id: 0x1112_1314_1516_1718,
+            values: vec![8, 5, 3, -1],
+            code: 0x5566,
+        },
+        swift_numbers_descriptor,
+        &["$.values"],
+    );
+    assert_schema_only_hybrid_encode_matches(
+        &SwiftEventEnvelope {
+            id: 0x3132_3334_3536_3738,
+            event: SwiftProbeEvent::Nested(SwiftLeaf {
+                count: -42,
+                flag: true,
+            }),
+            code: 0x7788,
+        },
+        swift_event_envelope_descriptor,
+        &["$.event"],
+    );
 }
 
 // r[verify binette.local-access.descriptor]
