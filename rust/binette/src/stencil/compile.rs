@@ -2356,9 +2356,10 @@ impl StencilEncodeCompiler {
 
     fn push_bytes(&mut self, shape: &'static Shape, input_offset: usize, kind: EncodeBytesKind) {
         self.ops.push(EncodeStencilOp::Bytes {
-            shape,
+            shape: Some(shape),
             input_offset,
             kind,
+            layout: EncodeBytesLayout::Facet,
         });
     }
 
@@ -2847,6 +2848,20 @@ impl LocalEncodeStencilCompiler<'_> {
         input_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
+        if let Some((kind, ptr_offset, len_offset)) = local_direct_byte_sequence(descriptor, path)?
+        {
+            self.ops.push(EncodeStencilOp::Bytes {
+                shape: None,
+                input_offset,
+                kind,
+                layout: EncodeBytesLayout::Direct {
+                    ptr_offset,
+                    len_offset,
+                },
+            });
+            return Ok(());
+        }
+
         let thunks = local_sequence_bytes_thunks(descriptor, self.thunks, path)?;
         let failure_index = self.push_helper_failure(path)?;
         let helper_index = self.helpers.len();
@@ -3948,6 +3963,35 @@ fn local_sequence_bytes_thunks(
             path: path.to_owned(),
             reason: "local byte sequence backend thunks are not bound",
         })
+}
+
+fn local_direct_byte_sequence(
+    descriptor: &LocalTypeDescriptor,
+    path: &str,
+) -> Result<Option<(EncodeBytesKind, usize, usize)>, StencilError> {
+    let (kind, storage) = match &descriptor.kind {
+        LocalTypeKind::Scalar(LocalScalarAccess::String(storage)) => {
+            (EncodeBytesKind::String, storage)
+        }
+        LocalTypeKind::Scalar(LocalScalarAccess::Bytes(storage)) => {
+            (EncodeBytesKind::Bytes, storage)
+        }
+        _ => {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "local descriptor is not a byte sequence",
+            });
+        }
+    };
+    let LocalSequenceStorage::DirectContiguous {
+        pointer: LocalAccess::Direct { offset: ptr_offset },
+        length: LocalAccess::Direct { offset: len_offset },
+        ..
+    } = storage
+    else {
+        return Ok(None);
+    };
+    Ok(Some((kind, *ptr_offset, *len_offset)))
 }
 
 fn local_sequence_element_ptr_thunks<'a>(

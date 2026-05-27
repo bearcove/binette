@@ -53,11 +53,11 @@ use self::runtime::{
     stencil_enum_variant_index, stencil_list_element, stencil_list_len, stencil_option_parts,
 };
 use self::types::{
-    ByteTaggedLength, CopyOp, CopyWidth, EncodeBytesKind, EncodeEnumCase, EncodeEnumSelector,
-    EncodeListLayout, EncodeOptionLayout, EncodeStencilOp, EnumCase, FixedEncodeCompiler,
-    FixedEncodeSegment, HybridStencilOp, LengthCheck, LocalEnumDecodeCase, LocalEnumDecodePayload,
-    LocalEnumEncodeCase, LocalEnumEncodePayload, StencilEncodeHelper, StencilEncodeRuntime,
-    StencilFailure, StencilHelper, StencilOp, StencilRuntime, TaggedLength,
+    ByteTaggedLength, CopyOp, CopyWidth, EncodeBytesKind, EncodeBytesLayout, EncodeEnumCase,
+    EncodeEnumSelector, EncodeListLayout, EncodeOptionLayout, EncodeStencilOp, EnumCase,
+    FixedEncodeCompiler, FixedEncodeSegment, HybridStencilOp, LengthCheck, LocalEnumDecodeCase,
+    LocalEnumDecodePayload, LocalEnumEncodeCase, LocalEnumEncodePayload, StencilEncodeHelper,
+    StencilEncodeRuntime, StencilFailure, StencilHelper, StencilOp, StencilRuntime, TaggedLength,
 };
 
 type FixedStencilFn = unsafe extern "C" fn(input: *const u8, len: usize, out: *mut u8) -> u32;

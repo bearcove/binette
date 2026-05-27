@@ -164,9 +164,10 @@ pub(super) enum EncodeStencilOp {
         output_len: usize,
     },
     Bytes {
-        shape: &'static Shape,
+        shape: Option<&'static Shape>,
         input_offset: usize,
         kind: EncodeBytesKind,
+        layout: EncodeBytesLayout,
     },
     Enum {
         input_offset: usize,
@@ -191,6 +192,15 @@ pub(super) enum EncodeStencilOp {
 pub(super) enum EncodeBytesKind {
     String,
     Bytes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EncodeBytesLayout {
+    Facet,
+    Direct {
+        ptr_offset: usize,
+        len_offset: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

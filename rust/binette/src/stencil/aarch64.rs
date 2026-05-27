@@ -976,11 +976,13 @@ fn emit_encode_op(
             shape,
             input_offset,
             kind,
+            layout,
         } => emit_encode_bytes_op(
             code,
-            shape,
+            *shape,
             *input_offset,
             *kind,
+            *layout,
             error_branches,
             value_base_reg,
         )?,
@@ -1035,13 +1037,29 @@ fn emit_encode_op(
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn emit_encode_bytes_op(
     code: &mut Vec<u8>,
-    shape: &'static Shape,
+    shape: Option<&'static Shape>,
     input_offset: usize,
     kind: EncodeBytesKind,
+    layout: EncodeBytesLayout,
     error_branches: &mut Vec<EncodeBranchFixup>,
     value_base_reg: u8,
 ) -> Result<(), StencilError> {
-    if kind == EncodeBytesKind::String {
+    if let EncodeBytesLayout::Direct {
+        ptr_offset,
+        len_offset,
+    } = layout
+    {
+        if input_offset == 0 {
+            push_u32(code, mov_x_register(10, value_base_reg)?);
+        } else {
+            push_u32(
+                code,
+                add_x_immediate(10, value_base_reg, input_offset, "$input")?,
+            );
+        }
+        push_u32(code, ldur_x_register(22, 10, ptr_offset, "$bytes")?);
+        push_u32(code, ldur_x_register(23, 10, len_offset, "$bytes")?);
+    } else if kind == EncodeBytesKind::String {
         let Some(layout) = string_layout() else {
             return Err(StencilError::Unsupported {
                 path: "$string".to_owned(),
@@ -1059,6 +1077,10 @@ fn emit_encode_bytes_op(
         push_u32(code, ldur_x_register(22, 10, layout.ptr_offset, "$string")?);
         push_u32(code, ldur_x_register(23, 10, layout.len_offset, "$string")?);
     } else {
+        let shape = shape.ok_or_else(|| StencilError::Unsupported {
+            path: "$bytes".to_owned(),
+            reason: "Facet bytes stencil is missing its shape",
+        })?;
         if input_offset == 0 {
             push_u32(code, mov_x_register(0, value_base_reg)?);
         } else {
