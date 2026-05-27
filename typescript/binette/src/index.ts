@@ -16,6 +16,39 @@ export {
 } from "./compact.js";
 
 export {
+  decodeBool,
+  decodeBytes,
+  decodeF32,
+  decodeF64,
+  decodeI8,
+  decodeI16,
+  decodeI32,
+  decodeI64,
+  decodeI128,
+  decodeString,
+  decodeU8,
+  decodeU16,
+  decodeU32,
+  decodeU64,
+  decodeU128,
+  encodeBool,
+  encodeBytes,
+  encodeF32,
+  encodeF64,
+  encodeI8,
+  encodeI16,
+  encodeI32,
+  encodeI64,
+  encodeI128,
+  encodeString,
+  encodeU8,
+  encodeU16,
+  encodeU32,
+  encodeU64,
+  encodeU128,
+} from "./primitives.js";
+
+export {
   PlanError,
   readerPlanForBundle,
   readerPlanForBundles,
@@ -60,6 +93,8 @@ export { SchemaRegistry } from "./registry.js";
 export type { Value } from "./value.js";
 
 export type { ExternalAttachmentSlot } from "./compact.js";
+
+export type { DecodeResult } from "./primitives.js";
 
 export type {
   EnumPayloadPlan,
