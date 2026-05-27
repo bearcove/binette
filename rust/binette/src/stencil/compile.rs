@@ -2207,7 +2207,7 @@ impl StencilEncodeCompiler {
         };
 
         self.ops.push(EncodeStencilOp::Option {
-            shape,
+            shape: Some(shape),
             input_offset,
             layout,
             some_ops: compiler.ops,
@@ -2633,7 +2633,13 @@ impl LocalEncodeStencilCompiler<'_> {
             } => self.compile_array(descriptor, dimensions, element, input_offset, path, pending),
             WriterNode::Option { element } => {
                 self.flush_direct_segment(pending);
-                self.push_option_sequence_bytes(descriptor, element, input_offset, path)
+                match self.push_direct_option(descriptor, element, input_offset, path) {
+                    Ok(()) => Ok(()),
+                    Err(StencilError::Unsupported { .. }) => {
+                        self.push_option_sequence_bytes(descriptor, element, input_offset, path)
+                    }
+                    Err(err) => Err(err),
+                }
             }
             WriterNode::External => Ok(()),
             WriterNode::Ref { .. }
@@ -2815,6 +2821,53 @@ impl LocalEncodeStencilCompiler<'_> {
                 failure_index,
             });
         self.ops.push(EncodeStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
+    fn push_direct_option(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        element: &WriterNode,
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let (some_descriptor, tag_offset, none_value, some_offset) =
+            local_direct_option_parts(descriptor, path)?;
+        let mut compiler = LocalEncodeStencilCompiler {
+            ops: Vec::new(),
+            helpers: Vec::new(),
+            failures: Vec::new(),
+            thunks: self.thunks,
+        };
+        let mut pending = FixedEncodeSegment {
+            ops: Vec::new(),
+            output_len: 0,
+        };
+        compiler.compile_node(
+            some_descriptor,
+            element,
+            0,
+            &format!("{path}.some"),
+            &mut pending,
+        )?;
+        compiler.flush_direct_segment(&mut pending);
+        if !compiler.helpers.is_empty() {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "direct local option payload requires helper fallback",
+            });
+        }
+
+        self.ops.push(EncodeStencilOp::Option {
+            shape: None,
+            input_offset,
+            layout: EncodeOptionLayout::DirectTag {
+                tag_offset,
+                none_value,
+                some_offset,
+            },
+            some_ops: compiler.ops,
+        });
         Ok(())
     }
 
@@ -3692,6 +3745,30 @@ fn local_option_descriptor<'a>(
         });
     };
     Ok((some, representation))
+}
+
+fn local_direct_option_parts<'a>(
+    descriptor: &'a LocalTypeDescriptor,
+    path: &str,
+) -> Result<(&'a LocalTypeDescriptor, usize, usize, usize), StencilError> {
+    let (some, representation) = local_option_descriptor(descriptor, path)?;
+    let LocalOptionRepresentation::Tag {
+        tag,
+        none_value,
+        some: some_access,
+    } = representation
+    else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local option descriptor does not use a direct tag",
+        });
+    };
+    Ok((
+        some,
+        local_direct_offset(tag, path)?,
+        *none_value,
+        local_direct_offset(some_access, &format!("{path}.some"))?,
+    ))
 }
 
 fn local_inline_fixed_array<'a>(

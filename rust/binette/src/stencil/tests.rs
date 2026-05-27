@@ -45,6 +45,13 @@ struct SwiftMaybeText {
     code: u16,
 }
 
+#[derive(Debug, PartialEq)]
+#[repr(C)]
+struct SwiftTaggedMaybeU16 {
+    tag: u8,
+    value: u16,
+}
+
 #[derive(Debug, PartialEq, Facet)]
 #[repr(C)]
 struct SwiftNumbers {
@@ -464,6 +471,37 @@ fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_optional_string_subt
         let decoded = unsafe { decoded.assume_init() };
         assert_eq!(decoded, value);
     }
+}
+
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn strict_local_encode_stencil_accepts_direct_tag_option_descriptor() {
+    type Wire = Option<u16>;
+
+    let some = SwiftTaggedMaybeU16 {
+        tag: 1,
+        value: 0x1122,
+    };
+    let none = SwiftTaggedMaybeU16 {
+        tag: 0,
+        value: 0x3344,
+    };
+    let plan = writer_plan_for::<Wire>().unwrap();
+    let descriptor = swift_direct_tag_option_u16_descriptor(plan.root());
+    let encoder = strict_local_stencil_encoder_from_plan(&plan, &descriptor).unwrap();
+
+    assert_eq!(encoder.report().mode, StencilMode::Strict);
+    assert_eq!(encoder.report().helper_count, 0);
+    assert!(encoder.report().helper_paths.is_empty());
+    assert_eq!(
+        unsafe { encoder.encode_raw_to_vec((&some as *const SwiftTaggedMaybeU16).cast()) }.unwrap(),
+        encode_to_vec_with_plan(&Some(0x1122_u16), &plan).unwrap()
+    );
+    assert_eq!(
+        unsafe { encoder.encode_raw_to_vec((&none as *const SwiftTaggedMaybeU16).cast()) }.unwrap(),
+        encode_to_vec_with_plan(&None::<u16>, &plan).unwrap()
+    );
 }
 
 // r[verify binette.local-access.descriptor]
@@ -1123,6 +1161,29 @@ fn swift_option_string_import(owner: &TypeRef) -> LocalDescriptorImport {
             },
         },
     }
+}
+
+fn swift_direct_tag_option_u16_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
+    LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
+        root.clone(),
+        LocalValueLayout::of::<SwiftTaggedMaybeU16>(),
+        LocalDescriptorImportKind::Option {
+            some: Box::new(primitive_import(
+                Primitive::U16,
+                LocalValueLayout::of::<u16>(),
+            )),
+            representation: LocalOptionRepresentation::Tag {
+                tag: LocalAccess::Direct {
+                    offset: std::mem::offset_of!(SwiftTaggedMaybeU16, tag),
+                },
+                none_value: 0,
+                some: LocalAccess::Direct {
+                    offset: std::mem::offset_of!(SwiftTaggedMaybeU16, value),
+                },
+            },
+        },
+    ))
+    .unwrap()
 }
 
 fn swift_string_thunk_bindings() -> LocalThunkBindings {

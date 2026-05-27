@@ -296,7 +296,10 @@ impl LocalOptionRepresentation {
         path: &str,
     ) -> Result<(), LocalDescriptorImportError> {
         match self {
-            Self::Tag { tag, .. } => tag.validate_backend(backend, path),
+            Self::Tag { tag, some, .. } => {
+                tag.validate_backend(backend, path)?;
+                some.validate_backend(backend, &format!("{path}.some"))
+            }
             Self::NicheString {
                 string, none_tag, ..
             } => {

@@ -79,8 +79,10 @@ inside the current process.
 > Decode-side sequence construction may similarly use a backend write thunk
 > after the engine decodes fixed-width elements into process-local element
 > layout.
-> For an optional subtree, a backend may provide presence/projector thunks for
-> encode and construction thunks for decode; hybrid execution treats the
+> For an optional subtree, a backend may provide direct tag and payload access
+> facts, or presence/projector thunks for encode and construction thunks for
+> decode. Direct optional access identifies the tag location, the local none
+> value, and the payload location for the some case. Hybrid execution treats the
 > optional node as the fallback boundary unless the engine has proven direct
 > local layout facts for that optional representation.
 > For an enum subtree, a backend may provide a tag thunk plus per-variant

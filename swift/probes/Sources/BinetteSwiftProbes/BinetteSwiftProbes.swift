@@ -55,7 +55,7 @@ public enum BinetteSequenceStorage: Equatable {
 }
 
 public enum BinetteOptionalStorage: Equatable {
-    case directTag(offset: Int, noneValue: UInt)
+    case directTag(offset: Int, noneValue: UInt, someOffset: Int)
     case thunk(isSome: String, some: String, writeNone: String?, writeSomeBytes: String?)
 }
 

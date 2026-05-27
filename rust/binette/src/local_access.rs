@@ -285,6 +285,7 @@ pub enum LocalOptionRepresentation {
     Tag {
         tag: LocalAccess,
         none_value: usize,
+        some: LocalAccess,
     },
     NicheString {
         string: LocalSequenceStorage,

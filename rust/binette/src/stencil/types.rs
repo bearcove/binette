@@ -162,7 +162,7 @@ pub(super) enum EncodeStencilOp {
         cases: Vec<EncodeEnumCase>,
     },
     Option {
-        shape: &'static Shape,
+        shape: Option<&'static Shape>,
         input_offset: usize,
         layout: EncodeOptionLayout,
         some_ops: Vec<EncodeStencilOp>,
@@ -185,6 +185,11 @@ pub(super) enum EncodeBytesKind {
 pub(super) enum EncodeOptionLayout {
     Facet,
     NicheString,
+    DirectTag {
+        tag_offset: usize,
+        none_value: usize,
+        some_offset: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

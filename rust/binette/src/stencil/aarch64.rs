@@ -920,7 +920,7 @@ fn emit_encode_op(
         } => emit_encode_option_op(
             code,
             EncodeOptionEmit {
-                shape,
+                shape: *shape,
                 input_offset: *input_offset,
                 layout: *layout,
                 some_ops,
@@ -1160,7 +1160,7 @@ fn emit_encode_enum_op(
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 struct EncodeOptionEmit<'a> {
-    shape: &'static Shape,
+    shape: Option<&'static Shape>,
     input_offset: usize,
     layout: EncodeOptionLayout,
     some_ops: &'a [EncodeStencilOp],
@@ -1177,6 +1177,21 @@ fn emit_encode_option_op(
     if option.layout == EncodeOptionLayout::NicheString {
         return emit_encode_niche_string_option_op(code, option, error_branches);
     }
+    if let EncodeOptionLayout::DirectTag {
+        tag_offset,
+        none_value,
+        some_offset,
+    } = option.layout
+    {
+        return emit_encode_direct_tag_option_op(
+            code,
+            option,
+            tag_offset,
+            none_value,
+            some_offset,
+            error_branches,
+        );
+    }
 
     let some_base_reg = option_value_base_register(option.option_depth)?;
     if option.input_offset == 0 {
@@ -1187,7 +1202,11 @@ fn emit_encode_option_op(
             add_x_immediate(0, option.value_base_reg, option.input_offset, "$input")?,
         );
     }
-    emit_mov_x_immediate(code, 1, option.shape as *const Shape as usize as u64)?;
+    let shape = option.shape.ok_or_else(|| StencilError::Unsupported {
+        path: "$option".to_owned(),
+        reason: "Facet option stencil is missing its shape",
+    })?;
+    emit_mov_x_immediate(code, 1, shape as *const Shape as usize as u64)?;
     emit_mov_x_immediate(code, 16, stencil_option_parts as *const () as usize as u64)?;
     push_u32(code, AARCH64_BLR_X16);
     push_u32(code, mov_x_register(24, 1)?);
@@ -1227,6 +1246,72 @@ fn emit_encode_option_op(
     code[some_branch..some_branch + 4].copy_from_slice(&some_word.to_le_bytes());
     let none_done_word = patch_uncond_branch_imm26(AARCH64_B, none_done_branch, done)?;
     code[none_done_branch..none_done_branch + 4].copy_from_slice(&none_done_word.to_le_bytes());
+    let some_done_word = patch_uncond_branch_imm26(AARCH64_B, some_done_branch, done)?;
+    code[some_done_branch..some_done_branch + 4].copy_from_slice(&some_done_word.to_le_bytes());
+    Ok(())
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn emit_encode_direct_tag_option_op(
+    code: &mut Vec<u8>,
+    option: EncodeOptionEmit<'_>,
+    tag_offset: usize,
+    none_value: usize,
+    some_offset: usize,
+    error_branches: &mut Vec<EncodeBranchFixup>,
+) -> Result<(), StencilError> {
+    let some_base_reg = option_value_base_register(option.option_depth)?;
+    let option_base_reg = some_base_reg;
+    if option.input_offset == 0 {
+        push_u32(
+            code,
+            mov_x_register(option_base_reg, option.value_base_reg)?,
+        );
+    } else {
+        push_u32(
+            code,
+            add_x_immediate(
+                option_base_reg,
+                option.value_base_reg,
+                option.input_offset,
+                "$option",
+            )?,
+        );
+    }
+
+    push_u32(
+        code,
+        ldur_b_register(24, option_base_reg, tag_offset, "$option")?,
+    );
+    push_u32(code, cmp_x_immediate(24, none_value, "$option")?);
+    let none_branch = code.len();
+    push_u32(code, 0);
+
+    emit_encode_tag_byte(code, STENCIL_OPTION_SOME, error_branches)?;
+    if some_offset != 0 {
+        push_u32(
+            code,
+            add_x_immediate(some_base_reg, option_base_reg, some_offset, "$option.some")?,
+        );
+    }
+    for op in option.some_ops {
+        emit_encode_op(
+            code,
+            op,
+            error_branches,
+            some_base_reg,
+            option.option_depth + 1,
+        )?;
+    }
+    let some_done_branch = code.len();
+    push_u32(code, 0);
+
+    let none_offset = code.len();
+    emit_encode_tag_byte(code, STENCIL_OPTION_NONE, error_branches)?;
+
+    let done = code.len();
+    let none_word = patch_cond_branch_imm19(AARCH64_B_EQ, none_branch, none_offset)?;
+    code[none_branch..none_branch + 4].copy_from_slice(&none_word.to_le_bytes());
     let some_done_word = patch_uncond_branch_imm26(AARCH64_B, some_done_branch, done)?;
     code[some_done_branch..some_done_branch + 4].copy_from_slice(&some_done_word.to_le_bytes());
     Ok(())
