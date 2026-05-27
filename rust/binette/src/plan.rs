@@ -11,11 +11,21 @@ use crate::schema::{Field, Primitive, Schema, SchemaBundle, SchemaKind, TypeId, 
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReaderPlan {
+    writer_root: TypeRef,
+    reader_root: TypeRef,
     pub root: PlanNode,
     pub(crate) nodes: Vec<PlanNode>,
 }
 
 impl ReaderPlan {
+    pub fn writer_root(&self) -> &TypeRef {
+        &self.writer_root
+    }
+
+    pub fn reader_root(&self) -> &TypeRef {
+        &self.reader_root
+    }
+
     pub(crate) fn nodes(&self) -> &[PlanNode] {
         &self.nodes
     }
@@ -162,6 +172,8 @@ pub fn reader_plan_for_shape(
         "$",
     )?;
     Ok(ReaderPlan {
+        writer_root: writer_root.clone(),
+        reader_root: reader_bundle.root,
         root,
         nodes: builder.nodes,
     })
@@ -188,6 +200,8 @@ pub fn reader_plan_for_bundle(
         "$",
     )?;
     Ok(ReaderPlan {
+        writer_root: writer_root.clone(),
+        reader_root: reader_root.clone(),
         root,
         nodes: builder.nodes,
     })

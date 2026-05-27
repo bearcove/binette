@@ -35,7 +35,9 @@ use self::aarch64::{
     generate_code, generate_direct_encode_code, generate_encode_code, generate_hybrid_code,
     status_for_failure,
 };
-use self::compile::{CursorStencilCompiler, StencilCompiler, StencilEncodeCompiler};
+use self::compile::{
+    CursorStencilCompiler, LocalDecodeStencilCompiler, StencilCompiler, StencilEncodeCompiler,
+};
 use self::memory::ExecutableMemory;
 use self::runtime::{
     HYBRID_ERROR_FLAG, STENCIL_ENCODE_BYTES_BYTES, STENCIL_ENCODE_BYTES_STRING, STENCIL_OK,
@@ -83,6 +85,14 @@ pub struct StencilEncoder<T> {
 pub struct LocalStencilEncoder {
     code: ExecutableMemory,
     func: DirectEncodeStencilFn,
+    report: StencilReport,
+}
+
+pub struct LocalStencilDecoder {
+    code: ExecutableMemory,
+    func: FixedStencilFn,
+    length_check: LengthCheck,
+    failures: Vec<StencilFailure>,
     report: StencilReport,
 }
 
@@ -201,12 +211,11 @@ impl<T: Facet<'static>> StencilDecoder<T> {
                 // SAFETY: the compiled stencil was built from T::SHAPE field offsets and
                 // writes every supported field exactly once before returning.
                 let status = unsafe { func(input.as_ptr(), input.len(), out.as_mut_ptr().cast()) };
-                if status == STENCIL_OK {
-                    // SAFETY: status zero means every supported output byte was written.
-                    unsafe { Ok(out.assume_init()) }
-                } else {
-                    Err(self.failure_for_status(status, input))
+                if status != STENCIL_OK {
+                    return Err(failure_for_status(&self.failures, status, input));
                 }
+                // SAFETY: status zero means every supported output byte was written.
+                unsafe { Ok(out.assume_init()) }
             }
             StencilEntry::Hybrid { func, runtime } => {
                 let mut out = MaybeUninit::<T>::uninit();
@@ -222,7 +231,7 @@ impl<T: Facet<'static>> StencilDecoder<T> {
                     )
                 };
                 if let Some(status) = hybrid_error_status(result) {
-                    return Err(self.failure_for_status(status, input));
+                    return Err(failure_for_status(&self.failures, status, input));
                 }
                 if result != input.len() {
                     return Err(StencilError::InputLength {
@@ -234,40 +243,6 @@ impl<T: Facet<'static>> StencilDecoder<T> {
                 // field was initialized and the entire input was consumed.
                 unsafe { Ok(out.assume_init()) }
             }
-        }
-    }
-
-    fn failure_for_status(&self, status: u32, input: &[u8]) -> StencilError {
-        let Some(index) = status.checked_sub(1).map(|index| index as usize) else {
-            return StencilError::UnknownStatus { status };
-        };
-        let Some(failure) = self.failures.get(index) else {
-            return StencilError::UnknownStatus { status };
-        };
-        match failure {
-            StencilFailure::InvalidBool { path, position } => StencilError::InvalidBool {
-                path: path.clone(),
-                position: *position,
-                value: input[*position],
-            },
-            StencilFailure::UnknownVariantIndex { position } => {
-                let variant_index =
-                    u32::from_le_bytes(input[*position..*position + 4].try_into().unwrap());
-                StencilError::UnknownVariantIndex {
-                    position: *position,
-                    variant_index,
-                }
-            }
-            StencilFailure::UnreadableWriterVariant {
-                position,
-                variant_index,
-                variant,
-            } => StencilError::UnreadableWriterVariant {
-                position: *position,
-                variant_index: *variant_index,
-                variant: variant.clone(),
-            },
-            StencilFailure::Helper { path } => StencilError::HelperFailed { path: path.clone() },
         }
     }
 }
@@ -307,6 +282,41 @@ impl LocalStencilEncoder {
             Ok(out)
         } else {
             Err(StencilError::UnknownStatus { status })
+        }
+    }
+}
+
+impl LocalStencilDecoder {
+    pub fn expected_len(&self) -> usize {
+        self.length_check
+            .fixed_expected_len()
+            .expect("local stencil decoder has variable input length")
+    }
+
+    pub fn code_len(&self) -> usize {
+        self.code.len()
+    }
+
+    pub fn report(&self) -> &StencilReport {
+        &self.report
+    }
+
+    /// Decode compact bytes into a local value through this descriptor-compiled strict stencil.
+    ///
+    /// # Safety
+    ///
+    /// `out` must point to writable storage large enough for the
+    /// [`LocalTypeDescriptor`] used to build this decoder. The storage must be
+    /// valid to write for the duration of the call.
+    pub unsafe fn decode_raw_into(&self, input: &[u8], out: *mut u8) -> Result<(), StencilError> {
+        self.length_check.validate(input)?;
+        // SAFETY: the caller promises that `out` points to writable storage
+        // matching the descriptor used to compile this decoder.
+        let status = unsafe { (self.func)(input.as_ptr(), input.len(), out) };
+        if status == STENCIL_OK {
+            Ok(())
+        } else {
+            Err(failure_for_status(&self.failures, status, input))
         }
     }
 }
@@ -484,6 +494,49 @@ pub fn strict_local_stencil_encoder_from_plan(
     };
     let func = code.as_direct_encode_fn();
     Ok(LocalStencilEncoder { code, func, report })
+}
+
+// r[impl binette.local-access.descriptor]
+// r[impl binette.local-access.strict-hybrid]
+// r[impl binette.mode.compact]
+pub fn strict_local_stencil_decoder_from_plan(
+    plan: &ReaderPlan,
+    writer_registry: &SchemaRegistry,
+    descriptor: &LocalTypeDescriptor,
+) -> Result<LocalStencilDecoder, StencilError> {
+    if !matches!(&descriptor.schema, crate::local_access::LocalSchemaRef::Type(type_ref) if type_ref == plan.reader_root())
+    {
+        return Err(StencilError::Unsupported {
+            path: "$".to_owned(),
+            reason: "local descriptor root schema differs from reader plan root",
+        });
+    }
+
+    let mut compiler = LocalDecodeStencilCompiler {
+        writer_registry,
+        plan_nodes: plan.nodes(),
+        ops: Vec::new(),
+        failures: Vec::new(),
+        input_offset: 0,
+    };
+    let length_check = compiler.compile_root(descriptor, &plan.root)?;
+
+    let code = generate_code(&compiler.ops, compiler.failures.len())?;
+    let report = StencilReport {
+        mode: StencilMode::Strict,
+        code_len: code.len(),
+        native_ops: fixed_decode_native_op_count(&compiler.ops),
+        helper_count: 0,
+        helper_paths: Vec::new(),
+    };
+    let func = code.as_fixed_fn();
+    Ok(LocalStencilDecoder {
+        code,
+        func,
+        length_check,
+        failures: compiler.failures,
+        report,
+    })
 }
 
 fn fixed_encode_stencil_encoder_from_plan<T: Facet<'static>>(
@@ -673,6 +726,40 @@ fn hybrid_decode_native_op_count(ops: &[HybridStencilOp]) -> usize {
             }
         })
         .sum()
+}
+
+fn failure_for_status(failures: &[StencilFailure], status: u32, input: &[u8]) -> StencilError {
+    let Some(index) = status.checked_sub(1).map(|index| index as usize) else {
+        return StencilError::UnknownStatus { status };
+    };
+    let Some(failure) = failures.get(index) else {
+        return StencilError::UnknownStatus { status };
+    };
+    match failure {
+        StencilFailure::InvalidBool { path, position } => StencilError::InvalidBool {
+            path: path.clone(),
+            position: *position,
+            value: input[*position],
+        },
+        StencilFailure::UnknownVariantIndex { position } => {
+            let variant_index =
+                u32::from_le_bytes(input[*position..*position + 4].try_into().unwrap());
+            StencilError::UnknownVariantIndex {
+                position: *position,
+                variant_index,
+            }
+        }
+        StencilFailure::UnreadableWriterVariant {
+            position,
+            variant_index,
+            variant,
+        } => StencilError::UnreadableWriterVariant {
+            position: *position,
+            variant_index: *variant_index,
+            variant: variant.clone(),
+        },
+        StencilFailure::Helper { path } => StencilError::HelperFailed { path: path.clone() },
+    }
 }
 
 fn encode_native_op_count(ops: &[EncodeStencilOp]) -> usize {

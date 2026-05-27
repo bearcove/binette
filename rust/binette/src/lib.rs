@@ -58,10 +58,11 @@ pub use schema_format::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use stencil::{
-    LocalStencilEncoder, StencilDecoder, StencilEncoder, StencilError, StencilMode, StencilReport,
-    decode_from_slice_with_stencil, encode_to_vec_with_stencil, hybrid_stencil_decoder_for,
-    hybrid_stencil_decoder_from_plan, hybrid_stencil_encoder_for, hybrid_stencil_encoder_from_plan,
-    stencil_decoder_for, stencil_decoder_from_plan, stencil_encoder_for, stencil_encoder_from_plan,
+    LocalStencilDecoder, LocalStencilEncoder, StencilDecoder, StencilEncoder, StencilError,
+    StencilMode, StencilReport, decode_from_slice_with_stencil, encode_to_vec_with_stencil,
+    hybrid_stencil_decoder_for, hybrid_stencil_decoder_from_plan, hybrid_stencil_encoder_for,
+    hybrid_stencil_encoder_from_plan, stencil_decoder_for, stencil_decoder_from_plan,
+    stencil_encoder_for, stencil_encoder_from_plan, strict_local_stencil_decoder_from_plan,
     strict_local_stencil_encoder_from_plan, strict_stencil_decoder_for,
     strict_stencil_decoder_from_plan, strict_stencil_encoder_for, strict_stencil_encoder_from_plan,
 };
