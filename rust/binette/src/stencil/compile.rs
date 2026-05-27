@@ -196,6 +196,12 @@ impl StencilCompiler<'_> {
                 StructFieldPlan::Skip {
                     writer_type, name, ..
                 } => self.compile_skip(writer_type, &format!("{path}.{name}"))?,
+                StructFieldPlan::Default { name, .. } => {
+                    return Err(StencilError::Unsupported {
+                        path: format!("{path}.{name}"),
+                        reason: "default-filled reader fields require interpreter decode",
+                    });
+                }
             }
         }
         Ok(())
@@ -616,6 +622,12 @@ impl CursorStencilCompiler<'_> {
                 StructFieldPlan::Skip {
                     writer_type, name, ..
                 } => self.push_fixed_skip(writer_type, &format!("{path}.{name}"))?,
+                StructFieldPlan::Default { name, .. } => {
+                    return Err(StencilError::Unsupported {
+                        path: format!("{path}.{name}"),
+                        reason: "default-filled reader fields require interpreter encode",
+                    });
+                }
             }
         }
         Ok(())

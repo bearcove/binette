@@ -92,6 +92,7 @@ pub enum SchemaKind {
 pub struct Field {
     pub name: String,
     pub type_ref: TypeRef,
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -237,6 +237,17 @@ impl DecodeExecutor<'_, '_> {
                 StructFieldPlan::Skip { writer_type, .. } => {
                     self.reader.skip_value(writer_type, self.writer_registry)?;
                 }
+                StructFieldPlan::Default { reader_index, .. } => {
+                    if !reader_field_has_default(partial.shape(), *reader_index) {
+                        return Err(DecodeError::Unsupported {
+                            position: self.reader.position(),
+                            reason: "translation plan failed: reader field is missing from writer struct",
+                        });
+                    }
+                    partial = partial.begin_nth_field(*reader_index)?;
+                    partial = partial.set_default()?;
+                    partial = partial.end()?;
+                }
             }
         }
         Ok(partial)
@@ -520,14 +531,19 @@ impl DecodeExecutor<'_, '_> {
             Primitive::F32 => Ok(partial.set(self.reader.read_f32()?)?),
             Primitive::F64 => Ok(partial.set(self.reader.read_f64()?)?),
             Primitive::Char => Ok(partial.set(self.reader.read_char()?)?),
-            Primitive::String => {
-                let value = self.reader.read_string()?;
-                if partial.shape().scalar_type() == Some(ScalarType::CowStr) {
-                    Ok(partial.set(Cow::<'static, str>::Owned(value))?)
-                } else {
+            Primitive::String => match partial.shape().scalar_type() {
+                Some(ScalarType::Str) => {
+                    let value = self.reader.read_str()?;
+                    let value: &'static str = unsafe { std::mem::transmute(value) };
                     Ok(partial.set(value)?)
                 }
-            }
+                Some(ScalarType::CowStr) => {
+                    let value = self.reader.read_str()?;
+                    let value: &'static str = unsafe { std::mem::transmute(value) };
+                    Ok(partial.set(Cow::<'static, str>::Borrowed(value))?)
+                }
+                _ => Ok(partial.set(self.reader.read_string()?)?),
+            },
             Primitive::Bytes => Ok(partial.set(self.reader.read_byte_vec()?)?),
             Primitive::Payload => self.decode_payload(partial),
         }
@@ -713,6 +729,7 @@ impl DecodeExecutor<'_, '_> {
             StructFieldPlan::Skip { writer_type, .. } => {
                 self.scan_no_nan_type(reader, writer_type, &Env::default(), base, aggregate)
             }
+            StructFieldPlan::Default { .. } => Ok(()),
         }
     }
 
@@ -996,6 +1013,16 @@ impl DecodeExecutor<'_, '_> {
             })
         })
     }
+}
+
+fn reader_field_has_default(shape: &'static Shape, reader_index: usize) -> bool {
+    let Type::User(UserType::Struct(struct_type)) = shape.ty else {
+        return false;
+    };
+    struct_type
+        .fields
+        .get(reader_index)
+        .is_some_and(|field| field.has_default())
 }
 
 fn should_peel_transparent(shape: &'static Shape) -> bool {

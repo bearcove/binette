@@ -437,6 +437,7 @@ fn registry_installs_self_recursive_schema_group() {
             fields: vec![Field {
                 name: "next".to_owned(),
                 type_ref: TypeRef::concrete(provisional),
+                required: true,
             }],
         },
     };
@@ -470,6 +471,7 @@ fn recursive_hashing_is_stable_for_mutual_recursion() {
             fields: vec![Field {
                 name: "second".to_owned(),
                 type_ref: TypeRef::concrete(provisional_b),
+                required: true,
             }],
         },
     };
@@ -481,6 +483,7 @@ fn recursive_hashing_is_stable_for_mutual_recursion() {
             fields: vec![Field {
                 name: "first".to_owned(),
                 type_ref: TypeRef::concrete(provisional_a),
+                required: true,
             }],
         },
     };
@@ -516,6 +519,7 @@ fn recursive_hashing_deduplicates_identical_canonical_entries() {
             fields: vec![Field {
                 name: "next".to_owned(),
                 type_ref: TypeRef::concrete(TypeId(1)),
+                required: true,
             }],
         },
     };
@@ -527,6 +531,7 @@ fn recursive_hashing_deduplicates_identical_canonical_entries() {
             fields: vec![Field {
                 name: "next".to_owned(),
                 type_ref: TypeRef::concrete(TypeId(2)),
+                required: true,
             }],
         },
     };
@@ -559,6 +564,7 @@ fn registry_rejects_recursive_schema_id_mismatch() {
             fields: vec![Field {
                 name: "next".to_owned(),
                 type_ref: TypeRef::concrete(provisional),
+                required: true,
             }],
         },
     };
@@ -688,6 +694,7 @@ fn registry_rejects_unknown_type_references() {
             fields: vec![Field {
                 name: "missing".to_owned(),
                 type_ref: TypeRef::concrete(missing),
+                required: true,
             }],
         },
     };

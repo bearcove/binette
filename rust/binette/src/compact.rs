@@ -407,6 +407,14 @@ impl<'a> CompactReader<'a> {
             .map_err(|source| CompactError::InvalidString { position, source })
     }
 
+    pub(crate) fn read_str(&mut self) -> Result<&'a str, CompactError> {
+        let len = self.read_u32()? as usize;
+        let position = self.position;
+        let bytes = self.read_bytes(len)?;
+        std::str::from_utf8(bytes)
+            .map_err(|source| CompactError::InvalidString { position, source })
+    }
+
     pub(crate) fn read_byte_vec(&mut self) -> Result<Vec<u8>, CompactError> {
         let len = self.read_u32()? as usize;
         Ok(self.read_bytes(len)?.to_vec())

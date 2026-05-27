@@ -37,7 +37,7 @@ pub use encode::{
     encode_to_vec_with_plan, writer_plan_for, writer_plan_for_shape,
 };
 pub use error::SchemaError;
-pub use facet::{schema_bundle_for, schema_bundle_for_shape};
+pub use facet::{canonicalize_schema_bundle, schema_bundle_for, schema_bundle_for_shape};
 pub use hash::{
     primitive_for_type_id, primitive_type_id, recursive_schema_type_ids, schema_type_id,
 };

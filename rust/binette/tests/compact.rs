@@ -217,14 +217,17 @@ fn compact_walk_collects_external_attachment_slots_in_value_order() {
             Field {
                 name: "head".to_owned(),
                 type_ref: TypeRef::concrete(external.id),
+                required: true,
             },
             Field {
                 name: "maybe".to_owned(),
                 type_ref: TypeRef::concrete(option.id),
+                required: true,
             },
             Field {
                 name: "items".to_owned(),
                 type_ref: TypeRef::concrete(list.id),
+                required: true,
             },
         ],
     });

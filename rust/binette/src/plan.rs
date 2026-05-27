@@ -74,6 +74,10 @@ pub enum StructFieldPlan {
         name: String,
         writer_type: TypeRef,
     },
+    Default {
+        reader_index: usize,
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,6 +283,10 @@ impl PlanBuilder<'_> {
             {
                 Ok(PlanNode::Primitive { primitive: writer })
             }
+            (ResolvedKind::Primitive(Primitive::Never), _)
+            | (_, ResolvedKind::Primitive(Primitive::Never)) => Ok(PlanNode::Primitive {
+                primitive: Primitive::Never,
+            }),
             (ResolvedKind::Primitive(_), ResolvedKind::Primitive(_)) => {
                 Err(self.type_mismatch(path, writer_ref, reader_ref))
             }
@@ -501,10 +509,17 @@ impl PlanBuilder<'_> {
         for (reader_index, reader_field) in reader_fields.iter().enumerate() {
             if !matched_readers[reader_index] {
                 // r[impl binette.compat.fill-defaults]
-                return Err(PlanError::MissingReaderField {
-                    path: path.to_owned(),
-                    field: reader_field.name.clone(),
-                });
+                if reader_field.required {
+                    return Err(PlanError::MissingReaderField {
+                        path: path.to_owned(),
+                        field: reader_field.name.clone(),
+                    });
+                } else {
+                    fields.push(StructFieldPlan::Default {
+                        reader_index,
+                        name: reader_field.name.clone(),
+                    });
+                }
             }
         }
 

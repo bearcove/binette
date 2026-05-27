@@ -460,17 +460,17 @@ impl WriterPlanBuilder<'_> {
     ) -> Result<WriterNode, EncodeError> {
         let ok_variant = schema_variants
             .iter()
-            .find(|variant| variant.name == "ok")
+            .find(|variant| variant.name == "Ok")
             .ok_or_else(|| EncodeError::MissingVariant {
                 shape,
-                variant: "ok".to_owned(),
+                variant: "Ok".to_owned(),
             })?;
         let err_variant = schema_variants
             .iter()
-            .find(|variant| variant.name == "err")
+            .find(|variant| variant.name == "Err")
             .ok_or_else(|| EncodeError::MissingVariant {
                 shape,
-                variant: "err".to_owned(),
+                variant: "Err".to_owned(),
             })?;
 
         let VariantPayload::Newtype { type_ref: ok_ref } = &ok_variant.payload else {

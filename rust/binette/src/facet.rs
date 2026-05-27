@@ -28,6 +28,15 @@ pub fn schema_bundle_for_shape(shape: &'static Shape) -> Result<SchemaBundle, Sc
     })
 }
 
+pub fn canonicalize_schema_bundle(bundle: SchemaBundle) -> Result<SchemaBundle, SchemaError> {
+    let (schemas, root) = finalize_extracted_schemas(bundle.schemas, bundle.root)?;
+    Ok(SchemaBundle {
+        schemas,
+        root,
+        attachments: bundle.attachments,
+    })
+}
+
 #[derive(Default)]
 struct ExtractCtx {
     schemas: Vec<Schema>,
@@ -104,12 +113,12 @@ impl ExtractCtx {
                     name: "Result".to_owned(),
                     variants: vec![
                         Variant {
-                            name: "ok".to_owned(),
+                            name: "Ok".to_owned(),
                             index: 0,
                             payload: VariantPayload::Newtype { type_ref: ok },
                         },
                         Variant {
-                            name: "err".to_owned(),
+                            name: "Err".to_owned(),
                             index: 1,
                             payload: VariantPayload::Newtype { type_ref: err },
                         },
@@ -272,6 +281,7 @@ impl ExtractCtx {
                 Ok(Field {
                     name: field.effective_name().to_owned(),
                     type_ref: self.type_ref_for_shape(field.shape(), param_map)?,
+                    required: !field.has_default(),
                 })
             })
             .collect()

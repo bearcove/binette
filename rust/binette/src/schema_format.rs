@@ -426,14 +426,16 @@ fn field_to_value(field_: &Field) -> Result<Value, SchemaFormatError> {
     Ok(Value::Struct(vec![
         field("name", Value::String(field_.name.clone())),
         field("type_ref", type_ref_to_value(&field_.type_ref)?),
+        field("required", Value::Bool(field_.required)),
     ]))
 }
 
 fn field_from_value(value: &Value) -> Result<Field, SchemaFormatError> {
-    let fields = expect_struct(value, "field descriptor", &["name", "type_ref"])?;
+    let fields = expect_struct(value, "field descriptor", &["name", "type_ref", "required"])?;
     Ok(Field {
         name: expect_string(fields[0], "field descriptor.name")?.to_owned(),
         type_ref: type_ref_from_value(fields[1])?,
+        required: expect_bool(fields[2], "field descriptor.required")?,
     })
 }
 
@@ -679,6 +681,17 @@ fn expect_u32(value: &Value, context: &'static str) -> Result<u32, SchemaFormatE
         return Err(SchemaFormatError::Expected {
             context,
             expected: "u32",
+            found: value_kind(value),
+        });
+    };
+    Ok(*value)
+}
+
+fn expect_bool(value: &Value, context: &'static str) -> Result<bool, SchemaFormatError> {
+    let Value::Bool(value) = value else {
+        return Err(SchemaFormatError::Expected {
+            context,
+            expected: "bool",
             found: value_kind(value),
         });
     };
