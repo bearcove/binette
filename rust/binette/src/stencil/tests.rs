@@ -11,7 +11,7 @@ use crate::local_access::{
     LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks,
     LocalSequenceStorage, LocalStorageExport, LocalThunk, LocalThunkBindings, LocalTypeDescriptor,
     LocalTypeKind, LocalValueLayout, LocalVariantConstructThunks, LocalVariantProjectThunks,
-    rust_facet_descriptor_for,
+    local_descriptor_exports_from_json, rust_facet_descriptor_for,
 };
 use crate::reader_plan_for_bundle;
 
@@ -336,6 +336,64 @@ fn strict_local_decode_stencil_accepts_swift_imported_fixed_descriptor() {
     unsafe { decoder.decode_raw_into(&bytes, decoded.as_mut_ptr().cast()) }.unwrap();
     let decoded = unsafe { decoded.assume_init() };
     assert_eq!(decoded, value);
+}
+
+// r[verify binette.local-access.swift-probes]
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+// r[verify binette.aggregate.option]
+#[test]
+fn swift_probe_fixture_direct_option_drives_strict_local_stencils() {
+    let writer_plan = writer_plan_for::<Option<u16>>().unwrap();
+    let descriptor = swift_fixture_descriptor("tagged-option<u16>", writer_plan.root()).unwrap();
+
+    let value = SwiftTaggedMaybeU16 {
+        tag: 1,
+        value: 0x3344,
+    };
+    let encoder = strict_local_stencil_encoder_from_plan(&writer_plan, &descriptor).unwrap();
+    assert_eq!(encoder.report().mode, StencilMode::Strict);
+    assert_eq!(encoder.report().helper_count, 0);
+    assert!(encoder.report().helper_paths.is_empty());
+    let actual =
+        unsafe { encoder.encode_raw_to_vec((&value as *const SwiftTaggedMaybeU16).cast()) }
+            .unwrap();
+    assert_eq!(
+        actual,
+        encode_to_vec_with_plan(&Some(0x3344_u16), &writer_plan).unwrap()
+    );
+
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        writer_plan.root(),
+        &writer_registry,
+    )
+    .unwrap();
+    let reader_descriptor =
+        swift_fixture_descriptor("tagged-option<u16>", reader_plan.reader_root()).unwrap();
+    let decoder =
+        strict_local_stencil_decoder_from_plan(&reader_plan, &writer_registry, &reader_descriptor)
+            .unwrap();
+    assert_eq!(decoder.report().mode, StencilMode::Strict);
+    assert_eq!(decoder.report().helper_count, 0);
+    assert!(decoder.report().helper_paths.is_empty());
+
+    let bytes = encode_to_vec_with_plan(&Some(0x7788_u16), &writer_plan).unwrap();
+    let mut decoded = std::mem::MaybeUninit::<SwiftTaggedMaybeU16>::uninit();
+    unsafe { decoder.decode_raw_into(&bytes, decoded.as_mut_ptr().cast()) }.unwrap();
+    let decoded = unsafe { decoded.assume_init() };
+    assert_eq!(
+        decoded,
+        SwiftTaggedMaybeU16 {
+            tag: 1,
+            value: 0x7788
+        }
+    );
 }
 
 fn assert_schema_only_hybrid_encode_matches<T>(
@@ -1334,6 +1392,26 @@ fn swift_text_export_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
     };
     LocalTypeDescriptor::from_export(export, |schema_name| swift_export_schema(root, schema_name))
         .unwrap()
+}
+
+fn swift_fixture_descriptor(
+    schema_name: &str,
+    root: &TypeRef,
+) -> Result<LocalTypeDescriptor, crate::local_access::LocalDescriptorExportError> {
+    let export = local_descriptor_exports_from_json(include_str!(
+        "../../tests/fixtures/swift-probe-descriptors.json"
+    ))
+    .unwrap()
+    .into_iter()
+    .find(|export| export.schema_name == schema_name)
+    .unwrap_or_else(|| panic!("missing Swift fixture descriptor {schema_name}"));
+    LocalTypeDescriptor::from_export(export, |schema_name| match schema_name {
+        "tagged-option<u16>" => Some(crate::local_access::LocalSchemaRef::Type(root.clone())),
+        "u16" => Some(crate::local_access::LocalSchemaRef::Type(
+            TypeRef::concrete(primitive_type_id(Primitive::U16)),
+        )),
+        _ => None,
+    })
 }
 
 fn swift_export_schema(
