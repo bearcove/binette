@@ -45,11 +45,15 @@ final class BinetteSwiftProbesTests: XCTestCase {
 
         XCTAssertEqual(
             stringStorage,
-            .thunk(count: "Swift.String.utf8.count", element: "Swift.String.utf8.element")
+            .thunk(
+                count: "Swift.String.utf8.count",
+                element: "Swift.String.utf8.element",
+                write: "Swift.String.init.utf8"
+            )
         )
         XCTAssertEqual(
             arrayStorage,
-            .thunk(count: "Swift.Array.count", element: "Swift.Array.element")
+            .thunk(count: "Swift.Array.count", element: "Swift.Array.element", write: nil)
         )
         XCTAssertEqual(
             optionalStorage,
@@ -64,5 +68,22 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertNil(variants[0].payload)
         XCTAssertEqual(variants[1].payload?.schemaName, "string")
         XCTAssertEqual(variants[2].payload?.schemaName, "ProbeLeaf")
+    }
+
+    func testStringThunkNamesCoverEncodeProjectionAndDecodeConstruction() throws {
+        let descriptor = try XCTUnwrap(makeProbeDescriptors().first { $0.schemaName == "string" })
+
+        guard case let .sequence(element, storage) = descriptor.kind else {
+            return XCTFail("expected string sequence descriptor")
+        }
+        XCTAssertEqual(element.schemaName, "u8")
+        XCTAssertEqual(
+            storage,
+            .thunk(
+                count: "Swift.String.utf8.count",
+                element: "Swift.String.utf8.element",
+                write: "Swift.String.init.utf8"
+            )
+        )
     }
 }

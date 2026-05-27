@@ -50,7 +50,7 @@ public enum BinetteLocalAccess: Equatable {
 
 public enum BinetteSequenceStorage: Equatable {
     case directContiguous(pointerOffset: Int, countOffset: Int, elementStride: Int)
-    case thunk(count: String, element: String)
+    case thunk(count: String, element: String, write: String?)
 }
 
 public enum BinetteOptionalStorage: Equatable {
@@ -140,7 +140,11 @@ private func stringDescriptor(element: BinetteLocalDescriptor) -> BinetteLocalDe
         layout: BinetteLocalLayout(of: String.self),
         kind: .sequence(
             element: element,
-            storage: .thunk(count: "Swift.String.utf8.count", element: "Swift.String.utf8.element")
+            storage: .thunk(
+                count: "Swift.String.utf8.count",
+                element: "Swift.String.utf8.element",
+                write: "Swift.String.init.utf8"
+            )
         )
     )
 }
@@ -152,7 +156,11 @@ private func arrayDescriptor(element: BinetteLocalDescriptor) -> BinetteLocalDes
         layout: BinetteLocalLayout(of: [Int64].self),
         kind: .sequence(
             element: element,
-            storage: .thunk(count: "Swift.Array.count", element: "Swift.Array.element")
+            storage: .thunk(
+                count: "Swift.Array.count",
+                element: "Swift.Array.element",
+                write: nil
+            )
         )
     )
 }
