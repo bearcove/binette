@@ -17,7 +17,8 @@ use crate::encode::{
 use crate::hash::primitive_for_type_id;
 use crate::local_access::{
     LocalOptionEncodeThunks, LocalOptionSequenceDecodeThunks, LocalSequenceDecodeThunks,
-    LocalSequenceEncodeThunks, LocalThunkBindings, LocalTypeDescriptor,
+    LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalThunkBindings,
+    LocalTypeDescriptor,
 };
 use crate::plan::{
     EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, ReaderPlan, StructFieldPlan,
@@ -848,6 +849,7 @@ fn encode_helper_paths(
         .filter_map(|helper| match helper {
             StencilEncodeHelper::Node { failure_index, .. }
             | StencilEncodeHelper::LocalSequenceBytes { failure_index, .. }
+            | StencilEncodeHelper::LocalSequenceFixedElements { failure_index, .. }
             | StencilEncodeHelper::LocalOptionSequenceBytes { failure_index, .. } => {
                 helper_path(failures, *failure_index)
             }

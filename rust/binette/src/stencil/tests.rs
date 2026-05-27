@@ -6,8 +6,9 @@ use crate::hash::primitive_type_id;
 use crate::local_access::{
     LocalAccess, LocalBackend, LocalDescriptorImport, LocalDescriptorImportKind, LocalFieldImport,
     LocalOptionEncodeThunks, LocalOptionRepresentation, LocalOptionSequenceDecodeThunks,
-    LocalScalarAccess, LocalSequenceDecodeThunks, LocalSequenceEncodeThunks, LocalSequenceStorage,
-    LocalThunk, LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout,
+    LocalScalarAccess, LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks,
+    LocalSequenceEncodeThunks, LocalSequenceStorage, LocalThunk, LocalThunkBindings,
+    LocalTypeDescriptor, LocalValueLayout,
 };
 use crate::reader_plan_for_bundle;
 
@@ -40,6 +41,14 @@ struct SwiftText {
 struct SwiftMaybeText {
     id: u64,
     maybe: Option<String>,
+    code: u16,
+}
+
+#[derive(Debug, PartialEq, Facet)]
+#[repr(C)]
+struct SwiftNumbers {
+    id: u64,
+    values: Vec<i64>,
     code: u16,
 }
 
@@ -279,6 +288,35 @@ fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_optional_string_subt
     }
 }
 
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_array_subtree() {
+    let value = SwiftNumbers {
+        id: 0x0102_0304_0506_0708,
+        values: vec![1, -2, 3, i64::MAX],
+        code: 0x1122,
+    };
+    let plan = writer_plan_for::<SwiftNumbers>().unwrap();
+    let descriptor = swift_numbers_descriptor(plan.root());
+
+    let strict_error = match strict_local_stencil_encoder_from_plan(&plan, &descriptor) {
+        Ok(_) => panic!("strict local encode must reject thunk-backed array fields"),
+        Err(err) => err,
+    };
+    assert!(matches!(strict_error, StencilError::Unsupported { .. }));
+
+    let thunks = swift_string_thunk_bindings();
+    let encoder = hybrid_local_stencil_encoder_from_plan(&plan, &descriptor, &thunks).unwrap();
+
+    assert_eq!(encoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(encoder.report().helper_count, 1);
+    assert_eq!(encoder.report().helper_paths, vec!["$.values".to_owned()]);
+    let actual =
+        unsafe { encoder.encode_raw_to_vec((&value as *const SwiftNumbers).cast()) }.unwrap();
+    assert_eq!(actual, encode_to_vec_with_plan(&value, &plan).unwrap());
+}
+
 fn swift_fixed_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
     LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
         root.clone(),
@@ -378,6 +416,39 @@ fn swift_maybe_text_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
     .unwrap()
 }
 
+fn swift_numbers_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
+    LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
+        root.clone(),
+        LocalValueLayout::of::<SwiftNumbers>(),
+        LocalDescriptorImportKind::Struct {
+            fields: vec![
+                LocalFieldImport {
+                    name: "id".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftNumbers, id),
+                    },
+                    descriptor: primitive_import(Primitive::U64, LocalValueLayout::of::<u64>()),
+                },
+                LocalFieldImport {
+                    name: "values".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftNumbers, values),
+                    },
+                    descriptor: swift_i64_array_import(root),
+                },
+                LocalFieldImport {
+                    name: "code".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftNumbers, code),
+                    },
+                    descriptor: primitive_import(Primitive::U16, LocalValueLayout::of::<u16>()),
+                },
+            ],
+        },
+    ))
+    .unwrap()
+}
+
 fn swift_thunk_string_import() -> LocalDescriptorImport {
     LocalDescriptorImport {
         schema: TypeRef::concrete(primitive_type_id(Primitive::String)).into(),
@@ -390,6 +461,28 @@ fn swift_thunk_string_import() -> LocalDescriptorImport {
                 write: Some(swift_string_write_thunk()),
             },
         )),
+    }
+}
+
+fn swift_i64_array_import(owner: &TypeRef) -> LocalDescriptorImport {
+    LocalDescriptorImport {
+        schema: crate::local_access::LocalSchemaRef::Position {
+            owner: owner.clone(),
+            path: "values".to_owned(),
+        },
+        backend: LocalBackend::SwiftProbe,
+        layout: LocalValueLayout::of::<Vec<i64>>(),
+        kind: LocalDescriptorImportKind::Sequence {
+            element: Box::new(primitive_import(
+                Primitive::I64,
+                LocalValueLayout::of::<i64>(),
+            )),
+            storage: LocalSequenceStorage::Thunk {
+                len: swift_array_len_thunk(),
+                element: swift_array_element_thunk(),
+                write: None,
+            },
+        },
     }
 }
 
@@ -431,6 +524,15 @@ fn swift_string_thunk_bindings() -> LocalThunkBindings {
                 context: 0,
             },
         )
+        .with_sequence_element_ptr(
+            swift_array_len_thunk(),
+            swift_array_element_thunk(),
+            LocalSequenceElementPtrEncodeThunks {
+                len: test_swift_array_i64_len,
+                element_ptr: test_swift_array_i64_element_ptr,
+                context: 0,
+            },
+        )
         .with_option(
             swift_option_is_some_thunk(),
             swift_option_some_thunk(),
@@ -461,6 +563,14 @@ fn swift_string_element_thunk() -> LocalThunk {
 
 fn swift_string_write_thunk() -> LocalThunk {
     LocalThunk::new(LocalBackend::SwiftProbe, "Swift.String.init.utf8")
+}
+
+fn swift_array_len_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Array.count")
+}
+
+fn swift_array_element_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Array.element")
 }
 
 fn swift_option_is_some_thunk() -> LocalThunk {
@@ -509,6 +619,25 @@ unsafe extern "C" fn test_swift_string_write(
     };
     unsafe { value.cast::<String>().write(string) };
     true
+}
+
+unsafe extern "C" fn test_swift_array_i64_len(
+    value: *const u8,
+    _context: *mut std::ffi::c_void,
+) -> usize {
+    unsafe { (&*value.cast::<Vec<i64>>()).len() }
+}
+
+unsafe extern "C" fn test_swift_array_i64_element_ptr(
+    value: *const u8,
+    index: usize,
+    _context: *mut std::ffi::c_void,
+) -> *const u8 {
+    unsafe {
+        (&*value.cast::<Vec<i64>>())
+            .get(index)
+            .map_or(std::ptr::null(), |value| value as *const i64 as *const u8)
+    }
 }
 
 unsafe extern "C" fn test_swift_option_is_some(

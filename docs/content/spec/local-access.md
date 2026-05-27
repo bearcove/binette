@@ -73,6 +73,9 @@ inside the current process.
 > Decode-side fallback thunks construct or write the local representation for
 > the unsupported subtree. Encode-side fallback thunks project local bytes or
 > elements from the same subtree. Both directions are explicit backend calls.
+> For a sequence subtree, a backend may provide count and element projection
+> thunks; hybrid execution may then encode the sequence by combining those
+> process-local projections with the descriptor-derived element encoding.
 > For an optional subtree, a backend may provide presence/projector thunks for
 > encode and construction thunks for decode; hybrid execution treats the
 > optional node as the fallback boundary unless the engine has proven direct

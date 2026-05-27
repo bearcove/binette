@@ -3,8 +3,8 @@ use crate::hash::primitive_type_id;
 use crate::local_access::{
     LocalAccess, LocalFieldDescriptor, LocalOptionEncodeThunks, LocalOptionRepresentation,
     LocalOptionSequenceDecodeThunks, LocalScalarAccess, LocalSchemaRef, LocalSequenceDecodeThunks,
-    LocalSequenceEncodeThunks, LocalSequenceStorage, LocalThunkBindings, LocalTypeDescriptor,
-    LocalTypeKind, rust_facet_descriptor_for_shape,
+    LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceStorage,
+    LocalThunkBindings, LocalTypeDescriptor, LocalTypeKind, rust_facet_descriptor_for_shape,
 };
 use crate::schema::TypeRef;
 
@@ -2300,7 +2300,6 @@ impl LocalEncodeStencilCompiler<'_> {
             WriterNode::Ref { .. }
             | WriterNode::Enum { .. }
             | WriterNode::Result { .. }
-            | WriterNode::List { .. }
             | WriterNode::Set { .. }
             | WriterNode::Map { .. }
             | WriterNode::Primitive(_)
@@ -2308,6 +2307,10 @@ impl LocalEncodeStencilCompiler<'_> {
                 path: path.to_owned(),
                 reason: "local hybrid encode has no backend thunk for this subtree",
             }),
+            WriterNode::List { element } => {
+                self.flush_direct_segment(pending);
+                self.push_sequence_fixed_elements(descriptor, element, input_offset, path)
+            }
         }
     }
 
@@ -2433,6 +2436,36 @@ impl LocalEncodeStencilCompiler<'_> {
             thunks,
             failure_index,
         });
+        self.ops.push(EncodeStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
+    fn push_sequence_fixed_elements(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        element: &WriterNode,
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let (element_descriptor, thunks) =
+            local_sequence_element_ptr_thunks(descriptor, self.thunks, path)?;
+        let segment = fixed_descriptor_encode_segment(
+            element_descriptor,
+            element,
+            0,
+            0,
+            &format!("{path}[]"),
+        )?;
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers
+            .push(StencilEncodeHelper::LocalSequenceFixedElements {
+                input_offset,
+                thunks,
+                element_ops: segment.ops,
+                element_output_len: segment.output_len,
+                failure_index,
+            });
         self.ops.push(EncodeStencilOp::Helper { helper_index });
         Ok(())
     }
@@ -2910,17 +2943,6 @@ fn copy_ops_fit_direct_code(ops: &[CopyOp]) -> bool {
         .all(|op| op.input_offset <= 255 && op.output_offset <= 255)
 }
 
-impl CopyWidth {
-    fn bytes(self) -> usize {
-        match self {
-            CopyWidth::One => 1,
-            CopyWidth::Two => 2,
-            CopyWidth::Four => 4,
-            CopyWidth::Eight => 8,
-        }
-    }
-}
-
 const WIDTH_0: &[CopyWidth] = &[];
 const WIDTH_1: &[CopyWidth] = &[CopyWidth::One];
 const WIDTH_2: &[CopyWidth] = &[CopyWidth::Two];
@@ -3152,6 +3174,37 @@ fn local_sequence_bytes_thunks(
             path: path.to_owned(),
             reason: "local byte sequence backend thunks are not bound",
         })
+}
+
+fn local_sequence_element_ptr_thunks<'a>(
+    descriptor: &'a LocalTypeDescriptor,
+    bindings: &LocalThunkBindings,
+    path: &str,
+) -> Result<(&'a LocalTypeDescriptor, LocalSequenceElementPtrEncodeThunks), StencilError> {
+    let LocalTypeKind::Sequence { element, storage } = &descriptor.kind else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor is not a thunk-backed sequence",
+        });
+    };
+    let LocalSequenceStorage::Thunk {
+        len,
+        element: element_thunk,
+        ..
+    } = storage
+    else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local sequence descriptor does not use backend thunks",
+        });
+    };
+    let thunks = bindings
+        .sequence_element_ptr(len, element_thunk)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local sequence element pointer thunks are not bound",
+        })?;
+    Ok((element, thunks))
 }
 
 fn local_sequence_decode_thunks(

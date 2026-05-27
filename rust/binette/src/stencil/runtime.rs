@@ -166,6 +166,7 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
     let status = match helper {
         StencilEncodeHelper::Node { failure_index, .. }
         | StencilEncodeHelper::LocalSequenceBytes { failure_index, .. }
+        | StencilEncodeHelper::LocalSequenceFixedElements { failure_index, .. }
         | StencilEncodeHelper::LocalOptionSequenceBytes { failure_index, .. } => {
             status_for_failure(*failure_index).unwrap_or(1)
         }
@@ -206,6 +207,46 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
             out.reserve(len);
             for index in 0..len {
                 out.push(unsafe { (thunks.element_u8)(value, index, context) });
+            }
+        }
+        StencilEncodeHelper::LocalSequenceFixedElements {
+            input_offset,
+            thunks,
+            element_ops,
+            element_output_len,
+            ..
+        } => {
+            if value.is_null() {
+                return status;
+            }
+            let value = value.wrapping_add(*input_offset);
+            let context = thunks.context as *mut std::ffi::c_void;
+            let len = unsafe { (thunks.len)(value, context) };
+            let Ok(len_u32) = u32::try_from(len) else {
+                return status;
+            };
+            let Some(elements_len) = element_output_len.checked_mul(len) else {
+                return status;
+            };
+            out.extend_from_slice(&len_u32.to_le_bytes());
+            out.reserve(elements_len);
+            for index in 0..len {
+                let element = unsafe { (thunks.element_ptr)(value, index, context) };
+                if element.is_null() {
+                    return status;
+                }
+                let element_base = out.len();
+                out.resize(element_base + element_output_len, 0);
+                for op in element_ops {
+                    let source = unsafe { element.add(op.input_offset) };
+                    unsafe {
+                        copy_nonoverlapping(
+                            source,
+                            out.as_mut_ptr().add(element_base + op.output_offset),
+                            op.width.bytes(),
+                        );
+                    }
+                }
             }
         }
         StencilEncodeHelper::LocalOptionSequenceBytes {

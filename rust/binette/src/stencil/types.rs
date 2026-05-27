@@ -15,6 +15,17 @@ pub(super) enum CopyWidth {
     Eight,
 }
 
+impl CopyWidth {
+    pub(super) fn bytes(self) -> usize {
+        match self {
+            CopyWidth::One => 1,
+            CopyWidth::Two => 2,
+            CopyWidth::Four => 4,
+            CopyWidth::Eight => 8,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) enum StencilFailure {
     InvalidBool {
@@ -188,6 +199,13 @@ pub(super) enum StencilEncodeHelper {
     LocalSequenceBytes {
         input_offset: usize,
         thunks: LocalSequenceEncodeThunks,
+        failure_index: usize,
+    },
+    LocalSequenceFixedElements {
+        input_offset: usize,
+        thunks: LocalSequenceElementPtrEncodeThunks,
+        element_ops: Vec<CopyOp>,
+        element_output_len: usize,
         failure_index: usize,
     },
     LocalOptionSequenceBytes {
