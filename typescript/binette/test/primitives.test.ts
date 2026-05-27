@@ -5,12 +5,14 @@ import {
   decodeBool,
   decodeBytes,
   decodeI32,
+  decodeOption,
   decodeString,
   decodeU32,
   decodeU64,
   encodeBool,
   encodeBytes,
   encodeI32,
+  encodeOption,
   encodeString,
   encodeU32,
   encodeU64,
@@ -54,5 +56,19 @@ test("length-prefixed primitive helpers round-trip bytes and strings", () => {
   assert.deepEqual(decodeString(encoded, 0), {
     value: "éclair",
     next: encoded.length,
+  });
+});
+
+test("option helpers use compact option tags", () => {
+  assert.deepEqual([...encodeOption(null, encodeU32)], [0]);
+  assert.deepEqual([...encodeOption(42, encodeU32)], [1, 42, 0, 0, 0]);
+
+  assert.deepEqual(decodeOption(Uint8Array.of(0), 0, decodeU32), {
+    value: null,
+    next: 1,
+  });
+  assert.deepEqual(decodeOption(Uint8Array.of(1, 42, 0, 0, 0), 0, decodeU32), {
+    value: 42,
+    next: 5,
   });
 });

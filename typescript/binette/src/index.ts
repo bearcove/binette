@@ -16,6 +16,12 @@ export {
 } from "./compact.js";
 
 export {
+  concat,
+  decodeOption,
+  encodeOption,
+} from "./helpers.js";
+
+export {
   decodeBool,
   decodeBytes,
   decodeF32,
