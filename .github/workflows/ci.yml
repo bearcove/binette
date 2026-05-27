@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.91
+        with:
+          components: rustfmt, clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo nextest run --workspace --no-fail-fast
+
+  typescript:
+    name: TypeScript
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 11
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          cache: pnpm
+          node-version: 24
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check TypeScript
+        run: pnpm check
+
+      - name: Test TypeScript
+        run: pnpm test
+
+  swift-probes:
+    name: Swift probes
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: swift/probes
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run Swift probe tests
+        run: swift test
+
+  tracey:
+    name: Tracey
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.91
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install tracey
+        run: cargo install --locked --git https://github.com/bearcove/tracey --branch main tracey
+
+      - name: Validate Rust coverage
+        run: tracey query validate --spec_impl binette/rust
+
+      - name: Validate TypeScript coverage
+        run: tracey query validate --spec_impl binette/typescript
