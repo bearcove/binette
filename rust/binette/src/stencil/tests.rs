@@ -1435,6 +1435,39 @@ fn swift_text_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
     .unwrap()
 }
 
+fn swift_direct_text_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
+    LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
+        root.clone(),
+        LocalValueLayout::of::<SwiftText>(),
+        LocalDescriptorImportKind::Struct {
+            fields: vec![
+                LocalFieldImport {
+                    name: "id".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftText, id),
+                    },
+                    descriptor: primitive_import(Primitive::U64, LocalValueLayout::of::<u64>()),
+                },
+                LocalFieldImport {
+                    name: "title".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftText, title),
+                    },
+                    descriptor: swift_direct_string_import(),
+                },
+                LocalFieldImport {
+                    name: "code".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftText, code),
+                    },
+                    descriptor: primitive_import(Primitive::U16, LocalValueLayout::of::<u16>()),
+                },
+            ],
+        },
+    ))
+    .unwrap()
+}
+
 fn swift_text_export_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
     let export = LocalDescriptorExport {
         schema_name: "SwiftText".to_owned(),
@@ -1771,6 +1804,29 @@ fn swift_thunk_string_import() -> LocalDescriptorImport {
                 len: swift_string_len_thunk(),
                 element: swift_string_element_thunk(),
                 write: Some(swift_string_write_thunk()),
+            },
+        )),
+    }
+}
+
+fn swift_direct_string_import() -> LocalDescriptorImport {
+    let layout = crate::layout::string_layout().expect("current String layout is probeable");
+    LocalDescriptorImport {
+        schema: TypeRef::concrete(primitive_type_id(Primitive::String)).into(),
+        backend: LocalBackend::SwiftProbe,
+        layout: LocalValueLayout::of::<String>(),
+        kind: LocalDescriptorImportKind::Scalar(LocalScalarAccess::String(
+            LocalSequenceStorage::DirectContiguous {
+                pointer: LocalAccess::Direct {
+                    offset: layout.ptr_offset,
+                },
+                length: LocalAccess::Direct {
+                    offset: layout.len_offset,
+                },
+                capacity: Some(LocalAccess::Direct {
+                    offset: layout.cap_offset,
+                }),
+                element_stride: 1,
             },
         )),
     }
@@ -2708,7 +2764,7 @@ fn strict_encode_accepts_mixed_struct_with_list_option_and_strings() {
 }
 
 #[test]
-fn public_hybrid_decode_uses_local_rust_helpers_for_string_subtrees() {
+fn public_hybrid_decode_reports_string_subtree_boundaries() {
     mod writer {
         use facet::Facet;
 
@@ -2768,8 +2824,47 @@ fn public_hybrid_decode_uses_local_rust_helpers_for_string_subtrees() {
     assert_eq!(decoded.tail, value.tail);
 }
 
+// r[verify binette.local-access.backends]
+// r[verify binette.local-access.descriptor+2]
+// r[verify binette.local-access.strict-hybrid]
 #[test]
-fn public_hybrid_decode_constructs_fixed_vec_through_rust_layout() {
+fn public_hybrid_decode_constructs_strings_from_direct_descriptor_layout() {
+    let writer_plan = writer_plan_for::<SwiftText>().unwrap();
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for::<SwiftText>(writer_plan.root(), &writer_registry).unwrap();
+    let descriptor = swift_direct_text_descriptor(reader_plan.reader_root());
+
+    let decoder = hybrid_local_stencil_decoder_from_plan(
+        &reader_plan,
+        &writer_registry,
+        &descriptor,
+        &LocalThunkBindings::new(),
+    )
+    .unwrap();
+    assert_eq!(decoder.report().helper_paths, vec!["$.title".to_owned()]);
+
+    let value = SwiftText {
+        id: 0x0102_0304_0506_0708,
+        title: "direct descriptor".to_owned(),
+        code: 0x1122,
+    };
+    let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+    let mut decoded = std::mem::MaybeUninit::<SwiftText>::uninit();
+    unsafe { decoder.decode_raw_into(&bytes, decoded.as_mut_ptr().cast()) }.unwrap();
+    let decoded = unsafe { decoded.assume_init() };
+    assert_eq!(decoded.id, value.id);
+    assert_eq!(decoded.title, value.title);
+    assert_eq!(decoded.code, value.code);
+}
+
+// r[verify binette.local-access.backends]
+// r[verify binette.local-access.descriptor+2]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn public_hybrid_decode_constructs_fixed_vec_from_direct_descriptor_layout() {
     mod writer {
         use facet::Facet;
 

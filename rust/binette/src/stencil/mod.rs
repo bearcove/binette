@@ -48,12 +48,12 @@ use self::runtime::{
     stencil_decode_helper, stencil_encode_helper, stencil_encode_reserve,
 };
 use self::types::{
-    ByteTaggedLength, CopyOp, CopyWidth, EncodeBytesKind, EncodeBytesLayout, EncodeEnumCase,
-    EncodeEnumSelector, EncodeListLayout, EncodeOptionLayout, EncodeStencilOp, EnumCase,
-    FixedEncodeCompiler, FixedEncodeSegment, HybridStencilOp, LengthCheck, LocalEnumDecodeCase,
-    LocalEnumDecodePayload, LocalEnumEncodeCase, LocalEnumEncodePayload, RustSequenceDecodeLayout,
-    StencilEncodeHelper, StencilEncodeRuntime, StencilFailure, StencilHelper, StencilOp,
-    StencilRuntime, TaggedLength,
+    ByteTaggedLength, CopyOp, CopyWidth, DirectSequenceDecodeLayout, EncodeBytesKind,
+    EncodeBytesLayout, EncodeEnumCase, EncodeEnumSelector, EncodeListLayout, EncodeOptionLayout,
+    EncodeStencilOp, EnumCase, FixedEncodeCompiler, FixedEncodeSegment, HybridStencilOp,
+    LengthCheck, LocalEnumDecodeCase, LocalEnumDecodePayload, LocalEnumEncodeCase,
+    LocalEnumEncodePayload, StencilEncodeHelper, StencilEncodeRuntime, StencilFailure,
+    StencilHelper, StencilOp, StencilRuntime, TaggedLength,
 };
 
 type FixedStencilFn = unsafe extern "C" fn(input: *const u8, len: usize, out: *mut u8) -> u32;
@@ -826,8 +826,8 @@ fn decode_helper_paths(helpers: &[StencilHelper], failures: &[StencilFailure]) -
         .filter_map(|helper| match helper {
             StencilHelper::SequenceBytes { failure_index, .. }
             | StencilHelper::SequenceFixedElements { failure_index, .. }
-            | StencilHelper::RustSequenceBytes { failure_index, .. }
-            | StencilHelper::RustSequenceFixedElements { failure_index, .. }
+            | StencilHelper::DirectSequenceBytes { failure_index, .. }
+            | StencilHelper::DirectSequenceFixedElements { failure_index, .. }
             | StencilHelper::OptionSequenceBytes { failure_index, .. }
             | StencilHelper::RustOptionStringBytes { failure_index, .. }
             | StencilHelper::Enum { failure_index, .. }

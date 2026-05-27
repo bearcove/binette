@@ -112,7 +112,7 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
             }
             end
         }
-        StencilHelper::RustSequenceBytes {
+        StencilHelper::DirectSequenceBytes {
             output_offset,
             layout,
             primitive,
@@ -132,12 +132,12 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
                 return hybrid_error_for_helper(helper);
             }
             let output = unsafe { out.add(*output_offset) };
-            if !unsafe { write_rust_sequence(output, *layout, bytes, len) } {
+            if !unsafe { write_direct_sequence(output, *layout, bytes, len) } {
                 return hybrid_error_for_helper(helper);
             }
             end
         }
-        StencilHelper::RustSequenceFixedElements {
+        StencilHelper::DirectSequenceFixedElements {
             output_offset,
             layout,
             element_ops,
@@ -179,7 +179,7 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
                 }
             }
             let output = unsafe { out.add(*output_offset) };
-            if !unsafe { write_rust_sequence(output, *layout, &elements, count) } {
+            if !unsafe { write_direct_sequence(output, *layout, &elements, count) } {
                 return hybrid_error_for_helper(helper);
             }
             end
@@ -350,8 +350,8 @@ fn hybrid_error_for_helper(helper: &StencilHelper) -> usize {
     match helper {
         StencilHelper::SequenceBytes { failure_index, .. }
         | StencilHelper::SequenceFixedElements { failure_index, .. }
-        | StencilHelper::RustSequenceBytes { failure_index, .. }
-        | StencilHelper::RustSequenceFixedElements { failure_index, .. }
+        | StencilHelper::DirectSequenceBytes { failure_index, .. }
+        | StencilHelper::DirectSequenceFixedElements { failure_index, .. }
         | StencilHelper::OptionSequenceBytes { failure_index, .. }
         | StencilHelper::RustOptionStringBytes { failure_index, .. }
         | StencilHelper::Enum { failure_index, .. }
@@ -359,9 +359,9 @@ fn hybrid_error_for_helper(helper: &StencilHelper) -> usize {
     }
 }
 
-unsafe fn write_rust_sequence(
+unsafe fn write_direct_sequence(
     output: *mut u8,
-    layout: RustSequenceDecodeLayout,
+    layout: DirectSequenceDecodeLayout,
     bytes: &[u8],
     element_count: usize,
 ) -> bool {

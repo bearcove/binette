@@ -106,15 +106,15 @@ pub(super) enum StencilHelper {
         element_stride: usize,
         failure_index: usize,
     },
-    RustSequenceBytes {
+    DirectSequenceBytes {
         output_offset: usize,
-        layout: RustSequenceDecodeLayout,
+        layout: DirectSequenceDecodeLayout,
         primitive: Primitive,
         failure_index: usize,
     },
-    RustSequenceFixedElements {
+    DirectSequenceFixedElements {
         output_offset: usize,
-        layout: RustSequenceDecodeLayout,
+        layout: DirectSequenceDecodeLayout,
         element_ops: Vec<StencilOp>,
         element_input_len: usize,
         failure_index: usize,
@@ -140,7 +140,7 @@ pub(super) enum StencilHelper {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct RustSequenceDecodeLayout {
+pub(super) struct DirectSequenceDecodeLayout {
     pub(super) ptr_offset: usize,
     pub(super) len_offset: usize,
     pub(super) cap_offset: usize,

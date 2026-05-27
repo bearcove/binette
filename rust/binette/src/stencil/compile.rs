@@ -929,10 +929,10 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
         output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
-        if let Some(layout) = local_rust_byte_sequence_decode_layout(reader, primitive, path)? {
+        if let Some(layout) = local_direct_byte_sequence_decode_layout(reader, primitive, path)? {
             let failure_index = self.push_helper_failure(path)?;
             let helper_index = self.helpers.len();
-            self.helpers.push(StencilHelper::RustSequenceBytes {
+            self.helpers.push(StencilHelper::DirectSequenceBytes {
                 output_offset,
                 layout,
                 primitive,
@@ -961,7 +961,8 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
         output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
-        if let Some((element_descriptor, layout)) = local_rust_sequence_decode_layout(reader, path)?
+        if let Some((element_descriptor, layout)) =
+            local_direct_sequence_decode_layout(reader, path)?
         {
             let (element_ops, element_input_len) = fixed_local_decode_ops(
                 self.writer_registry,
@@ -973,13 +974,14 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
             )?;
             let failure_index = self.push_helper_failure(path)?;
             let helper_index = self.helpers.len();
-            self.helpers.push(StencilHelper::RustSequenceFixedElements {
-                output_offset,
-                layout,
-                element_ops,
-                element_input_len,
-                failure_index,
-            });
+            self.helpers
+                .push(StencilHelper::DirectSequenceFixedElements {
+                    output_offset,
+                    layout,
+                    element_ops,
+                    element_input_len,
+                    failure_index,
+                });
             self.ops.push(HybridStencilOp::Helper { helper_index });
             return Ok(());
         }
@@ -2590,45 +2592,40 @@ fn local_sequence_decode_thunks(
         })
 }
 
-fn local_rust_byte_sequence_decode_layout(
+fn local_direct_byte_sequence_decode_layout(
     descriptor: &LocalTypeDescriptor,
     primitive: Primitive,
     path: &str,
-) -> Result<Option<RustSequenceDecodeLayout>, StencilError> {
-    if descriptor.backend != LocalBackend::RustFacet {
-        return Ok(None);
-    }
+) -> Result<Option<DirectSequenceDecodeLayout>, StencilError> {
     let storage = local_byte_sequence_storage(
         descriptor,
         primitive,
         path,
         "local descriptor is not a byte sequence",
     )?;
-    rust_direct_sequence_decode_layout(storage, 1, path)
+    direct_contiguous_sequence_decode_layout(storage, 1, path)
 }
 
-fn local_rust_sequence_decode_layout<'a>(
+fn local_direct_sequence_decode_layout<'a>(
     descriptor: &'a LocalTypeDescriptor,
     path: &str,
-) -> Result<Option<(&'a LocalTypeDescriptor, RustSequenceDecodeLayout)>, StencilError> {
-    if descriptor.backend != LocalBackend::RustFacet {
-        return Ok(None);
-    }
+) -> Result<Option<(&'a LocalTypeDescriptor, DirectSequenceDecodeLayout)>, StencilError> {
     let LocalTypeKind::Sequence { element, storage } = &descriptor.kind else {
         return Ok(None);
     };
-    let Some(layout) = rust_direct_sequence_decode_layout(storage, element.layout.align, path)?
+    let Some(layout) =
+        direct_contiguous_sequence_decode_layout(storage, element.layout.align, path)?
     else {
         return Ok(None);
     };
     Ok(Some((element, layout)))
 }
 
-fn rust_direct_sequence_decode_layout(
+fn direct_contiguous_sequence_decode_layout(
     storage: &LocalSequenceStorage,
     element_align: usize,
     path: &str,
-) -> Result<Option<RustSequenceDecodeLayout>, StencilError> {
+) -> Result<Option<DirectSequenceDecodeLayout>, StencilError> {
     let LocalSequenceStorage::DirectContiguous {
         pointer: LocalAccess::Direct { offset: ptr_offset },
         length: LocalAccess::Direct { offset: len_offset },
@@ -2641,10 +2638,10 @@ fn rust_direct_sequence_decode_layout(
     if element_align == 0 || !element_align.is_power_of_two() {
         return Err(StencilError::Unsupported {
             path: path.to_owned(),
-            reason: "Rust sequence element alignment is not valid",
+            reason: "direct sequence element alignment is not valid",
         });
     }
-    Ok(Some(RustSequenceDecodeLayout {
+    Ok(Some(DirectSequenceDecodeLayout {
         ptr_offset: *ptr_offset,
         len_offset: *len_offset,
         cap_offset: *cap_offset,
