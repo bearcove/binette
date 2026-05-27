@@ -452,7 +452,7 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
     };
 
     let status = match helper {
-        StencilEncodeHelper::Node { failure_index, .. }
+        StencilEncodeHelper::RustFacetRoot { failure_index, .. }
         | StencilEncodeHelper::LocalSequenceBytes { failure_index, .. }
         | StencilEncodeHelper::LocalSequenceFixedElements { failure_index, .. }
         | StencilEncodeHelper::LocalEnum { failure_index, .. }
@@ -462,19 +462,13 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
     };
 
     match helper {
-        StencilEncodeHelper::Node {
-            node,
-            shape,
-            input_offset,
-            ..
-        } => {
+        StencilEncodeHelper::RustFacetRoot { shape, plan, .. } => {
             if value.is_null() {
                 return status;
             }
-            let value = value.wrapping_add(*input_offset);
             let peek: Peek<'_, 'static> =
                 unsafe { Peek::unchecked_new(PtrConst::new(value), shape) };
-            if encode_node_with_writer_node(out, peek, node, &runtime.nodes).is_err() {
+            if encode_peek_with_plan(out, peek, plan).is_err() {
                 return status;
             }
         }
@@ -637,170 +631,16 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
     STENCIL_OK
 }
 
-#[repr(C)]
-pub(super) struct StencilByteParts {
-    ptr: *const u8,
-    len: usize,
-}
-
-pub(super) const STENCIL_ENCODE_BYTES_STRING: usize = 1;
-pub(super) const STENCIL_ENCODE_BYTES_BYTES: usize = 2;
-
-pub(super) unsafe extern "C" fn stencil_encode_byte_parts(
-    value: *const u8,
-    shape: *const Shape,
-    kind: usize,
-) -> StencilByteParts {
-    let Some(shape) = (unsafe { shape.as_ref() }) else {
-        return StencilByteParts {
-            ptr: std::ptr::null(),
-            len: 0,
-        };
-    };
-    let peek: Peek<'_, 'static> = unsafe { Peek::unchecked_new(PtrConst::new(value), shape) };
-    let bytes = match kind {
-        STENCIL_ENCODE_BYTES_STRING => {
-            let Some(value) = peek.as_str() else {
-                return StencilByteParts {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                };
-            };
-            value.as_bytes()
-        }
-        STENCIL_ENCODE_BYTES_BYTES => {
-            if let Some(value) = peek.as_bytes() {
-                value
-            } else {
-                let Ok(list) = peek.into_list_like() else {
-                    return StencilByteParts {
-                        ptr: std::ptr::null(),
-                        len: 0,
-                    };
-                };
-                let Some(value) = list.as_bytes() else {
-                    return StencilByteParts {
-                        ptr: std::ptr::null(),
-                        len: 0,
-                    };
-                };
-                value
-            }
-        }
-        _ => {
-            return StencilByteParts {
-                ptr: std::ptr::null(),
-                len: 0,
-            };
-        }
-    };
-
-    if bytes.len() > u32::MAX as usize {
-        return StencilByteParts {
-            ptr: std::ptr::null(),
-            len: 0,
-        };
-    }
-
-    StencilByteParts {
-        ptr: bytes.as_ptr(),
-        len: bytes.len(),
-    }
-}
-
 pub(super) unsafe extern "C" fn stencil_copy_bytes(dst: *mut u8, src: *const u8, len: usize) {
     unsafe {
         copy_nonoverlapping(src, dst, len);
     }
 }
 
-pub(super) const STENCIL_ENUM_VARIANT_ERROR: usize = usize::MAX;
-
-pub(super) unsafe extern "C" fn stencil_enum_variant_index(
-    value: *const u8,
-    shape: *const Shape,
-) -> usize {
-    let Some(shape) = (unsafe { shape.as_ref() }) else {
-        return STENCIL_ENUM_VARIANT_ERROR;
-    };
-    let peek: Peek<'_, 'static> = unsafe { Peek::unchecked_new(PtrConst::new(value), shape) };
-    let Ok(enum_peek) = peek.into_enum() else {
-        return STENCIL_ENUM_VARIANT_ERROR;
-    };
-    enum_peek
-        .variant_index()
-        .unwrap_or(STENCIL_ENUM_VARIANT_ERROR)
-}
-
-#[repr(C)]
-pub(super) struct StencilOptionParts {
-    tag: usize,
-    ptr: *const u8,
-}
-
 pub(super) const STENCIL_OPTION_NONE: usize = 0;
 pub(super) const STENCIL_OPTION_SOME: usize = 1;
-pub(super) const STENCIL_OPTION_ERROR: usize = usize::MAX;
 pub(super) const STENCIL_OPTION_NONE_U8: u8 = 0;
 pub(super) const STENCIL_OPTION_SOME_U8: u8 = 1;
-
-pub(super) unsafe extern "C" fn stencil_option_parts(
-    value: *const u8,
-    shape: *const Shape,
-) -> StencilOptionParts {
-    let error = StencilOptionParts {
-        tag: STENCIL_OPTION_ERROR,
-        ptr: std::ptr::null(),
-    };
-    let Some(shape) = (unsafe { shape.as_ref() }) else {
-        return error;
-    };
-    let peek: Peek<'_, 'static> = unsafe { Peek::unchecked_new(PtrConst::new(value), shape) };
-    let Ok(option) = peek.into_option() else {
-        return error;
-    };
-    match option.value() {
-        Some(inner) => StencilOptionParts {
-            tag: STENCIL_OPTION_SOME,
-            ptr: inner.data().raw_ptr(),
-        },
-        None => StencilOptionParts {
-            tag: STENCIL_OPTION_NONE,
-            ptr: std::ptr::null(),
-        },
-    }
-}
-
-pub(super) const STENCIL_LIST_ERROR: usize = usize::MAX;
-
-pub(super) unsafe extern "C" fn stencil_list_len(value: *const u8, shape: *const Shape) -> usize {
-    let Some(shape) = (unsafe { shape.as_ref() }) else {
-        return STENCIL_LIST_ERROR;
-    };
-    let peek: Peek<'_, 'static> = unsafe { Peek::unchecked_new(PtrConst::new(value), shape) };
-    let Ok(list) = peek.into_list_like() else {
-        return STENCIL_LIST_ERROR;
-    };
-    list.len()
-}
-
-pub(super) unsafe extern "C" fn stencil_list_element(
-    value: *const u8,
-    shape: *const Shape,
-    index: usize,
-) -> *const u8 {
-    let Some(shape) = (unsafe { shape.as_ref() }) else {
-        return std::ptr::null();
-    };
-    let peek: Peek<'_, 'static> = unsafe { Peek::unchecked_new(PtrConst::new(value), shape) };
-    let Ok(list) = peek.into_list_like() else {
-        return std::ptr::null();
-    };
-    let Some(element) = list.get(index) else {
-        return std::ptr::null();
-    };
-    element.data().raw_ptr()
-}
 
 pub(super) unsafe extern "C" fn stencil_encode_reserve(out: *mut Vec<u8>, len: usize) -> *mut u8 {
     let Some(out) = (unsafe { out.as_mut() }) else {

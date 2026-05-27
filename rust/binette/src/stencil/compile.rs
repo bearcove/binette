@@ -6,7 +6,6 @@ use crate::local_access::{
     LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks,
     LocalSequenceFixedDecodeThunks, LocalSequenceStorage, LocalThunkBindings, LocalTypeDescriptor,
     LocalTypeKind, LocalVariantConstructThunks, LocalVariantProjectThunks,
-    rust_facet_descriptor_for_shape,
 };
 use crate::schema::TypeRef;
 
@@ -1192,661 +1191,6 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
     }
 }
 
-pub(super) struct StencilEncodeCompiler {
-    pub(super) ops: Vec<EncodeStencilOp>,
-    pub(super) helpers: Vec<StencilEncodeHelper>,
-    pub(super) failures: Vec<StencilFailure>,
-}
-
-#[derive(Clone, Copy)]
-struct EncodeLocal<'a> {
-    shape: &'static Shape,
-    descriptor: &'a LocalTypeDescriptor,
-}
-
-#[derive(Clone, Copy)]
-struct VariantElementLocal<'a> {
-    descriptor: &'a LocalTypeDescriptor,
-    access: Option<&'a LocalAccess>,
-}
-
-impl StencilEncodeCompiler {
-    pub(super) fn compile_root<T: Facet<'static>>(
-        &mut self,
-        root: &WriterNode,
-    ) -> Result<(), StencilError> {
-        let writer = rust_facet_descriptor(T::SHAPE, "$")?;
-        let mut pending = FixedEncodeSegment {
-            ops: Vec::new(),
-            output_len: 0,
-        };
-        self.compile_node(T::SHAPE, &writer, root, 0, "$", &mut pending)?;
-        self.flush_direct_segment(&mut pending);
-        Ok(())
-    }
-
-    fn compile_node(
-        &mut self,
-        shape: &'static Shape,
-        descriptor: &LocalTypeDescriptor,
-        node: &WriterNode,
-        input_offset: usize,
-        path: &str,
-        pending: &mut FixedEncodeSegment,
-    ) -> Result<(), StencilError> {
-        match fixed_encode_segment(
-            shape,
-            descriptor,
-            node,
-            input_offset,
-            pending.output_len,
-            path,
-        ) {
-            Ok(segment) if copy_ops_fit_direct_code(&segment.ops) => {
-                pending.ops.extend(segment.ops);
-                pending.output_len = checked_offset(pending.output_len, segment.output_len, path)?;
-                return Ok(());
-            }
-            Ok(_) => {
-                self.flush_direct_segment(pending);
-                match fixed_encode_segment(shape, descriptor, node, input_offset, 0, path) {
-                    Ok(segment) if copy_ops_fit_direct_code(&segment.ops) => {
-                        self.push_direct_segment(segment);
-                        return Ok(());
-                    }
-                    Ok(_) => {
-                        self.push_node_helper(shape, node, input_offset, path)?;
-                        return Ok(());
-                    }
-                    Err(StencilError::Unsupported { .. }) => {}
-                    Err(err) => return Err(err),
-                }
-            }
-            Err(StencilError::Unsupported { .. }) => {}
-            Err(err) => return Err(err),
-        }
-
-        match node {
-            WriterNode::Ref { .. } => {
-                self.flush_direct_segment(pending);
-                self.push_node_helper(shape, node, input_offset, path)
-            }
-            WriterNode::Primitive(Primitive::String) => {
-                self.flush_direct_segment(pending);
-                self.push_bytes(shape, input_offset, EncodeBytesKind::String);
-                Ok(())
-            }
-            WriterNode::Primitive(Primitive::Bytes | Primitive::Payload) => {
-                self.flush_direct_segment(pending);
-                self.push_bytes(shape, input_offset, EncodeBytesKind::Bytes);
-                Ok(())
-            }
-            WriterNode::Struct { fields } => {
-                self.compile_struct_root(shape, descriptor, fields, input_offset, path, pending)
-            }
-            WriterNode::Tuple { elements } => {
-                self.compile_tuple_root(shape, descriptor, elements, input_offset, path, pending)
-            }
-            WriterNode::Array {
-                dimensions,
-                element,
-            } => self.compile_array_root(
-                EncodeLocal { shape, descriptor },
-                dimensions,
-                element,
-                input_offset,
-                path,
-                pending,
-            ),
-            WriterNode::Option { element } => {
-                self.flush_direct_segment(pending);
-                if self.push_option(shape, descriptor, input_offset, element, path)? {
-                    Ok(())
-                } else {
-                    self.push_node_helper(shape, node, input_offset, path)
-                }
-            }
-            WriterNode::List { element } => {
-                self.flush_direct_segment(pending);
-                if self.push_list(shape, descriptor, input_offset, element, path)? {
-                    Ok(())
-                } else {
-                    self.push_node_helper(shape, node, input_offset, path)
-                }
-            }
-            WriterNode::Enum { variants } => {
-                self.flush_direct_segment(pending);
-                self.push_enum(shape, descriptor, input_offset, variants, path)
-            }
-            _ => {
-                self.flush_direct_segment(pending);
-                self.push_node_helper(shape, node, input_offset, path)
-            }
-        }
-    }
-
-    // r[impl binette.aggregate.struct.compact]
-    fn compile_struct_root(
-        &mut self,
-        shape: &'static Shape,
-        descriptor: &LocalTypeDescriptor,
-        fields: &[WriterFieldPlan],
-        input_offset: usize,
-        path: &str,
-        pending: &mut FixedEncodeSegment,
-    ) -> Result<(), StencilError> {
-        let facet_fields = shape_struct_fields(shape, path)?;
-        let descriptor_fields = local_struct_fields(descriptor, path)?;
-        for field in fields {
-            let field_path = format!("{path}.{}", field.name);
-            let Some(facet_field) = facet_fields.get(field.local_index) else {
-                return Err(StencilError::Unsupported {
-                    path: field_path,
-                    reason: "writer field index is out of range",
-                });
-            };
-            let field_descriptor = local_writer_field_descriptor(
-                descriptor_fields,
-                field,
-                path,
-                "writer descriptor field index is out of range",
-            )?;
-            let field_offset = checked_offset(
-                input_offset,
-                local_direct_offset(&field_descriptor.access, path)?,
-                path,
-            )?;
-            self.compile_node(
-                facet_field.shape.get(),
-                &field_descriptor.descriptor,
-                &field.node,
-                field_offset,
-                &field_path,
-                pending,
-            )?;
-        }
-        Ok(())
-    }
-
-    // r[impl binette.aggregate.tuple]
-    fn compile_tuple_root(
-        &mut self,
-        shape: &'static Shape,
-        descriptor: &LocalTypeDescriptor,
-        elements: &[WriterTupleElementPlan],
-        input_offset: usize,
-        path: &str,
-        pending: &mut FixedEncodeSegment,
-    ) -> Result<(), StencilError> {
-        let facet_fields = shape_struct_fields(shape, path)?;
-        let descriptor_fields = local_struct_fields(descriptor, path)?;
-        if facet_fields.len() != elements.len() {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "writer tuple arity differs from Facet shape",
-            });
-        }
-        for element in elements {
-            let element_path = format!("{path}.{}", element.local_index);
-            let Some(facet_field) = facet_fields.get(element.local_index) else {
-                return Err(StencilError::Unsupported {
-                    path: element_path,
-                    reason: "writer tuple field index is out of range",
-                });
-            };
-            let element_descriptor =
-                descriptor_fields.get(element.local_index).ok_or_else(|| {
-                    StencilError::Unsupported {
-                        path: path.to_owned(),
-                        reason: "writer tuple descriptor field index is out of range",
-                    }
-                })?;
-            let element_offset = checked_offset(
-                input_offset,
-                local_direct_offset(&element_descriptor.access, path)?,
-                path,
-            )?;
-            self.compile_node(
-                facet_field.shape.get(),
-                &element_descriptor.descriptor,
-                &element.node,
-                element_offset,
-                &element_path,
-                pending,
-            )?;
-        }
-        Ok(())
-    }
-
-    // r[impl binette.aggregate.array]
-    fn compile_array_root(
-        &mut self,
-        local: EncodeLocal<'_>,
-        dimensions: &[u64],
-        element: &WriterNode,
-        input_offset: usize,
-        path: &str,
-        pending: &mut FixedEncodeSegment,
-    ) -> Result<(), StencilError> {
-        let (element_shape, count, stride) =
-            fixed_array_parts(local.shape, dimensions, path, "writer array")?;
-        let (element_descriptor, descriptor_count, descriptor_stride) =
-            local_inline_fixed_array(local.descriptor, path)?;
-        if descriptor_count != count || descriptor_stride != stride {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "writer array descriptor differs from Facet array layout",
-            });
-        }
-        for index in 0..count {
-            let element_input_offset =
-                checked_offset(input_offset, checked_mul(index, stride, path)?, path)?;
-            self.compile_node(
-                element_shape,
-                element_descriptor,
-                element,
-                element_input_offset,
-                &format!("{path}[{index}]"),
-                pending,
-            )?;
-        }
-        Ok(())
-    }
-
-    // r[impl binette.aggregate.option]
-    fn push_option(
-        &mut self,
-        shape: &'static Shape,
-        descriptor: &LocalTypeDescriptor,
-        input_offset: usize,
-        element: &WriterNode,
-        path: &str,
-    ) -> Result<bool, StencilError> {
-        let Def::Option(option) = shape.def else {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "writer option stencil requires Facet option shape",
-            });
-        };
-
-        let (some_descriptor, representation) = local_option_descriptor(descriptor, path)?;
-        let mut compiler = StencilEncodeCompiler {
-            ops: Vec::new(),
-            helpers: Vec::new(),
-            failures: Vec::new(),
-        };
-        let mut pending = FixedEncodeSegment {
-            ops: Vec::new(),
-            output_len: 0,
-        };
-        compiler.compile_node(
-            option.t(),
-            some_descriptor,
-            element,
-            0,
-            &format!("{path}.some"),
-            &mut pending,
-        )?;
-        compiler.flush_direct_segment(&mut pending);
-        if !compiler.helpers.is_empty() {
-            return Ok(false);
-        }
-
-        let layout = if matches!(element, WriterNode::Primitive(Primitive::String))
-            && matches!(
-                representation,
-                LocalOptionRepresentation::NicheString { .. }
-            ) {
-            EncodeOptionLayout::NicheString
-        } else {
-            EncodeOptionLayout::Facet
-        };
-
-        self.ops.push(EncodeStencilOp::Option {
-            shape: Some(shape),
-            input_offset,
-            layout,
-            some_ops: compiler.ops,
-        });
-        Ok(true)
-    }
-
-    // r[impl binette.aggregate.list]
-    fn push_list(
-        &mut self,
-        shape: &'static Shape,
-        descriptor: &LocalTypeDescriptor,
-        input_offset: usize,
-        element: &WriterNode,
-        path: &str,
-    ) -> Result<bool, StencilError> {
-        let Def::List(list) = shape.def else {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "writer list stencil requires Facet list shape",
-            });
-        };
-
-        let (element_descriptor, element_stride) = local_sequence_element(descriptor, path)?;
-        let mut compiler = StencilEncodeCompiler {
-            ops: Vec::new(),
-            helpers: Vec::new(),
-            failures: Vec::new(),
-        };
-        let mut pending = FixedEncodeSegment {
-            ops: Vec::new(),
-            output_len: 0,
-        };
-        compiler.compile_node(
-            list.t(),
-            element_descriptor,
-            element,
-            0,
-            &format!("{path}[]"),
-            &mut pending,
-        )?;
-        compiler.flush_direct_segment(&mut pending);
-        if !compiler.helpers.is_empty() {
-            return Ok(false);
-        }
-
-        let layout = match local_sequence_storage(descriptor, path)? {
-            LocalSequenceStorage::DirectContiguous {
-                pointer: LocalAccess::Direct { offset: ptr_offset },
-                length: LocalAccess::Direct { offset: len_offset },
-                ..
-            } => EncodeListLayout::Vec {
-                ptr_offset: *ptr_offset,
-                len_offset: *len_offset,
-                element_stride,
-            },
-            _ => EncodeListLayout::Facet,
-        };
-
-        self.ops.push(EncodeStencilOp::List {
-            shape: Some(shape),
-            input_offset,
-            layout,
-            element_ops: compiler.ops,
-        });
-        Ok(true)
-    }
-
-    fn push_node_helper(
-        &mut self,
-        shape: &'static Shape,
-        node: &WriterNode,
-        input_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let failure_index = self.push_helper_failure(path)?;
-        let helper_index = self.helpers.len();
-        self.helpers.push(StencilEncodeHelper::Node {
-            node: node.clone(),
-            shape,
-            input_offset,
-            failure_index,
-        });
-        self.ops.push(EncodeStencilOp::Helper { helper_index });
-        Ok(())
-    }
-
-    fn push_bytes(&mut self, shape: &'static Shape, input_offset: usize, kind: EncodeBytesKind) {
-        self.ops.push(EncodeStencilOp::Bytes {
-            shape: Some(shape),
-            input_offset,
-            kind,
-            layout: EncodeBytesLayout::Facet,
-        });
-    }
-
-    fn push_enum(
-        &mut self,
-        shape: &'static Shape,
-        descriptor: &LocalTypeDescriptor,
-        input_offset: usize,
-        variants: &[WriterVariantPlan],
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let Type::User(UserType::Enum(enum_type)) = shape.ty else {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "writer enum stencil requires Facet enum shape",
-            });
-        };
-
-        let mut cases = Vec::with_capacity(variants.len());
-        for variant in variants {
-            let Some(facet_variant) = enum_type.variants.get(variant.local_index) else {
-                return Err(StencilError::Unsupported {
-                    path: path.to_owned(),
-                    reason: "writer enum variant index is out of range",
-                });
-            };
-            let variant_path = format!("{path}.{}", facet_variant.effective_name());
-            let local_variant = local_enum_variant(descriptor, variant.local_index, path)?;
-            let ops = self.compile_variant_payload_ops(
-                &variant.payload,
-                facet_variant.data,
-                local_variant.payload.as_deref(),
-                input_offset,
-                &variant_path,
-            )?;
-            cases.push(EncodeEnumCase {
-                local_index: u32::try_from(variant.local_index).map_err(|_| {
-                    StencilError::Unsupported {
-                        path: path.to_owned(),
-                        reason: "writer enum facet index does not fit u32",
-                    }
-                })?,
-                wire_index: variant.wire_index,
-                ops,
-            });
-        }
-
-        self.ops.push(EncodeStencilOp::Enum {
-            input_offset,
-            selector: EncodeEnumSelector::Facet { shape },
-            cases,
-        });
-        Ok(())
-    }
-
-    fn compile_variant_payload_ops(
-        &mut self,
-        payload: &WriterVariantPayloadPlan,
-        data: facet_core::StructType,
-        payload_descriptor: Option<&LocalTypeDescriptor>,
-        input_offset: usize,
-        path: &str,
-    ) -> Result<Vec<EncodeStencilOp>, StencilError> {
-        let outer_ops = std::mem::take(&mut self.ops);
-        let mut pending = FixedEncodeSegment {
-            ops: Vec::new(),
-            output_len: 0,
-        };
-        let result = (|| {
-            match payload {
-                WriterVariantPayloadPlan::Unit => {}
-                WriterVariantPayloadPlan::Newtype(element) => {
-                    let payload_descriptor =
-                        payload_descriptor.ok_or_else(|| StencilError::Unsupported {
-                            path: path.to_owned(),
-                            reason: "writer enum newtype payload is missing local descriptor",
-                        })?;
-                    self.compile_variant_tuple_element(
-                        data.fields,
-                        VariantElementLocal {
-                            descriptor: payload_descriptor,
-                            access: None,
-                        },
-                        element,
-                        input_offset,
-                        path,
-                        &mut pending,
-                    )?;
-                }
-                WriterVariantPayloadPlan::Tuple(elements) => {
-                    let descriptor_fields = local_struct_fields(
-                        payload_descriptor.ok_or_else(|| StencilError::Unsupported {
-                            path: path.to_owned(),
-                            reason: "writer enum tuple payload is missing local descriptor",
-                        })?,
-                        path,
-                    )?;
-                    for element in elements {
-                        let field_descriptor = descriptor_fields
-                            .get(element.local_index)
-                            .ok_or_else(|| StencilError::Unsupported {
-                                path: path.to_owned(),
-                                reason: "writer enum tuple descriptor field index is out of range",
-                            })?;
-                        self.compile_variant_tuple_element(
-                            data.fields,
-                            VariantElementLocal {
-                                descriptor: &field_descriptor.descriptor,
-                                access: Some(&field_descriptor.access),
-                            },
-                            element,
-                            input_offset,
-                            path,
-                            &mut pending,
-                        )?;
-                    }
-                }
-                WriterVariantPayloadPlan::Struct(fields) => {
-                    let descriptor_fields = local_struct_fields(
-                        payload_descriptor.ok_or_else(|| StencilError::Unsupported {
-                            path: path.to_owned(),
-                            reason: "writer enum struct payload is missing local descriptor",
-                        })?,
-                        path,
-                    )?;
-                    for field in fields {
-                        self.compile_variant_struct_field(
-                            data.fields,
-                            descriptor_fields,
-                            field,
-                            input_offset,
-                            path,
-                            &mut pending,
-                        )?;
-                    }
-                }
-            }
-            self.flush_direct_segment(&mut pending);
-            Ok(())
-        })();
-        let payload_ops = std::mem::replace(&mut self.ops, outer_ops);
-        result.map(|()| payload_ops)
-    }
-
-    fn compile_variant_tuple_element(
-        &mut self,
-        facet_fields: &'static [facet_core::Field],
-        local: VariantElementLocal<'_>,
-        element: &WriterTupleElementPlan,
-        input_offset: usize,
-        path: &str,
-        pending: &mut FixedEncodeSegment,
-    ) -> Result<(), StencilError> {
-        let element_path = format!("{path}.{}", element.local_index);
-        let Some(facet_field) = facet_fields.get(element.local_index) else {
-            return Err(StencilError::Unsupported {
-                path: element_path,
-                reason: "writer enum tuple field index is out of range",
-            });
-        };
-        let field_offset = checked_offset(
-            input_offset,
-            match local.access {
-                Some(access) => local_direct_offset(access, path)?,
-                None => facet_field.offset,
-            },
-            path,
-        )?;
-        self.compile_node(
-            facet_field.shape(),
-            local.descriptor,
-            &element.node,
-            field_offset,
-            &element_path,
-            pending,
-        )
-    }
-
-    fn compile_variant_struct_field(
-        &mut self,
-        facet_fields: &'static [facet_core::Field],
-        descriptor_fields: &[LocalFieldDescriptor],
-        field: &WriterFieldPlan,
-        input_offset: usize,
-        path: &str,
-        pending: &mut FixedEncodeSegment,
-    ) -> Result<(), StencilError> {
-        let field_path = format!("{path}.{}", field.name);
-        let Some(facet_field) = facet_fields.get(field.local_index) else {
-            return Err(StencilError::Unsupported {
-                path: field_path,
-                reason: "writer enum struct field index is out of range",
-            });
-        };
-        let field_descriptor = local_writer_field_descriptor(
-            descriptor_fields,
-            field,
-            path,
-            "writer enum struct descriptor field index is out of range",
-        )?;
-        let field_offset = checked_offset(
-            input_offset,
-            local_direct_offset(&field_descriptor.access, path)?,
-            path,
-        )?;
-        self.compile_node(
-            facet_field.shape(),
-            &field_descriptor.descriptor,
-            &field.node,
-            field_offset,
-            &field_path,
-            pending,
-        )
-    }
-
-    fn push_helper_failure(&mut self, path: &str) -> Result<usize, StencilError> {
-        let failure_index = self.failures.len();
-        let _ = status_for_failure(failure_index)?;
-        self.failures.push(StencilFailure::Helper {
-            path: path.to_owned(),
-        });
-        Ok(failure_index)
-    }
-
-    fn push_direct_segment(&mut self, segment: FixedEncodeSegment) {
-        if segment.output_len == 0 {
-            return;
-        }
-        self.ops.push(EncodeStencilOp::Direct {
-            ops: segment.ops,
-            output_len: segment.output_len,
-        });
-    }
-
-    fn flush_direct_segment(&mut self, segment: &mut FixedEncodeSegment) {
-        if segment.output_len == 0 {
-            segment.ops.clear();
-            return;
-        }
-        let segment = std::mem::replace(
-            segment,
-            FixedEncodeSegment {
-                ops: Vec::new(),
-                output_len: 0,
-            },
-        );
-        self.push_direct_segment(segment);
-    }
-}
-
 pub(super) struct LocalEncodeStencilCompiler<'a> {
     pub(super) ops: Vec<EncodeStencilOp>,
     pub(super) helpers: Vec<StencilEncodeHelper>,
@@ -1934,7 +1278,17 @@ impl LocalEncodeStencilCompiler<'_> {
                 match self.push_direct_option(descriptor, element, input_offset, path) {
                     Ok(()) => Ok(()),
                     Err(StencilError::Unsupported { .. }) => {
-                        self.push_option_sequence_bytes(descriptor, element, input_offset, path)
+                        match self.push_niche_option(descriptor, element, input_offset, path) {
+                            Ok(()) => Ok(()),
+                            Err(StencilError::Unsupported { .. }) => self
+                                .push_option_sequence_bytes(
+                                    descriptor,
+                                    element,
+                                    input_offset,
+                                    path,
+                                ),
+                            Err(err) => Err(err),
+                        }
                     }
                     Err(err) => Err(err),
                 }
@@ -2091,7 +1445,6 @@ impl LocalEncodeStencilCompiler<'_> {
             local_direct_byte_sequence(descriptor, primitive, path)?
         {
             self.ops.push(EncodeStencilOp::Bytes {
-                shape: None,
                 input_offset,
                 kind,
                 layout: EncodeBytesLayout::Direct {
@@ -2179,13 +1532,63 @@ impl LocalEncodeStencilCompiler<'_> {
         }
 
         self.ops.push(EncodeStencilOp::Option {
-            shape: None,
             input_offset,
             layout: EncodeOptionLayout::DirectTag {
                 tag_offset,
                 none_value,
                 some_offset,
             },
+            some_ops: compiler.ops,
+        });
+        Ok(())
+    }
+
+    fn push_niche_option(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        element: &WriterNode,
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let (some_descriptor, representation) = local_option_descriptor(descriptor, path)?;
+        if !matches!(
+            representation,
+            LocalOptionRepresentation::NicheString { .. }
+        ) {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "local option descriptor does not use a niche string",
+            });
+        }
+
+        let mut compiler = LocalEncodeStencilCompiler {
+            ops: Vec::new(),
+            helpers: Vec::new(),
+            failures: Vec::new(),
+            thunks: self.thunks,
+        };
+        let mut pending = FixedEncodeSegment {
+            ops: Vec::new(),
+            output_len: 0,
+        };
+        compiler.compile_node(
+            some_descriptor,
+            element,
+            0,
+            &format!("{path}.some"),
+            &mut pending,
+        )?;
+        compiler.flush_direct_segment(&mut pending);
+        if !compiler.helpers.is_empty() {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "niche local option payload requires helper fallback",
+            });
+        }
+
+        self.ops.push(EncodeStencilOp::Option {
+            input_offset,
+            layout: EncodeOptionLayout::NicheString,
             some_ops: compiler.ops,
         });
         Ok(())
@@ -2237,7 +1640,6 @@ impl LocalEncodeStencilCompiler<'_> {
         }
 
         self.ops.push(EncodeStencilOp::List {
-            shape: None,
             input_offset,
             layout: EncodeListLayout::Vec {
                 ptr_offset: *ptr_offset,
@@ -2561,46 +1963,6 @@ impl FixedEncodeCompiler {
         Ok(self.output_offset)
     }
 
-    fn compile_node(
-        &mut self,
-        shape: &'static Shape,
-        descriptor: &LocalTypeDescriptor,
-        node: &WriterNode,
-        input_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        match node {
-            WriterNode::Ref { .. } => Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "direct encode stencil does not support recursive writer refs",
-            }),
-            WriterNode::Primitive(primitive) => {
-                self.compile_primitive(*primitive, input_offset, path)
-            }
-            WriterNode::Struct { fields } => {
-                self.compile_struct(shape, descriptor, fields, input_offset, path)
-            }
-            WriterNode::Tuple { elements } => {
-                self.compile_tuple(shape, descriptor, elements, input_offset, path)
-            }
-            WriterNode::Array {
-                dimensions,
-                element,
-            } => self.compile_array(shape, descriptor, dimensions, element, input_offset, path),
-            WriterNode::External => Ok(()),
-            WriterNode::Enum { .. }
-            | WriterNode::Result { .. }
-            | WriterNode::List { .. }
-            | WriterNode::Set { .. }
-            | WriterNode::Map { .. }
-            | WriterNode::Option { .. }
-            | WriterNode::Dynamic => Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "direct encode stencil only supports fixed-width roots",
-            }),
-        }
-    }
-
     fn compile_descriptor_node(
         &mut self,
         descriptor: &LocalTypeDescriptor,
@@ -2741,129 +2103,6 @@ impl FixedEncodeCompiler {
         Ok(())
     }
 
-    // r[impl binette.aggregate.struct.compact]
-    fn compile_struct(
-        &mut self,
-        shape: &'static Shape,
-        descriptor: &LocalTypeDescriptor,
-        fields: &[WriterFieldPlan],
-        input_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let facet_fields = shape_struct_fields(shape, path)?;
-        let descriptor_fields = local_struct_fields(descriptor, path)?;
-        for field in fields {
-            let facet_field =
-                facet_fields
-                    .get(field.local_index)
-                    .ok_or_else(|| StencilError::Unsupported {
-                        path: format!("{path}.{}", field.name),
-                        reason: "writer field index is out of range",
-                    })?;
-            let field_descriptor = local_writer_field_descriptor(
-                descriptor_fields,
-                field,
-                path,
-                "writer descriptor field index is out of range",
-            )?;
-            let field_offset = checked_offset(
-                input_offset,
-                local_direct_offset(&field_descriptor.access, path)?,
-                path,
-            )?;
-            self.compile_node(
-                facet_field.shape.get(),
-                &field_descriptor.descriptor,
-                &field.node,
-                field_offset,
-                &format!("{path}.{}", field.name),
-            )?;
-        }
-        Ok(())
-    }
-
-    // r[impl binette.aggregate.tuple]
-    fn compile_tuple(
-        &mut self,
-        shape: &'static Shape,
-        descriptor: &LocalTypeDescriptor,
-        elements: &[WriterTupleElementPlan],
-        input_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let facet_fields = shape_struct_fields(shape, path)?;
-        let descriptor_fields = local_struct_fields(descriptor, path)?;
-        if facet_fields.len() != elements.len() {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "writer tuple arity differs from Facet shape",
-            });
-        }
-        for element in elements {
-            let facet_field =
-                facet_fields
-                    .get(element.local_index)
-                    .ok_or_else(|| StencilError::Unsupported {
-                        path: path.to_owned(),
-                        reason: "writer tuple field index is out of range",
-                    })?;
-            let element_descriptor =
-                descriptor_fields.get(element.local_index).ok_or_else(|| {
-                    StencilError::Unsupported {
-                        path: path.to_owned(),
-                        reason: "writer tuple descriptor field index is out of range",
-                    }
-                })?;
-            let field_offset = checked_offset(
-                input_offset,
-                local_direct_offset(&element_descriptor.access, path)?,
-                path,
-            )?;
-            self.compile_node(
-                facet_field.shape.get(),
-                &element_descriptor.descriptor,
-                &element.node,
-                field_offset,
-                &format!("{path}.{}", element.local_index),
-            )?;
-        }
-        Ok(())
-    }
-
-    // r[impl binette.aggregate.array]
-    fn compile_array(
-        &mut self,
-        shape: &'static Shape,
-        descriptor: &LocalTypeDescriptor,
-        dimensions: &[u64],
-        element: &WriterNode,
-        input_offset: usize,
-        path: &str,
-    ) -> Result<(), StencilError> {
-        let (element_shape, count, stride) =
-            fixed_array_parts(shape, dimensions, path, "writer array")?;
-        let (element_descriptor, descriptor_count, descriptor_stride) =
-            local_inline_fixed_array(descriptor, path)?;
-        if descriptor_count != count || descriptor_stride != stride {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "writer array descriptor differs from Facet array layout",
-            });
-        }
-        for index in 0..count {
-            let element_input_offset =
-                checked_offset(input_offset, checked_mul(index, stride, path)?, path)?;
-            self.compile_node(
-                element_shape,
-                element_descriptor,
-                element,
-                element_input_offset,
-                &format!("{path}[{index}]"),
-            )?;
-        }
-        Ok(())
-    }
-
     // r[impl binette.scalar.bool]
     // r[impl binette.scalar.unsigned]
     // r[impl binette.scalar.signed]
@@ -2890,32 +2129,6 @@ impl FixedEncodeCompiler {
         }
         Ok(())
     }
-}
-
-fn fixed_encode_segment(
-    shape: &'static Shape,
-    descriptor: &LocalTypeDescriptor,
-    node: &WriterNode,
-    input_offset: usize,
-    output_offset: usize,
-    path: &str,
-) -> Result<FixedEncodeSegment, StencilError> {
-    let mut compiler = FixedEncodeCompiler {
-        ops: Vec::new(),
-        output_offset,
-    };
-    compiler.compile_node(shape, descriptor, node, input_offset, path)?;
-    let output_len = compiler
-        .output_offset
-        .checked_sub(output_offset)
-        .ok_or_else(|| StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "direct encode output offset underflow",
-        })?;
-    Ok(FixedEncodeSegment {
-        ops: compiler.ops,
-        output_len,
-    })
 }
 
 fn fixed_descriptor_encode_segment(
@@ -3017,16 +2230,6 @@ fn primitive_for_plain_type_ref(type_ref: &TypeRef) -> Option<Primitive> {
         TypeRef::Concrete { type_id, args } if args.is_empty() => primitive_for_type_id(*type_id),
         TypeRef::Concrete { .. } | TypeRef::Var { .. } => None,
     }
-}
-
-fn rust_facet_descriptor(
-    shape: &'static Shape,
-    path: &str,
-) -> Result<LocalTypeDescriptor, StencilError> {
-    rust_facet_descriptor_for_shape(shape).map_err(|_| StencilError::Unsupported {
-        path: path.to_owned(),
-        reason: "failed to build Rust local access descriptor for stencil compilation",
-    })
 }
 
 fn validate_descriptor_primitive(
@@ -3717,85 +2920,6 @@ fn local_variant_construct_thunks(
             path: path.to_owned(),
             reason: "local enum variant constructor thunk is not bound",
         })
-}
-
-fn local_enum_variant<'a>(
-    descriptor: &'a LocalTypeDescriptor,
-    index: usize,
-    path: &str,
-) -> Result<&'a crate::local_access::LocalVariantDescriptor, StencilError> {
-    let LocalTypeKind::Enum { variants, .. } = &descriptor.kind else {
-        return Err(StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "local descriptor is not an enum layout",
-        });
-    };
-    variants
-        .get(index)
-        .ok_or_else(|| StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "local descriptor enum variant index is out of range",
-        })
-}
-
-fn shape_struct_fields(
-    shape: &'static Shape,
-    path: &str,
-) -> Result<&'static [facet_core::Field], StencilError> {
-    let Type::User(user) = shape.ty else {
-        return Err(StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "reader shape is not a struct",
-        });
-    };
-    let UserType::Struct(struct_type) = user else {
-        return Err(StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "reader shape is not a struct",
-        });
-    };
-    match struct_type.kind {
-        StructKind::Struct | StructKind::TupleStruct | StructKind::Tuple => Ok(struct_type.fields),
-        StructKind::Unit => Err(StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "unit struct stencil decode is not implemented yet",
-        }),
-    }
-}
-
-fn fixed_array_parts(
-    shape: &'static Shape,
-    dimensions: &[u64],
-    path: &str,
-    context: &'static str,
-) -> Result<(&'static Shape, usize, usize), StencilError> {
-    let Def::Array(array) = shape.def else {
-        return Err(StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "stencil array requires Facet array shape",
-        });
-    };
-    let expected = dimensions_element_count(dimensions, path)?;
-    if array.n != expected {
-        return Err(StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: match context {
-                "reader array" => "reader array length differs from schema dimensions",
-                "writer array" => "writer array length differs from schema dimensions",
-                _ => "array length differs from schema dimensions",
-            },
-        });
-    }
-    let stride = array
-        .t()
-        .layout
-        .sized_layout()
-        .map_err(|_| StencilError::Unsupported {
-            path: path.to_owned(),
-            reason: "stencil array element shape is unsized",
-        })?
-        .size();
-    Ok((array.t(), expected, stride))
 }
 
 fn dimensions_element_count(dimensions: &[u64], path: &str) -> Result<usize, StencilError> {

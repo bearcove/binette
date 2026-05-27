@@ -1,6 +1,6 @@
 use super::runtime::HYBRID_ERROR_FLAG;
 use super::*;
-use crate::layout::{option_string_layout, string_layout};
+use crate::layout::option_string_layout;
 
 pub(super) fn generate_code(
     ops: &[StencilOp],
@@ -905,13 +905,11 @@ fn emit_encode_op(
             }
         }
         EncodeStencilOp::Bytes {
-            shape,
             input_offset,
             kind,
             layout,
         } => emit_encode_bytes_op(
             code,
-            *shape,
             *input_offset,
             *kind,
             *layout,
@@ -932,14 +930,12 @@ fn emit_encode_op(
             option_depth,
         )?,
         EncodeStencilOp::Option {
-            shape,
             input_offset,
             layout,
             some_ops,
         } => emit_encode_option_op(
             code,
             EncodeOptionEmit {
-                shape: *shape,
                 input_offset: *input_offset,
                 layout: *layout,
                 some_ops,
@@ -949,13 +945,11 @@ fn emit_encode_op(
             error_branches,
         )?,
         EncodeStencilOp::List {
-            shape,
             input_offset,
             layout,
             element_ops,
         } => emit_encode_list_op(
             code,
-            *shape,
             *input_offset,
             *layout,
             element_ops,
@@ -969,87 +963,26 @@ fn emit_encode_op(
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn emit_encode_bytes_op(
     code: &mut Vec<u8>,
-    shape: Option<&'static Shape>,
     input_offset: usize,
-    kind: EncodeBytesKind,
+    _kind: EncodeBytesKind,
     layout: EncodeBytesLayout,
     error_branches: &mut Vec<EncodeBranchFixup>,
     value_base_reg: u8,
 ) -> Result<(), StencilError> {
-    if let EncodeBytesLayout::Direct {
+    let EncodeBytesLayout::Direct {
         ptr_offset,
         len_offset,
-    } = layout
-    {
-        if input_offset == 0 {
-            push_u32(code, mov_x_register(10, value_base_reg)?);
-        } else {
-            push_u32(
-                code,
-                add_x_immediate(10, value_base_reg, input_offset, "$input")?,
-            );
-        }
-        push_u32(code, ldur_x_register(22, 10, ptr_offset, "$bytes")?);
-        push_u32(code, ldur_x_register(23, 10, len_offset, "$bytes")?);
-    } else if kind == EncodeBytesKind::String {
-        let Some(layout) = string_layout() else {
-            return Err(StencilError::Unsupported {
-                path: "$string".to_owned(),
-                reason: "string layout probe failed",
-            });
-        };
-        if input_offset == 0 {
-            push_u32(code, mov_x_register(10, value_base_reg)?);
-        } else {
-            push_u32(
-                code,
-                add_x_immediate(10, value_base_reg, input_offset, "$input")?,
-            );
-        }
-        push_u32(code, ldur_x_register(22, 10, layout.ptr_offset, "$string")?);
-        push_u32(code, ldur_x_register(23, 10, layout.len_offset, "$string")?);
+    } = layout;
+    if input_offset == 0 {
+        push_u32(code, mov_x_register(10, value_base_reg)?);
     } else {
-        let shape = shape.ok_or_else(|| StencilError::Unsupported {
-            path: "$bytes".to_owned(),
-            reason: "Facet bytes stencil is missing its shape",
-        })?;
-        if input_offset == 0 {
-            push_u32(code, mov_x_register(0, value_base_reg)?);
-        } else {
-            push_u32(
-                code,
-                add_x_immediate(0, value_base_reg, input_offset, "$input")?,
-            );
-        }
-        emit_mov_x_immediate(code, 1, shape as *const Shape as usize as u64)?;
-        let kind = u64::try_from(kind.abi_tag()).map_err(|_| StencilError::Unsupported {
-            path: "$code".to_owned(),
-            reason: "stencil byte kind exceeds u64",
-        })?;
-        emit_mov_x_immediate(code, 2, kind)?;
-        emit_mov_x_immediate(
+        push_u32(
             code,
-            16,
-            stencil_encode_byte_parts as *const () as usize as u64,
-        )?;
-        push_u32(code, AARCH64_BLR_X16);
-
-        let parts_succeeded_branch = code.len();
-        push_u32(code, 0);
-        emit_encode_failure_branch(code, error_branches)?;
-
-        let parts_success = code.len();
-        let parts_branch_word = patch_compare_zero_branch_imm19(
-            AARCH64_CBNZ_X0,
-            parts_succeeded_branch,
-            parts_success,
-        )?;
-        code[parts_succeeded_branch..parts_succeeded_branch + 4]
-            .copy_from_slice(&parts_branch_word.to_le_bytes());
-
-        push_u32(code, mov_x_register(22, 0)?);
-        push_u32(code, mov_x_register(23, 1)?);
+            add_x_immediate(10, value_base_reg, input_offset, "$input")?,
+        );
     }
+    push_u32(code, ldur_x_register(22, 10, ptr_offset, "$bytes")?);
+    push_u32(code, ldur_x_register(23, 10, len_offset, "$bytes")?);
 
     emit_mov_x_immediate(code, 10, u64::from(u32::MAX))?;
     push_u32(code, cmp_x_register(23, 10)?);
@@ -1119,24 +1052,6 @@ fn emit_encode_enum_op(
     option_depth: usize,
 ) -> Result<(), StencilError> {
     match selector {
-        EncodeEnumSelector::Facet { shape } => {
-            if input_offset == 0 {
-                push_u32(code, mov_x_register(0, value_base_reg)?);
-            } else {
-                push_u32(
-                    code,
-                    add_x_immediate(0, value_base_reg, input_offset, "$input")?,
-                );
-            }
-            emit_mov_x_immediate(code, 1, shape as *const Shape as usize as u64)?;
-            emit_mov_x_immediate(
-                code,
-                16,
-                stencil_enum_variant_index as *const () as usize as u64,
-            )?;
-            push_u32(code, AARCH64_BLR_X16);
-            push_u32(code, mov_x_register(24, 0)?);
-        }
         EncodeEnumSelector::DirectTag { offset } => {
             let tag_offset =
                 input_offset
@@ -1199,7 +1114,6 @@ fn emit_encode_enum_op(
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 struct EncodeOptionEmit<'a> {
-    shape: Option<&'static Shape>,
     input_offset: usize,
     layout: EncodeOptionLayout,
     some_ops: &'a [EncodeStencilOp],
@@ -1213,81 +1127,23 @@ fn emit_encode_option_op(
     option: EncodeOptionEmit<'_>,
     error_branches: &mut Vec<EncodeBranchFixup>,
 ) -> Result<(), StencilError> {
-    if option.layout == EncodeOptionLayout::NicheString {
-        return emit_encode_niche_string_option_op(code, option, error_branches);
-    }
-    if let EncodeOptionLayout::DirectTag {
-        tag_offset,
-        none_value,
-        some_offset,
-    } = option.layout
-    {
-        return emit_encode_direct_tag_option_op(
+    match option.layout {
+        EncodeOptionLayout::NicheString => {
+            emit_encode_niche_string_option_op(code, option, error_branches)
+        }
+        EncodeOptionLayout::DirectTag {
+            tag_offset,
+            none_value,
+            some_offset,
+        } => emit_encode_direct_tag_option_op(
             code,
             option,
             tag_offset,
             none_value,
             some_offset,
             error_branches,
-        );
+        ),
     }
-
-    let some_base_reg = option_value_base_register(option.option_depth)?;
-    if option.input_offset == 0 {
-        push_u32(code, mov_x_register(0, option.value_base_reg)?);
-    } else {
-        push_u32(
-            code,
-            add_x_immediate(0, option.value_base_reg, option.input_offset, "$input")?,
-        );
-    }
-    let shape = option.shape.ok_or_else(|| StencilError::Unsupported {
-        path: "$option".to_owned(),
-        reason: "Facet option stencil is missing its shape",
-    })?;
-    emit_mov_x_immediate(code, 1, shape as *const Shape as usize as u64)?;
-    emit_mov_x_immediate(code, 16, stencil_option_parts as *const () as usize as u64)?;
-    push_u32(code, AARCH64_BLR_X16);
-    push_u32(code, mov_x_register(24, 1)?);
-
-    push_u32(code, cmp_x_immediate(0, STENCIL_OPTION_NONE, "$option")?);
-    let none_branch = code.len();
-    push_u32(code, 0);
-    push_u32(code, cmp_x_immediate(0, STENCIL_OPTION_SOME, "$option")?);
-    let some_branch = code.len();
-    push_u32(code, 0);
-    emit_encode_failure_branch(code, error_branches)?;
-
-    let none_offset = code.len();
-    emit_encode_tag_byte(code, STENCIL_OPTION_NONE, error_branches)?;
-    let none_done_branch = code.len();
-    push_u32(code, 0);
-
-    let some_offset = code.len();
-    emit_encode_tag_byte(code, STENCIL_OPTION_SOME, error_branches)?;
-    push_u32(code, mov_x_register(some_base_reg, 24)?);
-    for op in option.some_ops {
-        emit_encode_op(
-            code,
-            op,
-            error_branches,
-            some_base_reg,
-            option.option_depth + 1,
-        )?;
-    }
-    let some_done_branch = code.len();
-    push_u32(code, 0);
-
-    let done = code.len();
-    let none_word = patch_cond_branch_imm19(AARCH64_B_EQ, none_branch, none_offset)?;
-    code[none_branch..none_branch + 4].copy_from_slice(&none_word.to_le_bytes());
-    let some_word = patch_cond_branch_imm19(AARCH64_B_EQ, some_branch, some_offset)?;
-    code[some_branch..some_branch + 4].copy_from_slice(&some_word.to_le_bytes());
-    let none_done_word = patch_uncond_branch_imm26(AARCH64_B, none_done_branch, done)?;
-    code[none_done_branch..none_done_branch + 4].copy_from_slice(&none_done_word.to_le_bytes());
-    let some_done_word = patch_uncond_branch_imm26(AARCH64_B, some_done_branch, done)?;
-    code[some_done_branch..some_done_branch + 4].copy_from_slice(&some_done_word.to_le_bytes());
-    Ok(())
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
@@ -1425,105 +1281,29 @@ fn emit_encode_niche_string_option_op(
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn emit_encode_list_op(
     code: &mut Vec<u8>,
-    shape: Option<&'static Shape>,
     input_offset: usize,
     layout: EncodeListLayout,
     element_ops: &[EncodeStencilOp],
     error_branches: &mut Vec<EncodeBranchFixup>,
     value_base_reg: u8,
 ) -> Result<(), StencilError> {
-    if let EncodeListLayout::Vec {
+    let EncodeListLayout::Vec {
         ptr_offset,
         len_offset,
         element_stride,
-    } = layout
-    {
-        return emit_encode_vec_list_op(
-            code,
-            EncodeVecListEmit {
-                input_offset,
-                ptr_offset,
-                len_offset,
-                element_stride,
-                element_ops,
-                value_base_reg,
-            },
-            error_branches,
-        );
-    }
-
-    let shape = shape.ok_or_else(|| StencilError::Unsupported {
-        path: "$list".to_owned(),
-        reason: "Facet list stencil is missing its shape",
-    })?;
-
-    if input_offset == 0 {
-        push_u32(code, mov_x_register(0, value_base_reg)?);
-    } else {
-        push_u32(
-            code,
-            add_x_immediate(0, value_base_reg, input_offset, "$list")?,
-        );
-    }
-    push_u32(code, mov_x_register(26, 0)?);
-    emit_mov_x_immediate(code, 1, shape as *const Shape as usize as u64)?;
-    emit_mov_x_immediate(code, 16, stencil_list_len as *const () as usize as u64)?;
-    push_u32(code, AARCH64_BLR_X16);
-    push_u32(code, mov_x_register(27, 0)?);
-
-    emit_mov_x_immediate(code, 10, u32::MAX as u64)?;
-    push_u32(code, cmp_x_register(27, 10)?);
-    let len_failed_branch = code.len();
-    push_u32(code, 0);
-    error_branches.push(EncodeBranchFixup {
-        offset: len_failed_branch,
-        kind: EncodeBranchKind::CondHi,
-    });
-
-    emit_encode_u32_register(code, 27, error_branches)?;
-    emit_mov_x_immediate(code, 28, 0)?;
-
-    let loop_check = code.len();
-    push_u32(code, cmp_x_register(28, 27)?);
-    let done_branch = code.len();
-    push_u32(code, 0);
-
-    push_u32(code, mov_x_register(0, 26)?);
-    emit_mov_x_immediate(code, 1, shape as *const Shape as usize as u64)?;
-    push_u32(code, mov_x_register(2, 28)?);
-    emit_mov_x_immediate(code, 16, stencil_list_element as *const () as usize as u64)?;
-    push_u32(code, AARCH64_BLR_X16);
-
-    let element_succeeded_branch = code.len();
-    push_u32(code, 0);
-    emit_encode_failure_branch(code, error_branches)?;
-    let element_success = code.len();
-    let element_branch_word = patch_compare_zero_branch_imm19(
-        AARCH64_CBNZ_X0,
-        element_succeeded_branch,
-        element_success,
-    )?;
-    code[element_succeeded_branch..element_succeeded_branch + 4]
-        .copy_from_slice(&element_branch_word.to_le_bytes());
-
-    push_u32(code, mov_x_register(25, 0)?);
-    emit_push_list_state(code);
-    for op in element_ops {
-        emit_encode_op(code, op, error_branches, 25, 1)?;
-    }
-    emit_pop_list_state(code);
-
-    push_u32(code, add_x_immediate(28, 28, 1, "$list")?);
-    let continue_branch = code.len();
-    push_u32(code, 0);
-
-    let done = code.len();
-    let done_word = patch_cond_branch_imm19(AARCH64_B_EQ, done_branch, done)?;
-    code[done_branch..done_branch + 4].copy_from_slice(&done_word.to_le_bytes());
-    let continue_word = patch_uncond_branch_imm26(AARCH64_B, continue_branch, loop_check)?;
-    code[continue_branch..continue_branch + 4].copy_from_slice(&continue_word.to_le_bytes());
-    restore_list_parent_base(code, value_base_reg, input_offset, "$list")?;
-    Ok(())
+    } = layout;
+    emit_encode_vec_list_op(
+        code,
+        EncodeVecListEmit {
+            input_offset,
+            ptr_offset,
+            len_offset,
+            element_stride,
+            element_ops,
+            value_base_reg,
+        },
+        error_branches,
+    )
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]

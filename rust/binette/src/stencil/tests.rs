@@ -2330,34 +2330,9 @@ fn mixed_encode_stencil_compiles_nested_strings_without_helpers() {
     };
     let plan = writer_plan_for::<Mixed>().unwrap();
 
-    let mut compiler = StencilEncodeCompiler {
-        ops: Vec::new(),
-        helpers: Vec::new(),
-        failures: Vec::new(),
-    };
-    compiler.compile_root::<Mixed>(plan.root_node()).unwrap();
-
-    let direct_segments = compiler
-        .ops
-        .iter()
-        .filter(|op| matches!(op, EncodeStencilOp::Direct { .. }))
-        .count();
-    let bytes_segments = compiler
-        .ops
-        .iter()
-        .filter(|op| matches!(op, EncodeStencilOp::Bytes { .. }))
-        .count();
-    let helper_segments = compiler
-        .ops
-        .iter()
-        .filter(|op| matches!(op, EncodeStencilOp::Helper { .. }))
-        .count();
-
-    assert!(direct_segments >= 3);
-    assert_eq!(bytes_segments, 2);
-    assert_eq!(helper_segments, 0);
-
     let encoder = stencil_encoder_from_plan::<Mixed>(&plan).unwrap();
+    assert_eq!(encoder.report().helper_count, 0);
+    assert!(encoder.report().native_ops >= 5);
     assert_eq!(
         encoder.encode_to_vec(&value).unwrap(),
         encode_to_vec_with_plan(&value, &plan).unwrap()
@@ -2382,31 +2357,9 @@ fn enum_encode_stencil_compiles_payloads_without_helpers() {
     };
     let plan = writer_plan_for::<MixedEvent>().unwrap();
 
-    let mut compiler = StencilEncodeCompiler {
-        ops: Vec::new(),
-        helpers: Vec::new(),
-        failures: Vec::new(),
-    };
-    compiler
-        .compile_root::<MixedEvent>(plan.root_node())
-        .unwrap();
-
-    let enum_segments = compiler
-        .ops
-        .iter()
-        .filter(|op| matches!(op, EncodeStencilOp::Enum { .. }))
-        .count();
-    let helper_segments = compiler
-        .ops
-        .iter()
-        .filter(|op| matches!(op, EncodeStencilOp::Helper { .. }))
-        .count();
-
-    assert_eq!(enum_segments, 1);
-    assert_eq!(helper_segments, 0);
-    assert_eq!(compiler.helpers.len(), 0);
-
     let encoder = stencil_encoder_from_plan::<MixedEvent>(&plan).unwrap();
+    assert_eq!(encoder.report().helper_count, 0);
+    assert!(encoder.report().native_ops >= 1);
     assert_eq!(
         encoder.encode_to_vec(&value).unwrap(),
         encode_to_vec_with_plan(&value, &plan).unwrap()
@@ -2436,35 +2389,21 @@ fn strict_encode_accepts_helperless_enum_stencils() {
 }
 
 #[test]
-fn option_encode_stencil_compiles_helperless_some_payload_without_helpers() {
+fn option_encode_hybrid_falls_back_for_unprobed_payload_layout() {
     type Value = Option<(u16, String)>;
 
     let value = Some((0x1122, "payload".to_owned()));
     let plan = writer_plan_for::<Value>().unwrap();
 
-    let mut compiler = StencilEncodeCompiler {
-        ops: Vec::new(),
-        helpers: Vec::new(),
-        failures: Vec::new(),
-    };
-    compiler.compile_root::<Value>(plan.root_node()).unwrap();
+    assert!(matches!(
+        strict_stencil_encoder_from_plan::<Value>(&plan),
+        Err(StencilError::Unsupported { .. })
+    ));
 
-    let option_segments = compiler
-        .ops
-        .iter()
-        .filter(|op| matches!(op, EncodeStencilOp::Option { .. }))
-        .count();
-    let helper_segments = compiler
-        .ops
-        .iter()
-        .filter(|op| matches!(op, EncodeStencilOp::Helper { .. }))
-        .count();
-
-    assert_eq!(option_segments, 1);
-    assert_eq!(helper_segments, 0);
-    assert_eq!(compiler.helpers.len(), 0);
-
-    let encoder = strict_stencil_encoder_from_plan::<Value>(&plan).unwrap();
+    let encoder = hybrid_stencil_encoder_from_plan::<Value>(&plan).unwrap();
+    assert_eq!(encoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(encoder.report().helper_count, 1);
+    assert_eq!(encoder.report().helper_paths, vec!["$"]);
     assert_eq!(
         encoder.encode_to_vec(&value).unwrap(),
         encode_to_vec_with_plan(&value, &plan).unwrap()
@@ -2478,20 +2417,8 @@ fn option_string_encode_stencil_uses_niche_layout_without_facet_option_helper() 
     let value = Some("payload".to_owned());
     let plan = writer_plan_for::<Value>().unwrap();
 
-    let mut compiler = StencilEncodeCompiler {
-        ops: Vec::new(),
-        helpers: Vec::new(),
-        failures: Vec::new(),
-    };
-    compiler.compile_root::<Value>(plan.root_node()).unwrap();
-
-    let [EncodeStencilOp::Option { layout, .. }] = compiler.ops.as_slice() else {
-        panic!("expected one option encode op, got {:#?}", compiler.ops);
-    };
-    assert_eq!(*layout, EncodeOptionLayout::NicheString);
-    assert!(compiler.helpers.is_empty());
-
     let encoder = strict_stencil_encoder_from_plan::<Value>(&plan).unwrap();
+    assert_eq!(encoder.report().helper_count, 0);
     assert_eq!(
         encoder.encode_to_vec(&value).unwrap(),
         encode_to_vec_with_plan(&value, &plan).unwrap()
@@ -2509,20 +2436,8 @@ fn list_encode_stencil_uses_vec_layout_without_facet_list_helpers() {
     let value = vec![(1, "one".to_owned()), (2, "two".to_owned())];
     let plan = writer_plan_for::<Value>().unwrap();
 
-    let mut compiler = StencilEncodeCompiler {
-        ops: Vec::new(),
-        helpers: Vec::new(),
-        failures: Vec::new(),
-    };
-    compiler.compile_root::<Value>(plan.root_node()).unwrap();
-
-    let [EncodeStencilOp::List { layout, .. }] = compiler.ops.as_slice() else {
-        panic!("expected one list encode op, got {:#?}", compiler.ops);
-    };
-    assert!(matches!(layout, EncodeListLayout::Vec { .. }));
-    assert!(compiler.helpers.is_empty());
-
     let encoder = strict_stencil_encoder_from_plan::<Value>(&plan).unwrap();
+    assert_eq!(encoder.report().helper_count, 0);
     assert_eq!(
         encoder.encode_to_vec(&value).unwrap(),
         encode_to_vec_with_plan(&value, &plan).unwrap()
@@ -2552,29 +2467,8 @@ fn list_encode_stencil_compiles_helperless_elements_without_helpers() {
     let value = vec![(1, "one".to_owned()), (2, "two".to_owned())];
     let plan = writer_plan_for::<Value>().unwrap();
 
-    let mut compiler = StencilEncodeCompiler {
-        ops: Vec::new(),
-        helpers: Vec::new(),
-        failures: Vec::new(),
-    };
-    compiler.compile_root::<Value>(plan.root_node()).unwrap();
-
-    let list_segments = compiler
-        .ops
-        .iter()
-        .filter(|op| matches!(op, EncodeStencilOp::List { .. }))
-        .count();
-    let helper_segments = compiler
-        .ops
-        .iter()
-        .filter(|op| matches!(op, EncodeStencilOp::Helper { .. }))
-        .count();
-
-    assert_eq!(list_segments, 1);
-    assert_eq!(helper_segments, 0);
-    assert_eq!(compiler.helpers.len(), 0);
-
     let encoder = strict_stencil_encoder_from_plan::<Value>(&plan).unwrap();
+    assert_eq!(encoder.report().helper_count, 0);
     assert_eq!(
         encoder.encode_to_vec(&value).unwrap(),
         encode_to_vec_with_plan(&value, &plan).unwrap()

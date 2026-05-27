@@ -4,7 +4,7 @@ use std::mem::MaybeUninit;
 use std::ptr::{NonNull, copy_nonoverlapping};
 use std::slice;
 
-use facet_core::{Def, Facet, PtrConst, Shape, StructKind, Type, UserType};
+use facet_core::{Facet, PtrConst, Shape};
 use facet_reflect::Peek;
 use thiserror::Error;
 
@@ -12,7 +12,7 @@ use crate::compact::CompactError;
 use crate::decode::DecodeError;
 use crate::encode::{
     EncodeError, WriterFieldPlan, WriterNode, WriterPlan, WriterTupleElementPlan,
-    WriterVariantPayloadPlan, WriterVariantPlan, encode_node_with_writer_node, writer_plan_for,
+    WriterVariantPayloadPlan, WriterVariantPlan, encode_peek_with_plan, writer_plan_for,
 };
 use crate::hash::primitive_for_type_id;
 use crate::local_access::{
@@ -42,14 +42,11 @@ use self::aarch64::{
 };
 use self::compile::{
     LocalDecodeStencilCompiler, LocalEncodeStencilCompiler, LocalHybridDecodeStencilCompiler,
-    StencilEncodeCompiler,
 };
 use self::memory::ExecutableMemory;
 use self::runtime::{
-    STENCIL_ENCODE_BYTES_BYTES, STENCIL_ENCODE_BYTES_STRING, STENCIL_OK, STENCIL_OPTION_NONE,
-    STENCIL_OPTION_SOME, hybrid_error_status, stencil_copy_bytes, stencil_decode_helper,
-    stencil_encode_byte_parts, stencil_encode_helper, stencil_encode_reserve,
-    stencil_enum_variant_index, stencil_list_element, stencil_list_len, stencil_option_parts,
+    STENCIL_OK, STENCIL_OPTION_NONE, STENCIL_OPTION_SOME, hybrid_error_status, stencil_copy_bytes,
+    stencil_decode_helper, stencil_encode_helper, stencil_encode_reserve,
 };
 use self::types::{
     ByteTaggedLength, CopyOp, CopyWidth, EncodeBytesKind, EncodeBytesLayout, EncodeEnumCase,
@@ -542,14 +539,15 @@ pub fn strict_stencil_encoder_from_plan<T: Facet<'static>>(
 pub fn hybrid_stencil_encoder_from_plan<T: Facet<'static>>(
     plan: &WriterPlan,
 ) -> Result<StencilEncoder<T>, StencilError> {
-    match strict_encode_stencil_encoder_from_plan(plan) {
-        Ok(encoder) => Ok(encoder),
-        Err(fixed_error) => {
-            if matches!(&fixed_error, StencilError::Unsupported { .. }) {
-                return build_hybrid_stencil_encoder_from_plan(plan);
-            }
-            Err(fixed_error)
-        }
+    let descriptor = rust_facet_descriptor_for::<T>().map_err(|_| StencilError::Unsupported {
+        path: "$".to_owned(),
+        reason: "failed to build Rust local access descriptor for stencil compilation",
+    })?;
+    let empty_thunks = LocalThunkBindings::new();
+    match hybrid_local_stencil_encoder_from_plan(plan, &descriptor, &empty_thunks) {
+        Ok(encoder) => Ok(StencilEncoder::from_local(encoder)),
+        Err(err) if !matches!(&err, StencilError::Unsupported { .. }) => Err(err),
+        Err(_) => rust_facet_root_hybrid_stencil_encoder_from_plan::<T>(plan),
     }
 }
 
@@ -624,7 +622,6 @@ pub fn strict_local_stencil_encoder_from_plan(
             func,
             runtime: Box::new(StencilEncodeRuntime {
                 helpers: compiler.helpers,
-                nodes: plan.nodes().to_vec(),
             }),
         },
         report,
@@ -671,7 +668,6 @@ pub fn hybrid_local_stencil_encoder_from_plan(
             func,
             runtime: Box::new(StencilEncodeRuntime {
                 helpers: compiler.helpers,
-                nodes: plan.nodes().to_vec(),
             }),
         },
         report,
@@ -785,63 +781,29 @@ fn fixed_encode_stencil_encoder_from_plan<T: Facet<'static>>(
 fn strict_encode_stencil_encoder_from_plan<T: Facet<'static>>(
     plan: &WriterPlan,
 ) -> Result<StencilEncoder<T>, StencilError> {
-    match fixed_encode_stencil_encoder_from_plan(plan) {
-        Ok(encoder) => return Ok(encoder),
-        Err(err) if !matches!(&err, StencilError::Unsupported { .. }) => return Err(err),
-        Err(_) => {}
-    }
-
-    let mut compiler = StencilEncodeCompiler {
-        ops: Vec::new(),
-        helpers: Vec::new(),
-        failures: Vec::new(),
-    };
-    compiler.compile_root::<T>(plan.root_node())?;
-    if !compiler.helpers.is_empty() {
-        return Err(StencilError::Unsupported {
-            path: "$".to_owned(),
-            reason: "strict encode stencil does not support helper fallbacks",
-        });
-    }
-
-    let code = generate_encode_code(&compiler.ops)?;
-    let report = encode_report(&code, &compiler.ops, &compiler.helpers, &compiler.failures);
-    let func = code.as_encode_fn();
-    Ok(StencilEncoder {
-        code,
-        entry: EncodeStencilEntry::Helper {
-            func,
-            runtime: Box::new(StencilEncodeRuntime {
-                helpers: compiler.helpers,
-                nodes: plan.nodes().to_vec(),
-            }),
-        },
-        report,
-        _marker: PhantomData,
-    })
+    fixed_encode_stencil_encoder_from_plan(plan)
 }
 
-fn build_hybrid_stencil_encoder_from_plan<T: Facet<'static>>(
+fn rust_facet_root_hybrid_stencil_encoder_from_plan<T: Facet<'static>>(
     plan: &WriterPlan,
 ) -> Result<StencilEncoder<T>, StencilError> {
-    let mut compiler = StencilEncodeCompiler {
-        ops: Vec::new(),
-        helpers: Vec::new(),
-        failures: Vec::new(),
-    };
-    compiler.compile_root::<T>(plan.root_node())?;
-
-    let code = generate_encode_code(&compiler.ops)?;
-    let report = encode_report(&code, &compiler.ops, &compiler.helpers, &compiler.failures);
+    let failures = vec![StencilFailure::Helper {
+        path: "$".to_owned(),
+    }];
+    let helpers = vec![StencilEncodeHelper::RustFacetRoot {
+        shape: T::SHAPE,
+        plan: plan.clone(),
+        failure_index: 0,
+    }];
+    let ops = vec![EncodeStencilOp::Helper { helper_index: 0 }];
+    let code = generate_encode_code(&ops)?;
+    let report = encode_report(&code, &ops, &helpers, &failures);
     let func = code.as_encode_fn();
     Ok(StencilEncoder {
         code,
         entry: EncodeStencilEntry::Helper {
             func,
-            runtime: Box::new(StencilEncodeRuntime {
-                helpers: compiler.helpers,
-                nodes: plan.nodes().to_vec(),
-            }),
+            runtime: Box::new(StencilEncodeRuntime { helpers }),
         },
         report,
         _marker: PhantomData,
@@ -911,7 +873,7 @@ fn encode_helper_paths(
     helpers
         .iter()
         .filter_map(|helper| match helper {
-            StencilEncodeHelper::Node { failure_index, .. }
+            StencilEncodeHelper::RustFacetRoot { failure_index, .. }
             | StencilEncodeHelper::LocalSequenceBytes { failure_index, .. }
             | StencilEncodeHelper::LocalSequenceFixedElements { failure_index, .. }
             | StencilEncodeHelper::LocalEnum { failure_index, .. }

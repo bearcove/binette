@@ -64,6 +64,7 @@ pub enum EncodeError {
     InvalidPlan { reason: &'static str },
 }
 
+#[derive(Debug, Clone)]
 pub struct WriterPlan {
     bundle: SchemaBundle,
     root: WriterNode,
@@ -83,11 +84,6 @@ impl WriterPlan {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn root_node(&self) -> &WriterNode {
         &self.root
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn nodes(&self) -> &[WriterNode] {
-        &self.nodes
     }
 }
 
@@ -186,16 +182,6 @@ pub fn encode_peek_with_plan(
         nodes: &plan.nodes,
     }
     .encode_node(peek, &plan.root)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn encode_node_with_writer_node(
-    out: &mut Vec<u8>,
-    peek: Peek<'_, '_>,
-    node: &WriterNode,
-    nodes: &[WriterNode],
-) -> Result<(), EncodeError> {
-    WriterPlanExecutor { out, nodes }.encode_node(peek, node)
 }
 
 #[derive(Debug, Clone)]

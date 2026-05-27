@@ -180,7 +180,6 @@ pub(super) enum EncodeStencilOp {
         output_len: usize,
     },
     Bytes {
-        shape: Option<&'static Shape>,
         input_offset: usize,
         kind: EncodeBytesKind,
         layout: EncodeBytesLayout,
@@ -191,13 +190,11 @@ pub(super) enum EncodeStencilOp {
         cases: Vec<EncodeEnumCase>,
     },
     Option {
-        shape: Option<&'static Shape>,
         input_offset: usize,
         layout: EncodeOptionLayout,
         some_ops: Vec<EncodeStencilOp>,
     },
     List {
-        shape: Option<&'static Shape>,
         input_offset: usize,
         layout: EncodeListLayout,
         element_ops: Vec<EncodeStencilOp>,
@@ -212,7 +209,6 @@ pub(super) enum EncodeBytesKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EncodeBytesLayout {
-    Facet,
     Direct {
         ptr_offset: usize,
         len_offset: usize,
@@ -221,7 +217,6 @@ pub(super) enum EncodeBytesLayout {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EncodeOptionLayout {
-    Facet,
     NicheString,
     DirectTag {
         tag_offset: usize,
@@ -232,7 +227,6 @@ pub(super) enum EncodeOptionLayout {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EncodeListLayout {
-    Facet,
     Vec {
         ptr_offset: usize,
         len_offset: usize,
@@ -242,7 +236,6 @@ pub(super) enum EncodeListLayout {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum EncodeEnumSelector {
-    Facet { shape: &'static Shape },
     DirectTag { offset: usize },
 }
 
@@ -253,21 +246,11 @@ pub(super) struct EncodeEnumCase {
     pub(super) ops: Vec<EncodeStencilOp>,
 }
 
-impl EncodeBytesKind {
-    pub(super) fn abi_tag(self) -> usize {
-        match self {
-            EncodeBytesKind::String => STENCIL_ENCODE_BYTES_STRING,
-            EncodeBytesKind::Bytes => STENCIL_ENCODE_BYTES_BYTES,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(super) enum StencilEncodeHelper {
-    Node {
-        node: WriterNode,
+    RustFacetRoot {
         shape: &'static Shape,
-        input_offset: usize,
+        plan: WriterPlan,
         failure_index: usize,
     },
     LocalSequenceBytes {
@@ -319,7 +302,6 @@ pub(super) enum LocalEnumEncodePayload {
 
 pub(super) struct StencilEncodeRuntime {
     pub(super) helpers: Vec<StencilEncodeHelper>,
-    pub(super) nodes: Vec<WriterNode>,
 }
 
 pub(super) struct FixedEncodeCompiler {
