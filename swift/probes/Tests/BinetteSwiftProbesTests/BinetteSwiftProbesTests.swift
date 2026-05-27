@@ -28,6 +28,7 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertEqual(enumDescriptor.kind.variants?[1].payload?.schemaName, "string")
 
         let string = try XCTUnwrap(exports.first { $0.schemaName == "string" })
+        XCTAssertEqual(string.kind.tag, "string")
         XCTAssertEqual(string.kind.storage?.tag, "thunk")
         XCTAssertEqual(string.kind.storage?.count, "Swift.String.utf8.count")
         XCTAssertEqual(string.kind.storage?.write, "Swift.String.init.utf8")
@@ -57,8 +58,8 @@ final class BinetteSwiftProbesTests: XCTestCase {
         let optional = try XCTUnwrap(descriptors.first { $0.schemaName == "option<string>" })
         let enumDescriptor = try XCTUnwrap(descriptors.first { $0.schemaName == "ProbeEnum" })
 
-        guard case let .sequence(_, stringStorage) = string.kind else {
-            return XCTFail("expected string sequence descriptor")
+        guard case let .scalar(.string(stringStorage)) = string.kind else {
+            return XCTFail("expected string scalar descriptor")
         }
         guard case let .sequence(_, arrayStorage) = array.kind else {
             return XCTFail("expected array sequence descriptor")
@@ -110,10 +111,9 @@ final class BinetteSwiftProbesTests: XCTestCase {
     func testStringThunkNamesCoverEncodeProjectionAndDecodeConstruction() throws {
         let descriptor = try XCTUnwrap(makeProbeDescriptors().first { $0.schemaName == "string" })
 
-        guard case let .sequence(element, storage) = descriptor.kind else {
-            return XCTFail("expected string sequence descriptor")
+        guard case let .scalar(.string(storage)) = descriptor.kind else {
+            return XCTFail("expected string scalar descriptor")
         }
-        XCTAssertEqual(element.schemaName, "u8")
         XCTAssertEqual(
             storage,
             .thunk(

@@ -153,8 +153,14 @@ public struct BinetteStorageExport: Codable, Equatable {
     }
 }
 
+public enum BinetteScalarAccess: Equatable {
+    case plain
+    case string(storage: BinetteSequenceStorage)
+    case bytes(storage: BinetteSequenceStorage)
+}
+
 public indirect enum BinetteLocalKind: Equatable {
-    case scalar
+    case scalar(BinetteScalarAccess)
     case storedStruct(fields: [BinetteLocalField])
     case enumPayloads(tag: BinetteLocalAccess, variants: [BinetteLocalVariant])
     case optional(some: BinetteLocalDescriptor, storage: BinetteOptionalStorage)
@@ -224,7 +230,7 @@ public func makeProbeDescriptors() -> [BinetteLocalDescriptor] {
     let uint8 = scalarDescriptor("u8", UInt8.self)
     let int32 = scalarDescriptor("i32", Int32.self)
     let int64 = scalarDescriptor("i64", Int64.self)
-    let string = stringDescriptor(element: uint8)
+    let string = stringDescriptor()
     let array = arrayDescriptor(element: int64)
     let optionalString = optionalDescriptor("option<string>", String?.self, some: string)
     let leaf = leafDescriptor(count: int32, flag: bool)
@@ -287,11 +293,24 @@ private extension BinetteLocalLayout {
     }
 }
 
+private extension BinetteScalarAccess {
+    var export: BinetteKindExport {
+        switch self {
+        case .plain:
+            BinetteKindExport(tag: "scalar")
+        case let .string(storage):
+            BinetteKindExport(tag: "string", storage: storage.export)
+        case let .bytes(storage):
+            BinetteKindExport(tag: "bytes", storage: storage.export)
+        }
+    }
+}
+
 private extension BinetteLocalKind {
     var export: BinetteKindExport {
         switch self {
-        case .scalar:
-            BinetteKindExport(tag: "scalar")
+        case let .scalar(access):
+            access.export
         case let .storedStruct(fields):
             BinetteKindExport(
                 tag: "struct",
@@ -409,21 +428,22 @@ private func scalarDescriptor<T>(_ name: String, _: T.Type) -> BinetteLocalDescr
         schemaName: name,
         backend: .swiftProbe,
         layout: BinetteLocalLayout(of: T.self),
-        kind: .scalar
+        kind: .scalar(.plain)
     )
 }
 
-private func stringDescriptor(element: BinetteLocalDescriptor) -> BinetteLocalDescriptor {
+private func stringDescriptor() -> BinetteLocalDescriptor {
     BinetteLocalDescriptor(
         schemaName: "string",
         backend: .swiftProbe,
         layout: BinetteLocalLayout(of: String.self),
-        kind: .sequence(
-            element: element,
-            storage: .thunk(
-                count: "Swift.String.utf8.count",
-                element: "Swift.String.utf8.element",
-                write: "Swift.String.init.utf8"
+        kind: .scalar(
+            .string(
+                storage: .thunk(
+                    count: "Swift.String.utf8.count",
+                    element: "Swift.String.utf8.element",
+                    write: "Swift.String.init.utf8"
+                )
             )
         )
     )
@@ -519,8 +539,7 @@ private func nestedDescriptor(
 }
 
 private func enumDescriptor() -> BinetteLocalDescriptor {
-    let uint8 = scalarDescriptor("u8", UInt8.self)
-    let string = stringDescriptor(element: uint8)
+    let string = stringDescriptor()
     let leaf = leafDescriptor(
         count: scalarDescriptor("i32", Int32.self),
         flag: scalarDescriptor("bool", Bool.self)
