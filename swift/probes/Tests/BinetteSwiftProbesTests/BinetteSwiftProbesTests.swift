@@ -53,7 +53,11 @@ final class BinetteSwiftProbesTests: XCTestCase {
         )
         XCTAssertEqual(
             arrayStorage,
-            .thunk(count: "Swift.Array.count", element: "Swift.Array.element", write: nil)
+            .thunk(
+                count: "Swift.Array.count",
+                element: "Swift.Array.element",
+                write: "Swift.Array.init.elements"
+            )
         )
         XCTAssertEqual(
             optionalStorage,

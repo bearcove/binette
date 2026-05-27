@@ -7,8 +7,8 @@ use crate::local_access::{
     LocalAccess, LocalBackend, LocalDescriptorImport, LocalDescriptorImportKind,
     LocalEnumTagThunks, LocalFieldImport, LocalOptionEncodeThunks, LocalOptionRepresentation,
     LocalOptionSequenceDecodeThunks, LocalScalarAccess, LocalSequenceDecodeThunks,
-    LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceStorage,
-    LocalThunk, LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout,
+    LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks,
+    LocalSequenceStorage, LocalThunk, LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout,
     LocalVariantProjectThunks,
 };
 use crate::reader_plan_for_bundle;
@@ -344,6 +344,56 @@ fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_array_subtree() {
 // r[verify binette.local-access.descriptor]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
+fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_array_subtree() {
+    let value = SwiftNumbers {
+        id: 0x1112_1314_1516_1718,
+        values: vec![8, 5, 3, -1],
+        code: 0x3344,
+    };
+    let writer_plan = writer_plan_for::<SwiftNumbers>().unwrap();
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        writer_plan.root(),
+        &writer_registry,
+    )
+    .unwrap();
+    let descriptor = swift_numbers_descriptor(reader_plan.reader_root());
+
+    let strict_error =
+        match strict_local_stencil_decoder_from_plan(&reader_plan, &writer_registry, &descriptor) {
+            Ok(_) => panic!("strict local decode must reject thunk-backed array fields"),
+            Err(err) => err,
+        };
+    assert!(matches!(strict_error, StencilError::Unsupported { .. }));
+
+    let thunks = swift_string_thunk_bindings();
+    let decoder = hybrid_local_stencil_decoder_from_plan(
+        &reader_plan,
+        &writer_registry,
+        &descriptor,
+        &thunks,
+    )
+    .unwrap();
+    let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+
+    assert_eq!(decoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(decoder.report().helper_count, 1);
+    assert_eq!(decoder.report().helper_paths, vec!["$.values".to_owned()]);
+
+    let mut decoded = std::mem::MaybeUninit::<SwiftNumbers>::uninit();
+    unsafe { decoder.decode_raw_into(&bytes, decoded.as_mut_ptr().cast()) }.unwrap();
+    let decoded = unsafe { decoded.assume_init() };
+    assert_eq!(decoded, value);
+}
+
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
 fn hybrid_local_encode_stencil_uses_bound_backend_thunks_for_enum_subtree() {
     let values = [
         SwiftEventEnvelope {
@@ -647,7 +697,7 @@ fn swift_i64_array_import(owner: &TypeRef) -> LocalDescriptorImport {
             storage: LocalSequenceStorage::Thunk {
                 len: swift_array_len_thunk(),
                 element: swift_array_element_thunk(),
-                write: None,
+                write: Some(swift_array_write_thunk()),
             },
         },
     }
@@ -697,6 +747,13 @@ fn swift_string_thunk_bindings() -> LocalThunkBindings {
             LocalSequenceElementPtrEncodeThunks {
                 len: test_swift_array_i64_len,
                 element_ptr: test_swift_array_i64_element_ptr,
+                context: 0,
+            },
+        )
+        .with_sequence_fixed_decode(
+            swift_array_write_thunk(),
+            LocalSequenceFixedDecodeThunks {
+                write_elements: test_swift_array_i64_write,
                 context: 0,
             },
         )
@@ -759,6 +816,10 @@ fn swift_array_len_thunk() -> LocalThunk {
 
 fn swift_array_element_thunk() -> LocalThunk {
     LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Array.element")
+}
+
+fn swift_array_write_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Array.init.elements")
 }
 
 fn swift_event_tag_thunk() -> LocalThunk {
@@ -842,6 +903,21 @@ unsafe extern "C" fn test_swift_array_i64_element_ptr(
             .get(index)
             .map_or(std::ptr::null(), |value| value as *const i64 as *const u8)
     }
+}
+
+unsafe extern "C" fn test_swift_array_i64_write(
+    value: *mut u8,
+    ptr: *const u8,
+    count: usize,
+    element_stride: usize,
+    _context: *mut std::ffi::c_void,
+) -> bool {
+    if element_stride != std::mem::size_of::<i64>() {
+        return false;
+    }
+    let elements = unsafe { std::slice::from_raw_parts(ptr.cast::<i64>(), count) };
+    unsafe { value.cast::<Vec<i64>>().write(elements.to_vec()) };
+    true
 }
 
 unsafe extern "C" fn test_swift_event_tag(

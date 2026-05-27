@@ -105,6 +105,13 @@ pub type LocalSequenceElementPtrThunk =
     unsafe extern "C" fn(value: *const u8, index: usize, context: *mut c_void) -> *const u8;
 pub type LocalSequenceWriteBytesThunk =
     unsafe extern "C" fn(value: *mut u8, ptr: *const u8, len: usize, context: *mut c_void) -> bool;
+pub type LocalSequenceWriteFixedElementsThunk = unsafe extern "C" fn(
+    value: *mut u8,
+    ptr: *const u8,
+    count: usize,
+    element_stride: usize,
+    context: *mut c_void,
+) -> bool;
 pub type LocalOptionIsSomeThunk =
     unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> bool;
 pub type LocalOptionSomeThunk =
@@ -134,6 +141,12 @@ pub struct LocalSequenceElementPtrEncodeThunks {
 #[derive(Debug, Clone, Copy)]
 pub struct LocalSequenceDecodeThunks {
     pub write_bytes: LocalSequenceWriteBytesThunk,
+    pub context: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LocalSequenceFixedDecodeThunks {
+    pub write_elements: LocalSequenceWriteFixedElementsThunk,
     pub context: usize,
 }
 
@@ -184,6 +197,12 @@ pub struct LocalSequenceDecodeThunkBinding {
 }
 
 #[derive(Debug, Clone)]
+pub struct LocalSequenceFixedDecodeThunkBinding {
+    pub write: LocalThunk,
+    pub thunks: LocalSequenceFixedDecodeThunks,
+}
+
+#[derive(Debug, Clone)]
 pub struct LocalOptionThunkBinding {
     pub is_some: LocalThunk,
     pub some: LocalThunk,
@@ -214,6 +233,7 @@ pub struct LocalThunkBindings {
     sequence_u8: Vec<LocalSequenceThunkBinding>,
     sequence_element_ptr: Vec<LocalSequenceElementPtrThunkBinding>,
     sequence_decode: Vec<LocalSequenceDecodeThunkBinding>,
+    sequence_fixed_decode: Vec<LocalSequenceFixedDecodeThunkBinding>,
     option: Vec<LocalOptionThunkBinding>,
     option_sequence_decode: Vec<LocalOptionSequenceDecodeThunkBinding>,
     enum_tag: Vec<LocalEnumTagThunkBinding>,
@@ -341,6 +361,16 @@ impl LocalThunkBindings {
         self
     }
 
+    pub fn with_sequence_fixed_decode(
+        mut self,
+        write: LocalThunk,
+        thunks: LocalSequenceFixedDecodeThunks,
+    ) -> Self {
+        self.sequence_fixed_decode
+            .push(LocalSequenceFixedDecodeThunkBinding { write, thunks });
+        self
+    }
+
     pub fn with_sequence_element_ptr(
         mut self,
         len: LocalThunk,
@@ -413,6 +443,16 @@ impl LocalThunkBindings {
 
     pub fn sequence_decode(&self, write: &LocalThunk) -> Option<LocalSequenceDecodeThunks> {
         self.sequence_decode
+            .iter()
+            .find(|binding| &binding.write == write)
+            .map(|binding| binding.thunks)
+    }
+
+    pub fn sequence_fixed_decode(
+        &self,
+        write: &LocalThunk,
+    ) -> Option<LocalSequenceFixedDecodeThunks> {
+        self.sequence_fixed_decode
             .iter()
             .find(|binding| &binding.write == write)
             .map(|binding| binding.thunks)
@@ -1293,7 +1333,10 @@ mod tests {
                                         LocalBackend::SwiftProbe,
                                         "Swift.Array.element",
                                     ),
-                                    write: None,
+                                    write: Some(LocalThunk::new(
+                                        LocalBackend::SwiftProbe,
+                                        "Swift.Array.init.elements",
+                                    )),
                                 },
                             },
                         ),

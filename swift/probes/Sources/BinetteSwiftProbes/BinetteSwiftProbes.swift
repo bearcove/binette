@@ -159,7 +159,7 @@ private func arrayDescriptor(element: BinetteLocalDescriptor) -> BinetteLocalDes
             storage: .thunk(
                 count: "Swift.Array.count",
                 element: "Swift.Array.element",
-                write: nil
+                write: "Swift.Array.init.elements"
             )
         )
     )
