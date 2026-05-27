@@ -70,6 +70,12 @@ inside the current process.
 > pointers before compilation succeeds. An unbound thunk is not a valid implicit
 > fallback.
 >
+> Every descriptor node consumed by an execution engine must agree with the
+> schema or plan node it is lowering. A backend-provided helper is not allowed
+> to change the binette value kind of a subtree; for example, a descriptor for a
+> local byte buffer cannot satisfy a string plan node merely because both use
+> length-prefixed bytes on the wire.
+>
 > Decode-side fallback thunks construct or write the local representation for
 > the unsupported subtree. Encode-side fallback thunks project local bytes or
 > elements from the same subtree. Both directions are explicit backend calls.

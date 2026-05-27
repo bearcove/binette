@@ -10,7 +10,7 @@ use crate::local_access::{
     LocalOptionSequenceDecodeThunks, LocalScalarAccess, LocalSequenceDecodeThunks,
     LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks,
     LocalSequenceStorage, LocalStorageExport, LocalThunk, LocalThunkBindings, LocalTypeDescriptor,
-    LocalValueLayout, LocalVariantConstructThunks, LocalVariantProjectThunks,
+    LocalTypeKind, LocalValueLayout, LocalVariantConstructThunks, LocalVariantProjectThunks,
     rust_facet_descriptor_for,
 };
 use crate::reader_plan_for_bundle;
@@ -487,6 +487,60 @@ fn exported_swift_descriptor_drives_hybrid_local_string_stencils() {
     assert_eq!(decoded.id, value.id);
     assert_eq!(decoded.title, value.title);
     assert_eq!(decoded.code, value.code);
+}
+
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn local_stencils_reject_byte_sequence_descriptor_that_disagrees_with_plan() {
+    let writer_plan = writer_plan_for::<SwiftText>().unwrap();
+    let mut descriptor = swift_text_export_descriptor(writer_plan.root());
+    force_title_descriptor_to_bytes(&mut descriptor);
+    let thunks = swift_string_thunk_bindings();
+
+    let encode_error =
+        match hybrid_local_stencil_encoder_from_plan(&writer_plan, &descriptor, &thunks) {
+            Ok(_) => panic!("hybrid encode must reject a bytes descriptor for a string field"),
+            Err(err) => err,
+        };
+    assert!(matches!(
+        encode_error,
+        StencilError::Unsupported {
+            ref path,
+            reason: "local descriptor byte-sequence schema differs from plan primitive",
+        } if path == "$.title"
+    ));
+
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        writer_plan.root(),
+        &writer_registry,
+    )
+    .unwrap();
+    let mut reader_descriptor = swift_text_export_descriptor(reader_plan.reader_root());
+    force_title_descriptor_to_bytes(&mut reader_descriptor);
+
+    let decode_error = match hybrid_local_stencil_decoder_from_plan(
+        &reader_plan,
+        &writer_registry,
+        &reader_descriptor,
+        &thunks,
+    ) {
+        Ok(_) => panic!("hybrid decode must reject a bytes descriptor for a string field"),
+        Err(err) => err,
+    };
+    assert!(matches!(
+        decode_error,
+        StencilError::Unsupported {
+            ref path,
+            reason: "local descriptor byte-sequence schema differs from plan primitive",
+        } if path == "$.title"
+    ));
 }
 
 // r[verify binette.local-access.descriptor]
@@ -1153,6 +1207,25 @@ fn export_string() -> LocalDescriptorExport {
             reason: None,
         },
     }
+}
+
+fn force_title_descriptor_to_bytes(descriptor: &mut LocalTypeDescriptor) {
+    let LocalTypeKind::Struct { fields } = &mut descriptor.kind else {
+        panic!("expected SwiftText struct descriptor");
+    };
+    let title = fields
+        .iter_mut()
+        .find(|field| field.name == "title")
+        .expect("SwiftText descriptor has a title field");
+    title.descriptor.schema = crate::local_access::LocalSchemaRef::Type(TypeRef::concrete(
+        primitive_type_id(Primitive::Bytes),
+    ));
+    title.descriptor.kind =
+        LocalTypeKind::Scalar(LocalScalarAccess::Bytes(LocalSequenceStorage::Thunk {
+            len: swift_string_len_thunk(),
+            element: swift_string_element_thunk(),
+            write: Some(swift_string_write_thunk()),
+        }));
 }
 
 fn swift_maybe_text_descriptor(root: &TypeRef) -> LocalTypeDescriptor {

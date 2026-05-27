@@ -1234,8 +1234,8 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
                 self.compile_node(reader, node, output_offset, path)
             }
             PlanNode::Primitive {
-                primitive: Primitive::String | Primitive::Bytes | Primitive::Payload,
-            } => self.push_sequence_bytes(reader, output_offset, path),
+                primitive: primitive @ (Primitive::String | Primitive::Bytes | Primitive::Payload),
+            } => self.push_sequence_bytes(reader, *primitive, output_offset, path),
             PlanNode::Struct { fields } => self.compile_struct(reader, fields, output_offset, path),
             PlanNode::Tuple { elements } => {
                 self.compile_tuple(reader, elements, output_offset, path)
@@ -1385,10 +1385,11 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
     fn push_sequence_bytes(
         &mut self,
         reader: &LocalTypeDescriptor,
+        primitive: Primitive,
         output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
-        let thunks = local_sequence_decode_thunks(reader, self.thunks, path)?;
+        let thunks = local_sequence_decode_thunks(reader, primitive, self.thunks, path)?;
         let failure_index = self.push_helper_failure(path)?;
         let helper_index = self.helpers.len();
         self.helpers.push(StencilHelper::LocalSequenceBytes {
@@ -1494,12 +1495,16 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
         match payload {
             EnumPayloadPlan::Unit => Ok(LocalEnumDecodePayload::Unit),
             EnumPayloadPlan::Newtype(element) => {
-                if matches!(
-                    &**element,
-                    PlanNode::Primitive {
-                        primitive: Primitive::String | Primitive::Bytes | Primitive::Payload
-                    }
-                ) {
+                if let PlanNode::Primitive {
+                    primitive:
+                        primitive @ (Primitive::String | Primitive::Bytes | Primitive::Payload),
+                } = &**element
+                {
+                    let local_payload = local_payload.ok_or_else(|| StencilError::Unsupported {
+                        path: path.to_owned(),
+                        reason: "reader enum byte-sequence payload is missing local descriptor",
+                    })?;
+                    local_byte_sequence_descriptor(local_payload, *primitive, path)?;
                     return Ok(LocalEnumDecodePayload::SequenceBytes);
                 }
                 let local_payload = local_payload.ok_or_else(|| StencilError::Unsupported {
@@ -1550,18 +1555,17 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
         output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
-        if !matches!(
-            element,
-            PlanNode::Primitive {
-                primitive: Primitive::String | Primitive::Bytes | Primitive::Payload
-            }
-        ) {
+        let PlanNode::Primitive {
+            primitive: primitive @ (Primitive::String | Primitive::Bytes | Primitive::Payload),
+        } = element
+        else {
             return Err(StencilError::Unsupported {
                 path: path.to_owned(),
                 reason: "local option thunk decode currently supports byte-sequence payloads",
             });
-        }
-        let thunks = local_option_sequence_bytes_decode_thunks(reader, self.thunks, path)?;
+        };
+        let thunks =
+            local_option_sequence_bytes_decode_thunks(reader, *primitive, self.thunks, path)?;
         let failure_index = self.push_helper_failure(path)?;
         let helper_index = self.helpers.len();
         self.helpers.push(StencilHelper::LocalOptionSequenceBytes {
@@ -2677,9 +2681,11 @@ impl LocalEncodeStencilCompiler<'_> {
         }
 
         match node {
-            WriterNode::Primitive(Primitive::String | Primitive::Bytes | Primitive::Payload) => {
+            WriterNode::Primitive(
+                primitive @ (Primitive::String | Primitive::Bytes | Primitive::Payload),
+            ) => {
                 self.flush_direct_segment(pending);
-                self.push_sequence_bytes(descriptor, input_offset, path)
+                self.push_sequence_bytes(descriptor, *primitive, input_offset, path)
             }
             WriterNode::Struct { fields } => {
                 self.compile_struct(descriptor, fields, input_offset, path, pending)
@@ -2845,10 +2851,12 @@ impl LocalEncodeStencilCompiler<'_> {
     fn push_sequence_bytes(
         &mut self,
         descriptor: &LocalTypeDescriptor,
+        primitive: Primitive,
         input_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
-        if let Some((kind, ptr_offset, len_offset)) = local_direct_byte_sequence(descriptor, path)?
+        if let Some((kind, ptr_offset, len_offset)) =
+            local_direct_byte_sequence(descriptor, primitive, path)?
         {
             self.ops.push(EncodeStencilOp::Bytes {
                 shape: None,
@@ -2862,7 +2870,7 @@ impl LocalEncodeStencilCompiler<'_> {
             return Ok(());
         }
 
-        let thunks = local_sequence_bytes_thunks(descriptor, self.thunks, path)?;
+        let thunks = local_sequence_bytes_thunks(descriptor, primitive, self.thunks, path)?;
         let failure_index = self.push_helper_failure(path)?;
         let helper_index = self.helpers.len();
         self.helpers.push(StencilEncodeHelper::LocalSequenceBytes {
@@ -3212,14 +3220,16 @@ impl LocalEncodeStencilCompiler<'_> {
                         })?;
                 let project_thunks =
                     local_variant_project_thunks(&local_variant.access, self.thunks, path)?;
-                if matches!(
-                    element.node,
-                    WriterNode::Primitive(
-                        Primitive::String | Primitive::Bytes | Primitive::Payload
-                    )
-                ) {
-                    let thunks =
-                        local_sequence_bytes_thunks(payload_descriptor, self.thunks, path)?;
+                if let WriterNode::Primitive(
+                    primitive @ (Primitive::String | Primitive::Bytes | Primitive::Payload),
+                ) = element.node
+                {
+                    let thunks = local_sequence_bytes_thunks(
+                        payload_descriptor,
+                        primitive,
+                        self.thunks,
+                        path,
+                    )?;
                     return Ok(LocalEnumEncodePayload::SequenceBytes {
                         project_thunks,
                         thunks,
@@ -3249,17 +3259,17 @@ impl LocalEncodeStencilCompiler<'_> {
         input_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
-        if !matches!(
-            element,
-            WriterNode::Primitive(Primitive::String | Primitive::Bytes | Primitive::Payload)
-        ) {
+        let WriterNode::Primitive(
+            primitive @ (Primitive::String | Primitive::Bytes | Primitive::Payload),
+        ) = element
+        else {
             return Err(StencilError::Unsupported {
                 path: path.to_owned(),
                 reason: "local option thunk encode currently supports byte-sequence payloads",
             });
-        }
+        };
         let (option_thunks, sequence_thunks) =
-            local_option_sequence_bytes_encode_thunks(descriptor, self.thunks, path)?;
+            local_option_sequence_bytes_encode_thunks(descriptor, *primitive, self.thunks, path)?;
         let failure_index = self.push_helper_failure(path)?;
         let helper_index = self.helpers.len();
         self.helpers
@@ -3800,11 +3810,25 @@ fn validate_descriptor_primitive(
     };
 
     let expected = TypeRef::concrete(primitive_type_id(primitive));
+    validate_descriptor_schema_type(
+        descriptor,
+        &expected,
+        path,
+        "local descriptor primitive schema differs from writer primitive",
+    )
+}
+
+fn validate_descriptor_schema_type(
+    descriptor: &LocalTypeDescriptor,
+    expected: &TypeRef,
+    path: &str,
+    reason: &'static str,
+) -> Result<(), StencilError> {
     match &descriptor.schema {
-        LocalSchemaRef::Type(type_ref) if type_ref == &expected => Ok(()),
+        LocalSchemaRef::Type(type_ref) if type_ref == expected => Ok(()),
         _ => Err(StencilError::Unsupported {
             path: path.to_owned(),
-            reason: "local descriptor primitive schema differs from writer primitive",
+            reason,
         }),
     }
 }
@@ -3937,20 +3961,16 @@ fn local_inline_fixed_array<'a>(
 
 fn local_sequence_bytes_thunks(
     descriptor: &LocalTypeDescriptor,
+    primitive: Primitive,
     bindings: &LocalThunkBindings,
     path: &str,
 ) -> Result<LocalSequenceEncodeThunks, StencilError> {
-    let storage = match &descriptor.kind {
-        LocalTypeKind::Scalar(
-            LocalScalarAccess::String(storage) | LocalScalarAccess::Bytes(storage),
-        ) => storage,
-        _ => {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "local descriptor is not a thunk-backed byte sequence",
-            });
-        }
-    };
+    let storage = local_byte_sequence_storage(
+        descriptor,
+        primitive,
+        path,
+        "local descriptor is not a thunk-backed byte sequence",
+    )?;
     let LocalSequenceStorage::Thunk { len, element, .. } = storage else {
         return Err(StencilError::Unsupported {
             path: path.to_owned(),
@@ -3967,22 +3987,16 @@ fn local_sequence_bytes_thunks(
 
 fn local_direct_byte_sequence(
     descriptor: &LocalTypeDescriptor,
+    primitive: Primitive,
     path: &str,
 ) -> Result<Option<(EncodeBytesKind, usize, usize)>, StencilError> {
-    let (kind, storage) = match &descriptor.kind {
-        LocalTypeKind::Scalar(LocalScalarAccess::String(storage)) => {
-            (EncodeBytesKind::String, storage)
-        }
-        LocalTypeKind::Scalar(LocalScalarAccess::Bytes(storage)) => {
-            (EncodeBytesKind::Bytes, storage)
-        }
-        _ => {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "local descriptor is not a byte sequence",
-            });
-        }
-    };
+    let kind = encode_bytes_kind_for_primitive(primitive, path)?;
+    let storage = local_byte_sequence_storage(
+        descriptor,
+        primitive,
+        path,
+        "local descriptor is not a byte sequence",
+    )?;
     let LocalSequenceStorage::DirectContiguous {
         pointer: LocalAccess::Direct { offset: ptr_offset },
         length: LocalAccess::Direct { offset: len_offset },
@@ -4027,20 +4041,16 @@ fn local_sequence_element_ptr_thunks<'a>(
 
 fn local_sequence_decode_thunks(
     descriptor: &LocalTypeDescriptor,
+    primitive: Primitive,
     bindings: &LocalThunkBindings,
     path: &str,
 ) -> Result<LocalSequenceDecodeThunks, StencilError> {
-    let storage = match &descriptor.kind {
-        LocalTypeKind::Scalar(
-            LocalScalarAccess::String(storage) | LocalScalarAccess::Bytes(storage),
-        ) => storage,
-        _ => {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "local descriptor is not a thunk-constructible byte sequence",
-            });
-        }
-    };
+    let storage = local_byte_sequence_storage(
+        descriptor,
+        primitive,
+        path,
+        "local descriptor is not a thunk-constructible byte sequence",
+    )?;
     let LocalSequenceStorage::Thunk {
         write: Some(write), ..
     } = storage
@@ -4097,6 +4107,7 @@ fn local_sequence_fixed_decode_thunks<'a>(
 
 fn local_option_sequence_bytes_encode_thunks(
     descriptor: &LocalTypeDescriptor,
+    primitive: Primitive,
     bindings: &LocalThunkBindings,
     path: &str,
 ) -> Result<(LocalOptionEncodeThunks, LocalSequenceEncodeThunks), StencilError> {
@@ -4118,17 +4129,18 @@ fn local_option_sequence_bytes_encode_thunks(
             path: path.to_owned(),
             reason: "local option backend thunks are not bound",
         })?;
-    let sequence = local_sequence_bytes_thunks(some, bindings, &format!("{path}.some"))?;
+    let sequence = local_sequence_bytes_thunks(some, primitive, bindings, &format!("{path}.some"))?;
     Ok((option, sequence))
 }
 
 fn local_option_sequence_bytes_decode_thunks(
     descriptor: &LocalTypeDescriptor,
+    primitive: Primitive,
     bindings: &LocalThunkBindings,
     path: &str,
 ) -> Result<LocalOptionSequenceDecodeThunks, StencilError> {
     let (some, representation) = local_option_descriptor(descriptor, path)?;
-    local_byte_sequence_descriptor(some, &format!("{path}.some"))?;
+    local_byte_sequence_descriptor(some, primitive, &format!("{path}.some"))?;
     let LocalOptionRepresentation::Thunk {
         write_none: Some(write_none),
         write_some_bytes: Some(write_some_bytes),
@@ -4150,19 +4162,15 @@ fn local_option_sequence_bytes_decode_thunks(
 
 fn local_byte_sequence_descriptor(
     descriptor: &LocalTypeDescriptor,
+    primitive: Primitive,
     path: &str,
 ) -> Result<(), StencilError> {
-    let storage = match &descriptor.kind {
-        LocalTypeKind::Scalar(
-            LocalScalarAccess::String(storage) | LocalScalarAccess::Bytes(storage),
-        ) => storage,
-        _ => {
-            return Err(StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "local option byte-sequence payload is not a byte sequence",
-            });
-        }
-    };
+    let storage = local_byte_sequence_storage(
+        descriptor,
+        primitive,
+        path,
+        "local option byte-sequence payload is not a byte sequence",
+    )?;
     if matches!(storage, LocalSequenceStorage::Thunk { .. }) {
         Ok(())
     } else {
@@ -4170,6 +4178,55 @@ fn local_byte_sequence_descriptor(
             path: path.to_owned(),
             reason: "local option byte-sequence payload is not thunk-backed",
         })
+    }
+}
+
+fn local_byte_sequence_storage<'a>(
+    descriptor: &'a LocalTypeDescriptor,
+    primitive: Primitive,
+    path: &str,
+    kind_mismatch_reason: &'static str,
+) -> Result<&'a LocalSequenceStorage, StencilError> {
+    validate_descriptor_schema_type(
+        descriptor,
+        &TypeRef::concrete(primitive_type_id(primitive)),
+        path,
+        "local descriptor byte-sequence schema differs from plan primitive",
+    )?;
+
+    match (primitive, &descriptor.kind) {
+        (Primitive::String, LocalTypeKind::Scalar(LocalScalarAccess::String(storage))) => {
+            Ok(storage)
+        }
+        (
+            Primitive::Bytes | Primitive::Payload,
+            LocalTypeKind::Scalar(LocalScalarAccess::Bytes(storage)),
+        ) => Ok(storage),
+        (
+            Primitive::String | Primitive::Bytes | Primitive::Payload,
+            LocalTypeKind::Scalar(LocalScalarAccess::String(_) | LocalScalarAccess::Bytes(_)),
+        ) => Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor byte-sequence kind differs from plan primitive",
+        }),
+        _ => Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: kind_mismatch_reason,
+        }),
+    }
+}
+
+fn encode_bytes_kind_for_primitive(
+    primitive: Primitive,
+    path: &str,
+) -> Result<EncodeBytesKind, StencilError> {
+    match primitive {
+        Primitive::String => Ok(EncodeBytesKind::String),
+        Primitive::Bytes | Primitive::Payload => Ok(EncodeBytesKind::Bytes),
+        _ => Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "plan primitive is not a byte sequence",
+        }),
     }
 }
 
