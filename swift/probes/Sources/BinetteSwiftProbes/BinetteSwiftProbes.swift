@@ -24,7 +24,7 @@ public struct BinetteLocalDescriptor: Equatable {
 public indirect enum BinetteLocalKind: Equatable {
     case scalar
     case storedStruct(fields: [BinetteLocalField])
-    case enumPayloads(thunk: String)
+    case enumPayloads(tag: BinetteLocalAccess, variants: [BinetteLocalVariant])
     case optional(some: BinetteLocalDescriptor, storage: BinetteOptionalStorage)
     case sequence(element: BinetteLocalDescriptor, storage: BinetteSequenceStorage)
     case opaque(reason: String)
@@ -34,6 +34,13 @@ public struct BinetteLocalField: Equatable {
     public var name: String
     public var access: BinetteLocalAccess
     public var descriptor: BinetteLocalDescriptor
+}
+
+public struct BinetteLocalVariant: Equatable {
+    public var name: String
+    public var index: UInt32
+    public var access: BinetteLocalAccess
+    public var payload: BinetteLocalDescriptor?
 }
 
 public enum BinetteLocalAccess: Equatable {
@@ -118,7 +125,7 @@ public func validateProbeDescriptors(_ descriptors: [BinetteLocalDescriptor]) ->
 }
 
 private func scalarDescriptor<T>(_ name: String, _: T.Type) -> BinetteLocalDescriptor {
-    BinetteLocalDescriptor(
+    return BinetteLocalDescriptor(
         schemaName: name,
         backend: .swiftProbe,
         layout: BinetteLocalLayout(of: T.self),
@@ -219,10 +226,39 @@ private func nestedDescriptor(
 }
 
 private func enumDescriptor() -> BinetteLocalDescriptor {
-    BinetteLocalDescriptor(
+    let uint8 = scalarDescriptor("u8", UInt8.self)
+    let string = stringDescriptor(element: uint8)
+    let leaf = leafDescriptor(
+        count: scalarDescriptor("i32", Int32.self),
+        flag: scalarDescriptor("bool", Bool.self)
+    )
+
+    return BinetteLocalDescriptor(
         schemaName: "ProbeEnum",
         backend: .swiftProbe,
         layout: BinetteLocalLayout(of: ProbeEnum.self),
-        kind: .enumPayloads(thunk: "ProbeEnum.project")
+        kind: .enumPayloads(
+            tag: .thunk("ProbeEnum.discriminant"),
+            variants: [
+                BinetteLocalVariant(
+                    name: "empty",
+                    index: 0,
+                    access: .thunk("ProbeEnum.project.empty"),
+                    payload: nil
+                ),
+                BinetteLocalVariant(
+                    name: "titled",
+                    index: 1,
+                    access: .thunk("ProbeEnum.project.titled"),
+                    payload: string
+                ),
+                BinetteLocalVariant(
+                    name: "nested",
+                    index: 2,
+                    access: .thunk("ProbeEnum.project.nested"),
+                    payload: leaf
+                ),
+            ]
+        )
     )
 }

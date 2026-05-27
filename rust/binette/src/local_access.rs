@@ -2,6 +2,12 @@ use std::mem::{align_of, size_of};
 
 use crate::schema::TypeRef;
 
+mod import;
+pub use import::{
+    LocalDescriptorImport, LocalDescriptorImportError, LocalDescriptorImportKind, LocalFieldImport,
+    LocalVariantImport,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalBackend {
     RustFacet,
@@ -905,6 +911,217 @@ mod tests {
             panic!("expected Swift thunk-backed sequence");
         };
         assert_eq!(len, thunk);
+    }
+
+    // r[verify binette.local-access.swift-probes]
+    // r[verify binette.local-access.descriptor]
+    #[test]
+    fn swift_probe_import_lowers_to_runtime_descriptor_tree() {
+        let u8_schema = TypeRef::concrete(primitive_type_id(Primitive::U8));
+        let i32_schema = TypeRef::concrete(primitive_type_id(Primitive::I32));
+        let bool_schema = TypeRef::concrete(primitive_type_id(Primitive::Bool));
+        let string_schema = TypeRef::concrete(primitive_type_id(Primitive::String));
+        let leaf_schema = TypeRef::concrete(TypeId(0x5E_AE_00_01));
+        let nested_schema = TypeRef::concrete(TypeId(0x5E_AE_00_02));
+        let enum_schema = TypeRef::concrete(TypeId(0x5E_AE_00_03));
+
+        let u8_descriptor = LocalDescriptorImport::swift_probe(
+            u8_schema,
+            LocalValueLayout::new(1, 1, 1),
+            LocalDescriptorImportKind::Scalar(LocalScalarAccess::Plain),
+        );
+        let i32_descriptor = LocalDescriptorImport::swift_probe(
+            i32_schema,
+            LocalValueLayout::new(4, 4, 4),
+            LocalDescriptorImportKind::Scalar(LocalScalarAccess::Plain),
+        );
+        let bool_descriptor = LocalDescriptorImport::swift_probe(
+            bool_schema,
+            LocalValueLayout::new(1, 1, 1),
+            LocalDescriptorImportKind::Scalar(LocalScalarAccess::Plain),
+        );
+        let string_descriptor = LocalDescriptorImport::swift_probe(
+            string_schema,
+            LocalValueLayout::new(16, 8, 16),
+            LocalDescriptorImportKind::Scalar(LocalScalarAccess::String(
+                LocalSequenceStorage::Thunk {
+                    len: LocalThunk::new(LocalBackend::SwiftProbe, "Swift.String.utf8.count"),
+                    element: LocalThunk::new(LocalBackend::SwiftProbe, "Swift.String.utf8.element"),
+                },
+            )),
+        );
+        let leaf_descriptor = LocalDescriptorImport::swift_probe(
+            leaf_schema.clone(),
+            LocalValueLayout::new(8, 4, 8),
+            LocalDescriptorImportKind::Struct {
+                fields: vec![
+                    LocalFieldImport {
+                        name: "count".to_owned(),
+                        access: LocalAccess::Direct { offset: 0 },
+                        descriptor: i32_descriptor.clone(),
+                    },
+                    LocalFieldImport {
+                        name: "flag".to_owned(),
+                        access: LocalAccess::Direct { offset: 4 },
+                        descriptor: bool_descriptor,
+                    },
+                ],
+            },
+        );
+        let nested_descriptor = LocalDescriptorImport::swift_probe(
+            nested_schema,
+            LocalValueLayout::new(40, 8, 40),
+            LocalDescriptorImportKind::Struct {
+                fields: vec![
+                    LocalFieldImport {
+                        name: "title".to_owned(),
+                        access: LocalAccess::Direct { offset: 0 },
+                        descriptor: string_descriptor.clone(),
+                    },
+                    LocalFieldImport {
+                        name: "leaf".to_owned(),
+                        access: LocalAccess::Direct { offset: 16 },
+                        descriptor: leaf_descriptor.clone(),
+                    },
+                    LocalFieldImport {
+                        name: "values".to_owned(),
+                        access: LocalAccess::Direct { offset: 24 },
+                        descriptor: LocalDescriptorImport::swift_probe(
+                            TypeRef::concrete(TypeId(0x5E_AE_00_04)),
+                            LocalValueLayout::new(8, 8, 8),
+                            LocalDescriptorImportKind::Sequence {
+                                element: Box::new(u8_descriptor),
+                                storage: LocalSequenceStorage::Thunk {
+                                    len: LocalThunk::new(
+                                        LocalBackend::SwiftProbe,
+                                        "Swift.Array.count",
+                                    ),
+                                    element: LocalThunk::new(
+                                        LocalBackend::SwiftProbe,
+                                        "Swift.Array.element",
+                                    ),
+                                },
+                            },
+                        ),
+                    },
+                ],
+            },
+        );
+        let enum_descriptor = LocalDescriptorImport::swift_probe(
+            enum_schema,
+            LocalValueLayout::new(24, 8, 24),
+            LocalDescriptorImportKind::Enum {
+                tag: LocalAccess::Thunk(LocalThunk::new(
+                    LocalBackend::SwiftProbe,
+                    "ProbeEnum.discriminant",
+                )),
+                variants: vec![
+                    LocalVariantImport {
+                        name: "empty".to_owned(),
+                        index: 0,
+                        access: LocalAccess::Thunk(LocalThunk::new(
+                            LocalBackend::SwiftProbe,
+                            "ProbeEnum.project.empty",
+                        )),
+                        payload: None,
+                    },
+                    LocalVariantImport {
+                        name: "titled".to_owned(),
+                        index: 1,
+                        access: LocalAccess::Thunk(LocalThunk::new(
+                            LocalBackend::SwiftProbe,
+                            "ProbeEnum.project.titled",
+                        )),
+                        payload: Some(string_descriptor),
+                    },
+                    LocalVariantImport {
+                        name: "nested".to_owned(),
+                        index: 2,
+                        access: LocalAccess::Thunk(LocalThunk::new(
+                            LocalBackend::SwiftProbe,
+                            "ProbeEnum.project.nested",
+                        )),
+                        payload: Some(leaf_descriptor),
+                    },
+                ],
+            },
+        );
+
+        let nested = LocalTypeDescriptor::from_import(nested_descriptor).unwrap();
+        let enum_descriptor = LocalTypeDescriptor::from_import(enum_descriptor).unwrap();
+
+        assert_eq!(nested.backend, LocalBackend::SwiftProbe);
+        let LocalTypeKind::Struct { fields } = nested.kind else {
+            panic!("expected imported Swift struct descriptor");
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["title", "leaf", "values"]
+        );
+        assert!(matches!(
+            fields[0].descriptor.kind,
+            LocalTypeKind::Scalar(LocalScalarAccess::String(
+                LocalSequenceStorage::Thunk { .. }
+            ))
+        ));
+        assert!(matches!(
+            fields[2].descriptor.kind,
+            LocalTypeKind::Sequence {
+                storage: LocalSequenceStorage::Thunk { .. },
+                ..
+            }
+        ));
+
+        let LocalTypeKind::Enum { tag, variants } = enum_descriptor.kind else {
+            panic!("expected imported Swift enum descriptor");
+        };
+        assert!(matches!(tag, LocalAccess::Thunk(_)));
+        assert_eq!(
+            variants
+                .iter()
+                .map(|variant| variant.name.as_str())
+                .collect::<Vec<_>>(),
+            ["empty", "titled", "nested"]
+        );
+        assert!(variants[0].payload.is_none());
+        assert!(matches!(
+            variants[1].payload.as_deref().map(|payload| &payload.kind),
+            Some(LocalTypeKind::Scalar(LocalScalarAccess::String(
+                LocalSequenceStorage::Thunk { .. }
+            )))
+        ));
+        assert!(matches!(
+            variants[2].payload.as_deref().map(|payload| &payload.kind),
+            Some(LocalTypeKind::Struct { .. })
+        ));
+    }
+
+    // r[verify binette.local-access.swift-probes]
+    #[test]
+    fn imported_descriptor_rejects_cross_backend_thunks() {
+        let import = LocalDescriptorImport::swift_probe(
+            TypeRef::concrete(primitive_type_id(Primitive::String)),
+            LocalValueLayout::new(16, 8, 16),
+            LocalDescriptorImportKind::Scalar(LocalScalarAccess::String(
+                LocalSequenceStorage::Thunk {
+                    len: LocalThunk::new(LocalBackend::RustFacet, "Facet.List.len"),
+                    element: LocalThunk::new(LocalBackend::SwiftProbe, "Swift.String.utf8.element"),
+                },
+            )),
+        );
+
+        let err = LocalTypeDescriptor::from_import(import).unwrap_err();
+        assert!(matches!(
+            err,
+            LocalDescriptorImportError::BackendMismatch {
+                expected: LocalBackend::SwiftProbe,
+                actual: LocalBackend::RustFacet,
+                ..
+            }
+        ));
     }
 
     // r[verify binette.local-access.backends]

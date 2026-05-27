@@ -31,7 +31,7 @@ final class BinetteSwiftProbesTests: XCTestCase {
         let string = try XCTUnwrap(descriptors.first { $0.schemaName == "string" })
         let array = try XCTUnwrap(descriptors.first { $0.schemaName == "array<i64>" })
         let optional = try XCTUnwrap(descriptors.first { $0.schemaName == "option<string>" })
-        let enumPayloads = try XCTUnwrap(descriptors.first { $0.schemaName == "ProbeEnum" })
+        let enumDescriptor = try XCTUnwrap(descriptors.first { $0.schemaName == "ProbeEnum" })
 
         guard case let .sequence(_, stringStorage) = string.kind else {
             return XCTFail("expected string sequence descriptor")
@@ -55,6 +55,14 @@ final class BinetteSwiftProbesTests: XCTestCase {
             optionalStorage,
             .thunk(isSome: "Swift.Optional.isSome", some: "Swift.Optional.some")
         )
-        XCTAssertEqual(enumPayloads.kind, .enumPayloads(thunk: "ProbeEnum.project"))
+        guard case let .enumPayloads(tag, variants) = enumDescriptor.kind else {
+            return XCTFail("expected enum descriptor")
+        }
+        XCTAssertEqual(tag, .thunk("ProbeEnum.discriminant"))
+        XCTAssertEqual(variants.map(\.name), ["empty", "titled", "nested"])
+        XCTAssertEqual(variants.map(\.index), [0, 1, 2])
+        XCTAssertNil(variants[0].payload)
+        XCTAssertEqual(variants[1].payload?.schemaName, "string")
+        XCTAssertEqual(variants[2].payload?.schemaName, "ProbeLeaf")
     }
 }

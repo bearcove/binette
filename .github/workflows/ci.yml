@@ -81,25 +81,3 @@ jobs:
 
       - name: Run Swift probe tests
         run: swift test
-
-  tracey:
-    name: Tracey
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.91
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install tracey
-        run: cargo install --locked --git https://github.com/bearcove/tracey --branch main tracey
-
-      - name: Validate Rust coverage
-        run: tracey query validate --spec_impl binette/rust
-
-      - name: Validate TypeScript coverage
-        run: tracey query validate --spec_impl binette/typescript

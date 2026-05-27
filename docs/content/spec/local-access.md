@@ -37,6 +37,11 @@ inside the current process.
 > A backend may produce direct memory facts, accessor thunks, or a mixture of
 > both. Execution engines consume those facts through the descriptor model
 > rather than by depending directly on the source-language reflection API.
+>
+> Backends that are not linked into the Rust type system, such as Swift, feed an
+> owned descriptor tree into binette. binette validates that the tree is
+> internally consistent for its declared backend before any interpreter, hybrid,
+> or strict optimized engine consumes it.
 
 # Descriptor model
 
@@ -98,3 +103,9 @@ inside the current process.
 > codec. Swift feeds local descriptors and accessors into the same binette
 > schema, planning, interpreter, and code-generation machinery as other
 > backends.
+>
+> A Swift descriptor handoff includes the same information as any other local
+> access descriptor: schema reference, local layout, stored-field offsets where
+> available, enum variant projectors, sequence/optional access, and explicit
+> thunk names for cases that require Swift-owned accessors. The handoff is
+> rejected if Swift descriptor nodes contain thunks from another backend.
