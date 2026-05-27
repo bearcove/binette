@@ -15,10 +15,16 @@ pub struct LocalValueLayout {
     pub stride: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalSchemaRef {
+    Type(TypeRef),
+    Position { owner: TypeRef, path: String },
+}
+
 // r[impl binette.local-access.descriptor]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalTypeDescriptor {
-    pub schema: TypeRef,
+    pub schema: LocalSchemaRef,
     pub backend: LocalBackend,
     pub layout: LocalValueLayout,
     pub kind: LocalTypeKind,
@@ -86,6 +92,11 @@ pub struct LocalThunk {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalSequenceStorage {
+    InlineFixed {
+        offset: usize,
+        element_count: usize,
+        element_stride: usize,
+    },
     DirectContiguous {
         pointer: LocalAccess,
         length: LocalAccess,
@@ -131,21 +142,31 @@ impl LocalValueLayout {
 
 impl LocalTypeDescriptor {
     pub fn new(
-        schema: TypeRef,
+        schema: impl Into<LocalSchemaRef>,
         backend: LocalBackend,
         layout: LocalValueLayout,
         kind: LocalTypeKind,
     ) -> Self {
         Self {
-            schema,
+            schema: schema.into(),
             backend,
             layout,
             kind,
         }
     }
 
-    pub fn rust_facet(schema: TypeRef, layout: LocalValueLayout, kind: LocalTypeKind) -> Self {
+    pub fn rust_facet(
+        schema: impl Into<LocalSchemaRef>,
+        layout: LocalValueLayout,
+        kind: LocalTypeKind,
+    ) -> Self {
         Self::new(schema, LocalBackend::RustFacet, layout, kind)
+    }
+}
+
+impl From<TypeRef> for LocalSchemaRef {
+    fn from(value: TypeRef) -> Self {
+        Self::Type(value)
     }
 }
 
@@ -160,8 +181,392 @@ impl LocalThunk {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod rust_layout {
+    use std::collections::HashMap;
+
     use super::*;
+    use facet_core::{Def, Shape, StructKind, Type, UserType};
+
+    use crate::error::SchemaError;
+    use crate::facet::schema_bundle_for_shape;
+    use crate::hash::primitive_for_type_id;
     use crate::layout::{OptionStringLayout, VecLayout, option_string_layout, string_layout};
+    use crate::schema::{Primitive, Schema, SchemaKind, TypeId, VariantPayload};
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum LocalAccessError {
+        #[error(transparent)]
+        Schema(#[from] SchemaError),
+
+        #[error("unsupported local access descriptor for {type_name}: {reason}")]
+        Unsupported {
+            type_name: &'static str,
+            reason: &'static str,
+        },
+    }
+
+    // r[impl binette.local-access.backends]
+    // r[impl binette.local-access.descriptor]
+    pub fn rust_facet_descriptor_for_shape(
+        shape: &'static Shape,
+    ) -> Result<LocalTypeDescriptor, LocalAccessError> {
+        let bundle = schema_bundle_for_shape(shape)?;
+        let schemas = bundle
+            .schemas
+            .iter()
+            .map(|schema| (schema.id, schema))
+            .collect::<HashMap<_, _>>();
+        RustFacetDescriptorBuilder {
+            schemas: &schemas,
+            type_args: HashMap::new(),
+            stack: Vec::new(),
+        }
+        .build(shape, &bundle.root)
+    }
+
+    struct RustFacetDescriptorBuilder<'schema> {
+        schemas: &'schema HashMap<TypeId, &'schema Schema>,
+        type_args: HashMap<String, TypeRef>,
+        stack: Vec<TypeId>,
+    }
+
+    impl RustFacetDescriptorBuilder<'_> {
+        fn build(
+            &mut self,
+            shape: &'static Shape,
+            type_ref: &TypeRef,
+        ) -> Result<LocalTypeDescriptor, LocalAccessError> {
+            let resolved = self.resolve_type_ref(type_ref)?;
+            let (schema_type_params, kind) = self.schema_kind(&resolved)?;
+            let layout = layout_for_shape(shape)?;
+
+            if let TypeRef::Concrete { type_id, args } = &resolved {
+                if self.stack.contains(type_id) {
+                    return Ok(LocalTypeDescriptor::rust_facet(
+                        resolved,
+                        layout,
+                        LocalTypeKind::Opaque {
+                            reason: "recursive local descriptor edge".to_owned(),
+                        },
+                    ));
+                }
+
+                let previous_type_args = self.type_args.clone();
+                if !schema_type_params.is_empty() {
+                    self.type_args.clear();
+                    for (name, arg) in schema_type_params.iter().zip(args) {
+                        self.type_args.insert(name.clone(), arg.clone());
+                    }
+                }
+                self.stack.push(*type_id);
+                let local_kind = self.build_kind(shape, &resolved, &kind)?;
+                self.stack.pop();
+                self.type_args = previous_type_args;
+                return Ok(LocalTypeDescriptor::rust_facet(
+                    resolved, layout, local_kind,
+                ));
+            }
+
+            Err(LocalAccessError::Unsupported {
+                type_name: shape.type_identifier,
+                reason: "unresolved local type variable",
+            })
+        }
+
+        fn build_kind(
+            &mut self,
+            shape: &'static Shape,
+            type_ref: &TypeRef,
+            kind: &SchemaKind,
+        ) -> Result<LocalTypeKind, LocalAccessError> {
+            match kind {
+                SchemaKind::Primitive(primitive) => Ok(LocalTypeKind::Scalar(
+                    self.primitive_access(shape, *primitive)?,
+                )),
+                SchemaKind::Struct { fields, .. } => {
+                    let shape_fields = struct_fields_for_shape(shape)?;
+                    let fields = shape_fields
+                        .iter()
+                        .zip(fields)
+                        .map(|(shape_field, schema_field)| {
+                            let descriptor =
+                                self.build(shape_field.shape.get(), &schema_field.type_ref)?;
+                            Ok(LocalFieldDescriptor {
+                                name: schema_field.name.clone(),
+                                access: LocalAccess::Direct {
+                                    offset: shape_field.offset,
+                                },
+                                descriptor: Box::new(descriptor),
+                            })
+                        })
+                        .collect::<Result<Vec<_>, LocalAccessError>>()?;
+                    Ok(LocalTypeKind::Struct { fields })
+                }
+                SchemaKind::Tuple { elements } => {
+                    let shape_fields = struct_fields_for_shape(shape)?;
+                    let fields = shape_fields
+                        .iter()
+                        .zip(elements)
+                        .enumerate()
+                        .map(|(index, (shape_field, type_ref))| {
+                            let descriptor = self.build(shape_field.shape.get(), type_ref)?;
+                            Ok(LocalFieldDescriptor {
+                                name: index.to_string(),
+                                access: LocalAccess::Direct {
+                                    offset: shape_field.offset,
+                                },
+                                descriptor: Box::new(descriptor),
+                            })
+                        })
+                        .collect::<Result<Vec<_>, LocalAccessError>>()?;
+                    Ok(LocalTypeKind::Struct { fields })
+                }
+                SchemaKind::Array {
+                    dimensions,
+                    element,
+                } => {
+                    let Def::Array(array) = shape.def else {
+                        return Err(LocalAccessError::Unsupported {
+                            type_name: shape.type_identifier,
+                            reason: "array schema does not match local array shape",
+                        });
+                    };
+                    let count = dimensions_element_count(dimensions, shape.type_identifier)?;
+                    if count != array.n {
+                        return Err(LocalAccessError::Unsupported {
+                            type_name: shape.type_identifier,
+                            reason: "local array length differs from schema dimensions",
+                        });
+                    }
+                    let element_shape = array.t();
+                    let element = self.build(element_shape, element)?;
+                    Ok(LocalTypeKind::Sequence {
+                        element: Box::new(element),
+                        storage: LocalSequenceStorage::InlineFixed {
+                            offset: 0,
+                            element_count: count,
+                            element_stride: layout_for_shape(element_shape)?.stride,
+                        },
+                    })
+                }
+                SchemaKind::List { element } => {
+                    let Def::List(list) = shape.def else {
+                        return Err(LocalAccessError::Unsupported {
+                            type_name: shape.type_identifier,
+                            reason: "list schema does not match local list shape",
+                        });
+                    };
+                    let element_shape = list.t();
+                    let element = self.build(element_shape, element)?;
+                    let element_stride = layout_for_shape(element_shape)?.stride;
+                    let storage = rust_vec_storage(element_stride).unwrap_or_else(|| {
+                        LocalSequenceStorage::Thunk {
+                            len: LocalThunk::new(LocalBackend::RustFacet, "Facet.List.len"),
+                            element: LocalThunk::new(LocalBackend::RustFacet, "Facet.List.element"),
+                        }
+                    });
+                    Ok(LocalTypeKind::Sequence {
+                        element: Box::new(element),
+                        storage,
+                    })
+                }
+                SchemaKind::Option { element } => {
+                    let Def::Option(option) = shape.def else {
+                        return Err(LocalAccessError::Unsupported {
+                            type_name: shape.type_identifier,
+                            reason: "option schema does not match local option shape",
+                        });
+                    };
+                    let element_shape = option.t();
+                    let element = self.build(element_shape, element)?;
+                    let representation = if matches!(
+                        element.kind,
+                        LocalTypeKind::Scalar(LocalScalarAccess::String(_))
+                    ) {
+                        rust_option_string_representation().unwrap_or_else(|| {
+                            LocalOptionRepresentation::Thunk {
+                                is_some: LocalThunk::new(
+                                    LocalBackend::RustFacet,
+                                    "Facet.Option.is_some",
+                                ),
+                                some: LocalThunk::new(LocalBackend::RustFacet, "Facet.Option.some"),
+                            }
+                        })
+                    } else {
+                        LocalOptionRepresentation::Thunk {
+                            is_some: LocalThunk::new(
+                                LocalBackend::RustFacet,
+                                "Facet.Option.is_some",
+                            ),
+                            some: LocalThunk::new(LocalBackend::RustFacet, "Facet.Option.some"),
+                        }
+                    };
+                    Ok(LocalTypeKind::Option {
+                        some: Box::new(element),
+                        representation,
+                    })
+                }
+                SchemaKind::Enum { variants, .. } => {
+                    let shape_enum = enum_type_for_shape(shape)?;
+                    let variants = shape_enum
+                        .variants
+                        .iter()
+                        .zip(variants)
+                        .map(|(shape_variant, schema_variant)| {
+                            let payload = match &schema_variant.payload {
+                                VariantPayload::Unit => None,
+                                VariantPayload::Newtype { type_ref } => shape_variant
+                                    .data
+                                    .fields
+                                    .first()
+                                    .map(|field| self.build(field.shape.get(), type_ref))
+                                    .transpose()?
+                                    .map(Box::new),
+                                VariantPayload::Tuple { elements } => Some(Box::new(
+                                    self.variant_fields_descriptor(
+                                        shape,
+                                        type_ref,
+                                        schema_variant.name.as_str(),
+                                        shape_variant.data.fields,
+                                        elements
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(index, type_ref)| (index.to_string(), type_ref)),
+                                    )?,
+                                )),
+                                VariantPayload::Struct { fields } => Some(Box::new(
+                                    self.variant_fields_descriptor(
+                                        shape,
+                                        type_ref,
+                                        schema_variant.name.as_str(),
+                                        shape_variant.data.fields,
+                                        fields
+                                            .iter()
+                                            .map(|field| (field.name.clone(), &field.type_ref)),
+                                    )?,
+                                )),
+                            };
+                            Ok(LocalVariantDescriptor {
+                                name: schema_variant.name.clone(),
+                                index: schema_variant.index,
+                                access: LocalAccess::Thunk(LocalThunk::new(
+                                    LocalBackend::RustFacet,
+                                    format!("Facet.Enum.{}", schema_variant.name),
+                                )),
+                                payload,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, LocalAccessError>>()?;
+                    Ok(LocalTypeKind::Enum {
+                        tag: LocalAccess::Thunk(LocalThunk::new(
+                            LocalBackend::RustFacet,
+                            "Facet.Enum.discriminant",
+                        )),
+                        variants,
+                    })
+                }
+                SchemaKind::External { kind, .. } => {
+                    Ok(LocalTypeKind::ExternalAttachment { kind: kind.clone() })
+                }
+                SchemaKind::Dynamic | SchemaKind::Set { .. } | SchemaKind::Map { .. } => {
+                    Ok(LocalTypeKind::Opaque {
+                        reason:
+                            "local descriptor lowering for this schema kind is not implemented yet"
+                                .to_owned(),
+                    })
+                }
+            }
+        }
+
+        fn variant_fields_descriptor<'a>(
+            &mut self,
+            owner_shape: &'static Shape,
+            owner: &TypeRef,
+            variant_name: &str,
+            shape_fields: &'static [facet_core::Field],
+            fields: impl Iterator<Item = (String, &'a TypeRef)>,
+        ) -> Result<LocalTypeDescriptor, LocalAccessError> {
+            let fields = shape_fields
+                .iter()
+                .zip(fields)
+                .map(|(shape_field, (name, type_ref))| {
+                    let descriptor = self.build(shape_field.shape.get(), type_ref)?;
+                    Ok(LocalFieldDescriptor {
+                        name,
+                        access: LocalAccess::Direct {
+                            offset: shape_field.offset,
+                        },
+                        descriptor: Box::new(descriptor),
+                    })
+                })
+                .collect::<Result<Vec<_>, LocalAccessError>>()?;
+            Ok(LocalTypeDescriptor::rust_facet(
+                LocalSchemaRef::Position {
+                    owner: owner.clone(),
+                    path: format!("variant.{variant_name}"),
+                },
+                layout_for_shape(owner_shape)?,
+                LocalTypeKind::Struct { fields },
+            ))
+        }
+
+        fn primitive_access(
+            &self,
+            _shape: &'static Shape,
+            primitive: Primitive,
+        ) -> Result<LocalScalarAccess, LocalAccessError> {
+            match primitive {
+                Primitive::String => Ok(rust_string_storage()
+                    .map(LocalScalarAccess::String)
+                    .unwrap_or(LocalScalarAccess::Plain)),
+                Primitive::Bytes | Primitive::Payload => Ok(rust_vec_storage(1)
+                    .map(LocalScalarAccess::Bytes)
+                    .unwrap_or(LocalScalarAccess::Plain)),
+                _ => Ok(LocalScalarAccess::Plain),
+            }
+        }
+
+        fn resolve_type_ref(&self, type_ref: &TypeRef) -> Result<TypeRef, LocalAccessError> {
+            match type_ref {
+                TypeRef::Concrete { type_id, args } => Ok(TypeRef::generic(
+                    *type_id,
+                    args.iter()
+                        .map(|arg| self.resolve_type_ref(arg))
+                        .collect::<Result<Vec<_>, _>>()?,
+                )),
+                TypeRef::Var { name } => {
+                    self.type_args
+                        .get(name)
+                        .cloned()
+                        .ok_or(LocalAccessError::Unsupported {
+                            type_name: "<type parameter>",
+                            reason: "unbound local descriptor type parameter",
+                        })
+                }
+            }
+        }
+
+        fn schema_kind(
+            &self,
+            type_ref: &TypeRef,
+        ) -> Result<(Vec<String>, SchemaKind), LocalAccessError> {
+            let TypeRef::Concrete { type_id, .. } = type_ref else {
+                return Err(LocalAccessError::Unsupported {
+                    type_name: "<type parameter>",
+                    reason: "schema lookup requires a concrete type reference",
+                });
+            };
+            if let Some(schema) = self.schemas.get(type_id) {
+                return Ok((schema.type_params.clone(), schema.kind.clone()));
+            }
+            if let Some(primitive) = primitive_for_type_id(*type_id) {
+                return Ok((Vec::new(), SchemaKind::Primitive(primitive)));
+            }
+            Err(LocalAccessError::Unsupported {
+                type_name: "<schema>",
+                reason: "schema is not present in local descriptor bundle",
+            })
+        }
+    }
 
     // r[impl binette.local-access.backends]
     // r[impl binette.local-access.runtime-facts]
@@ -255,8 +660,76 @@ mod rust_layout {
             element_stride,
         }
     }
+
+    fn layout_for_shape(shape: &'static Shape) -> Result<LocalValueLayout, LocalAccessError> {
+        let layout = shape
+            .layout
+            .sized_layout()
+            .map_err(|_| LocalAccessError::Unsupported {
+                type_name: shape.type_identifier,
+                reason: "local descriptor shape is unsized",
+            })?;
+        Ok(LocalValueLayout::new(
+            layout.size(),
+            layout.align(),
+            layout.size(),
+        ))
+    }
+
+    fn struct_fields_for_shape(
+        shape: &'static Shape,
+    ) -> Result<&'static [facet_core::Field], LocalAccessError> {
+        let Type::User(UserType::Struct(struct_type)) = shape.ty else {
+            return Err(LocalAccessError::Unsupported {
+                type_name: shape.type_identifier,
+                reason: "local descriptor shape is not a struct",
+            });
+        };
+        match struct_type.kind {
+            StructKind::Struct | StructKind::TupleStruct | StructKind::Tuple => {
+                Ok(struct_type.fields)
+            }
+            StructKind::Unit => Err(LocalAccessError::Unsupported {
+                type_name: shape.type_identifier,
+                reason: "unit struct local descriptor is not implemented yet",
+            }),
+        }
+    }
+
+    fn enum_type_for_shape(
+        shape: &'static Shape,
+    ) -> Result<facet_core::EnumType, LocalAccessError> {
+        let Type::User(UserType::Enum(enum_type)) = shape.ty else {
+            return Err(LocalAccessError::Unsupported {
+                type_name: shape.type_identifier,
+                reason: "local descriptor shape is not an enum",
+            });
+        };
+        Ok(enum_type)
+    }
+
+    fn dimensions_element_count(
+        dimensions: &[u64],
+        type_name: &'static str,
+    ) -> Result<usize, LocalAccessError> {
+        dimensions.iter().try_fold(1usize, |count, dimension| {
+            let dimension =
+                usize::try_from(*dimension).map_err(|_| LocalAccessError::Unsupported {
+                    type_name,
+                    reason: "array dimension exceeds usize",
+                })?;
+            count
+                .checked_mul(dimension)
+                .ok_or(LocalAccessError::Unsupported {
+                    type_name,
+                    reason: "array dimension product overflows usize",
+                })
+        })
+    }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use rust_layout::{LocalAccessError, rust_facet_descriptor_for_shape};
 #[cfg(not(target_arch = "wasm32"))]
 pub use rust_layout::{rust_option_string_descriptor, rust_string_descriptor, rust_vec_descriptor};
 #[cfg(not(target_arch = "wasm32"))]
@@ -265,8 +738,33 @@ pub use rust_layout::{rust_option_string_representation, rust_string_storage, ru
 #[cfg(test)]
 mod tests {
     use super::*;
+    use facet::Facet;
+
     use crate::hash::primitive_type_id;
     use crate::schema::{Primitive, TypeId};
+
+    #[derive(Facet)]
+    struct DescriptorInner {
+        code: u16,
+        enabled: bool,
+    }
+
+    #[derive(Facet)]
+    struct DescriptorOuter {
+        id: u64,
+        inner: DescriptorInner,
+        values: [u16; 3],
+        title: String,
+    }
+
+    #[derive(Facet)]
+    #[allow(dead_code)]
+    #[repr(u8)]
+    enum DescriptorEvent {
+        Empty,
+        Count(u32),
+        Named { label: String, code: u16 },
+    }
 
     // r[verify binette.local-access.descriptor]
     #[test]
@@ -278,7 +776,7 @@ mod tests {
             LocalTypeKind::Scalar(LocalScalarAccess::Plain),
         );
 
-        assert_eq!(descriptor.schema, schema);
+        assert_eq!(descriptor.schema, LocalSchemaRef::Type(schema));
         assert_eq!(descriptor.backend, LocalBackend::RustFacet);
         assert_eq!(descriptor.layout, LocalValueLayout::of::<u8>());
     }
@@ -407,5 +905,123 @@ mod tests {
             panic!("expected Swift thunk-backed sequence");
         };
         assert_eq!(len, thunk);
+    }
+
+    // r[verify binette.local-access.backends]
+    // r[verify binette.local-access.descriptor]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn rust_facet_descriptor_lowers_nested_struct_fields_and_arrays() {
+        let descriptor = rust_facet_descriptor_for_shape(DescriptorOuter::SHAPE).unwrap();
+        assert_eq!(descriptor.backend, LocalBackend::RustFacet);
+
+        let LocalTypeKind::Struct { fields } = descriptor.kind else {
+            panic!("expected struct descriptor");
+        };
+
+        assert_eq!(
+            fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["id", "inner", "values", "title"]
+        );
+        assert_eq!(
+            fields[0].access,
+            LocalAccess::Direct {
+                offset: std::mem::offset_of!(DescriptorOuter, id)
+            }
+        );
+        assert_eq!(
+            fields[1].access,
+            LocalAccess::Direct {
+                offset: std::mem::offset_of!(DescriptorOuter, inner)
+            }
+        );
+
+        let LocalTypeKind::Struct {
+            fields: inner_fields,
+        } = &fields[1].descriptor.kind
+        else {
+            panic!("expected nested struct descriptor");
+        };
+        assert_eq!(
+            inner_fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["code", "enabled"]
+        );
+
+        let LocalTypeKind::Sequence {
+            element,
+            storage:
+                LocalSequenceStorage::InlineFixed {
+                    element_count,
+                    element_stride,
+                    ..
+                },
+        } = &fields[2].descriptor.kind
+        else {
+            panic!("expected inline fixed array descriptor");
+        };
+        assert_eq!(*element_count, 3);
+        assert_eq!(*element_stride, size_of::<u16>());
+        assert!(matches!(
+            element.kind,
+            LocalTypeKind::Scalar(LocalScalarAccess::Plain)
+        ));
+
+        assert!(matches!(
+            fields[3].descriptor.kind,
+            LocalTypeKind::Scalar(LocalScalarAccess::String(
+                LocalSequenceStorage::DirectContiguous { .. }
+            ))
+        ));
+    }
+
+    // r[verify binette.local-access.backends]
+    // r[verify binette.local-access.descriptor]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn rust_facet_descriptor_lowers_vec_and_enum_payloads() {
+        let vec_descriptor = rust_facet_descriptor_for_shape(<Vec<u16>>::SHAPE).unwrap();
+        let LocalTypeKind::Sequence {
+            element,
+            storage: LocalSequenceStorage::DirectContiguous { element_stride, .. },
+        } = vec_descriptor.kind
+        else {
+            panic!("expected direct vec descriptor");
+        };
+        assert_eq!(element_stride, size_of::<u16>());
+        assert!(matches!(
+            element.kind,
+            LocalTypeKind::Scalar(LocalScalarAccess::Plain)
+        ));
+
+        let enum_descriptor = rust_facet_descriptor_for_shape(DescriptorEvent::SHAPE).unwrap();
+        let LocalTypeKind::Enum { variants, .. } = enum_descriptor.kind else {
+            panic!("expected enum descriptor");
+        };
+        assert_eq!(
+            variants
+                .iter()
+                .map(|variant| variant.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Empty", "Count", "Named"]
+        );
+        assert!(variants[0].payload.is_none());
+        assert!(matches!(
+            variants[1].payload.as_deref().map(|payload| &payload.kind),
+            Some(LocalTypeKind::Scalar(LocalScalarAccess::Plain))
+        ));
+        assert!(matches!(
+            variants[2].payload.as_deref().map(|payload| &payload.kind),
+            Some(LocalTypeKind::Struct { .. })
+        ));
+        assert!(matches!(
+            variants[2].payload.as_deref().map(|payload| &payload.schema),
+            Some(LocalSchemaRef::Position { path, .. }) if path == "variant.Named"
+        ));
     }
 }

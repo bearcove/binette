@@ -1,6 +1,7 @@
 use super::*;
 use crate::local_access::{
-    LocalAccess, LocalOptionRepresentation, LocalSequenceStorage,
+    LocalAccess, LocalFieldDescriptor, LocalOptionRepresentation, LocalSequenceStorage,
+    LocalTypeDescriptor, LocalTypeKind, rust_facet_descriptor_for_shape,
     rust_option_string_representation, rust_vec_storage,
 };
 
@@ -17,14 +18,15 @@ impl StencilCompiler<'_> {
         &mut self,
         root: &PlanNode,
     ) -> Result<LengthCheck, StencilError> {
+        let reader = rust_facet_descriptor(T::SHAPE, "$")?;
         if let PlanNode::Enum { variants } = root {
-            return self.compile_enum_root(T::SHAPE, variants, "$");
+            return self.compile_enum_root(T::SHAPE, &reader, variants, "$");
         }
         if let PlanNode::List { element } = root {
-            return self.compile_list_root(T::SHAPE, element, "$");
+            return self.compile_list_root(T::SHAPE, &reader, element, "$");
         }
 
-        self.compile_node(T::SHAPE, root, 0, "$")?;
+        self.compile_node(T::SHAPE, &reader, root, 0, "$")?;
         Ok(LengthCheck::Exact(self.input_offset))
     }
 
@@ -32,6 +34,7 @@ impl StencilCompiler<'_> {
     fn compile_list_root(
         &mut self,
         reader_shape: &'static Shape,
+        reader_descriptor: &LocalTypeDescriptor,
         element: &PlanNode,
         path: &str,
     ) -> Result<LengthCheck, StencilError> {
@@ -59,14 +62,7 @@ impl StencilCompiler<'_> {
         }
 
         let element_shape = list.t();
-        let element_stride = element_shape
-            .layout
-            .sized_layout()
-            .map_err(|_| StencilError::Unsupported {
-                path: format!("{path}[]"),
-                reason: "reader list element shape is unsized",
-            })?
-            .size();
+        let (element_descriptor, element_stride) = local_sequence_element(reader_descriptor, path)?;
 
         let mut element_compiler = StencilCompiler {
             writer_registry: self.writer_registry,
@@ -75,7 +71,13 @@ impl StencilCompiler<'_> {
             failures: Vec::new(),
             input_offset: 0,
         };
-        element_compiler.compile_node(element_shape, element, 0, &format!("{path}[]"))?;
+        element_compiler.compile_node(
+            element_shape,
+            element_descriptor,
+            element,
+            0,
+            &format!("{path}[]"),
+        )?;
         if !element_compiler.failures.is_empty() {
             return Err(StencilError::Unsupported {
                 path: path.to_owned(),
@@ -112,6 +114,7 @@ impl StencilCompiler<'_> {
     fn compile_node(
         &mut self,
         reader_shape: &'static Shape,
+        reader_descriptor: &LocalTypeDescriptor,
         node: &PlanNode,
         output_offset: usize,
         path: &str,
@@ -125,23 +128,38 @@ impl StencilCompiler<'_> {
                             path: path.to_owned(),
                             reason: "recursive reader plan node reference is out of range",
                         })?;
-                self.compile_node(reader_shape, node, output_offset, path)
+                self.compile_node(reader_shape, reader_descriptor, node, output_offset, path)
             }
             PlanNode::Primitive { primitive } => {
                 self.compile_primitive_read(*primitive, output_offset, path)
             }
-            PlanNode::Struct { fields } => {
-                self.compile_struct_plan(reader_shape, fields, output_offset, path)
-            }
-            PlanNode::Tuple { elements } => {
-                self.compile_tuple_plan(reader_shape, elements, output_offset, path)
-            }
+            PlanNode::Struct { fields } => self.compile_struct_plan(
+                reader_shape,
+                reader_descriptor,
+                fields,
+                output_offset,
+                path,
+            ),
+            PlanNode::Tuple { elements } => self.compile_tuple_plan(
+                reader_shape,
+                reader_descriptor,
+                elements,
+                output_offset,
+                path,
+            ),
             PlanNode::Array {
                 dimensions,
                 element,
-            } => self.compile_array_plan(reader_shape, dimensions, element, output_offset, path),
+            } => self.compile_array_plan(
+                reader_shape,
+                reader_descriptor,
+                dimensions,
+                element,
+                output_offset,
+                path,
+            ),
             PlanNode::Enum { variants } if output_offset == 0 => self
-                .compile_enum_root(reader_shape, variants, path)
+                .compile_enum_root(reader_shape, reader_descriptor, variants, path)
                 .map(|_| ()),
             PlanNode::External { .. } => Err(StencilError::Unsupported {
                 path: path.to_owned(),
@@ -159,17 +177,26 @@ impl StencilCompiler<'_> {
     fn compile_struct_plan(
         &mut self,
         reader_shape: &'static Shape,
+        reader_descriptor: &LocalTypeDescriptor,
         fields: &[StructFieldPlan],
         output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
         let reader_fields = shape_struct_fields(reader_shape, path)?;
-        self.compile_struct_fields_plan(reader_fields, fields, output_offset, path)
+        let descriptor_fields = local_struct_fields(reader_descriptor, path)?;
+        self.compile_struct_fields_plan(
+            reader_fields,
+            descriptor_fields,
+            fields,
+            output_offset,
+            path,
+        )
     }
 
     fn compile_struct_fields_plan(
         &mut self,
         reader_fields: &'static [facet_core::Field],
+        descriptor_fields: &[LocalFieldDescriptor],
         fields: &[StructFieldPlan],
         output_offset: usize,
         path: &str,
@@ -188,10 +215,22 @@ impl StencilCompiler<'_> {
                             reason: "reader field index is out of range",
                         }
                     })?;
-                    let field_offset = checked_offset(output_offset, reader_field.offset, path)?;
+                    let field_descriptor =
+                        descriptor_fields.get(*reader_index).ok_or_else(|| {
+                            StencilError::Unsupported {
+                                path: format!("{path}.{name}"),
+                                reason: "reader descriptor field index is out of range",
+                            }
+                        })?;
+                    let field_offset = checked_offset(
+                        output_offset,
+                        local_direct_offset(&field_descriptor.access, path)?,
+                        path,
+                    )?;
                     self.compile_read_plan(
                         plan,
                         reader_field.shape.get(),
+                        &field_descriptor.descriptor,
                         field_offset,
                         &format!("{path}.{name}"),
                     )?;
@@ -213,11 +252,13 @@ impl StencilCompiler<'_> {
     fn compile_tuple_plan(
         &mut self,
         reader_shape: &'static Shape,
+        reader_descriptor: &LocalTypeDescriptor,
         elements: &[PlanNode],
         output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
         let reader_fields = shape_struct_fields(reader_shape, path)?;
+        let descriptor_fields = local_struct_fields(reader_descriptor, path)?;
         if reader_fields.len() != elements.len() {
             return Err(StencilError::Unsupported {
                 path: path.to_owned(),
@@ -226,10 +267,16 @@ impl StencilCompiler<'_> {
         }
         for (index, element) in elements.iter().enumerate() {
             let reader_field = &reader_fields[index];
-            let field_offset = checked_offset(output_offset, reader_field.offset, path)?;
+            let field_descriptor = &descriptor_fields[index];
+            let field_offset = checked_offset(
+                output_offset,
+                local_direct_offset(&field_descriptor.access, path)?,
+                path,
+            )?;
             self.compile_read_plan(
                 element,
                 reader_field.shape.get(),
+                &field_descriptor.descriptor,
                 field_offset,
                 &format!("{path}.{index}"),
             )?;
@@ -241,6 +288,7 @@ impl StencilCompiler<'_> {
     fn compile_array_plan(
         &mut self,
         reader_shape: &'static Shape,
+        reader_descriptor: &LocalTypeDescriptor,
         dimensions: &[u64],
         element: &PlanNode,
         output_offset: usize,
@@ -248,12 +296,21 @@ impl StencilCompiler<'_> {
     ) -> Result<(), StencilError> {
         let (element_shape, count, stride) =
             fixed_array_parts(reader_shape, dimensions, path, "reader array")?;
+        let (element_descriptor, descriptor_count, descriptor_stride) =
+            local_inline_fixed_array(reader_descriptor, path)?;
+        if descriptor_count != count || descriptor_stride != stride {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "reader array descriptor differs from Facet array layout",
+            });
+        }
         for index in 0..count {
             let element_output_offset =
                 checked_offset(output_offset, checked_mul(index, stride, path)?, path)?;
             self.compile_read_plan(
                 element,
                 element_shape,
+                element_descriptor,
                 element_output_offset,
                 &format!("{path}[{index}]"),
             )?;
@@ -266,6 +323,7 @@ impl StencilCompiler<'_> {
     fn compile_enum_root(
         &mut self,
         reader_shape: &'static Shape,
+        reader_descriptor: &LocalTypeDescriptor,
         variants: &[EnumVariantPlan],
         path: &str,
     ) -> Result<LengthCheck, StencilError> {
@@ -312,10 +370,12 @@ impl StencilCompiler<'_> {
                         })?;
                     let reader_discriminant =
                         enum_discriminant_u8(reader_variant, &format!("{path}.{name}"))?;
+                    let local_variant = local_enum_variant(reader_descriptor, *reader_index, path)?;
                     let (body, expected) =
                         self.compile_branch_body(input_offset + 4, |compiler| {
                             compiler.compile_enum_payload_plan(
                                 reader_variant.data.fields,
+                                local_variant.payload.as_deref(),
                                 payload,
                                 &format!("{path}.{name}"),
                             )
@@ -385,6 +445,7 @@ impl StencilCompiler<'_> {
     fn compile_enum_payload_plan(
         &mut self,
         reader_fields: &'static [facet_core::Field],
+        payload_descriptor: Option<&LocalTypeDescriptor>,
         payload: &EnumPayloadPlan,
         path: &str,
     ) -> Result<(), StencilError> {
@@ -398,7 +459,18 @@ impl StencilCompiler<'_> {
                             path: path.to_owned(),
                             reason: "newtype enum payload is missing reader field",
                         })?;
-                self.compile_read_plan(element, reader_field.shape.get(), reader_field.offset, path)
+                let payload_descriptor =
+                    payload_descriptor.ok_or_else(|| StencilError::Unsupported {
+                        path: path.to_owned(),
+                        reason: "newtype enum payload is missing local descriptor",
+                    })?;
+                self.compile_read_plan(
+                    element,
+                    reader_field.shape.get(),
+                    payload_descriptor,
+                    reader_field.offset,
+                    path,
+                )
             }
             EnumPayloadPlan::Tuple(elements) => {
                 if reader_fields.len() != elements.len() {
@@ -407,19 +479,35 @@ impl StencilCompiler<'_> {
                         reason: "tuple enum payload arity differs from reader shape",
                     });
                 }
+                let descriptor_fields = local_struct_fields(
+                    payload_descriptor.ok_or_else(|| StencilError::Unsupported {
+                        path: path.to_owned(),
+                        reason: "tuple enum payload is missing local descriptor",
+                    })?,
+                    path,
+                )?;
                 for (index, element) in elements.iter().enumerate() {
                     let reader_field = &reader_fields[index];
+                    let field_descriptor = &descriptor_fields[index];
                     self.compile_read_plan(
                         element,
                         reader_field.shape.get(),
-                        reader_field.offset,
+                        &field_descriptor.descriptor,
+                        local_direct_offset(&field_descriptor.access, path)?,
                         &format!("{path}.{index}"),
                     )?;
                 }
                 Ok(())
             }
             EnumPayloadPlan::Struct(fields) => {
-                self.compile_struct_fields_plan(reader_fields, fields, 0, path)
+                let descriptor_fields = local_struct_fields(
+                    payload_descriptor.ok_or_else(|| StencilError::Unsupported {
+                        path: path.to_owned(),
+                        reason: "struct enum payload is missing local descriptor",
+                    })?,
+                    path,
+                )?;
+                self.compile_struct_fields_plan(reader_fields, descriptor_fields, fields, 0, path)
             }
         }
     }
@@ -428,10 +516,11 @@ impl StencilCompiler<'_> {
         &mut self,
         node: &PlanNode,
         reader_shape: &'static Shape,
+        reader_descriptor: &LocalTypeDescriptor,
         output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
-        self.compile_node(reader_shape, node, output_offset, path)
+        self.compile_node(reader_shape, reader_descriptor, node, output_offset, path)
     }
 
     fn compile_skip(&mut self, type_ref: &TypeRef, path: &str) -> Result<(), StencilError> {
@@ -587,7 +676,8 @@ impl CursorStencilCompiler<'_> {
         &mut self,
         root: &PlanNode,
     ) -> Result<(), StencilError> {
-        self.compile_node(T::SHAPE, root, 0, "$")
+        let reader = rust_facet_descriptor(T::SHAPE, "$")?;
+        self.compile_node(T::SHAPE, &reader, root, 0, "$")
     }
 
     // r[impl binette.compat.field-matching]
@@ -595,11 +685,13 @@ impl CursorStencilCompiler<'_> {
     fn compile_struct(
         &mut self,
         reader_shape: &'static Shape,
+        reader_descriptor: &LocalTypeDescriptor,
         fields: &[StructFieldPlan],
         output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
         let reader_fields = shape_struct_fields(reader_shape, path)?;
+        let descriptor_fields = local_struct_fields(reader_descriptor, path)?;
         for field in fields {
             match field {
                 StructFieldPlan::Read {
@@ -614,9 +706,21 @@ impl CursorStencilCompiler<'_> {
                             reason: "reader field index is out of range",
                         }
                     })?;
-                    let field_offset = checked_offset(output_offset, reader_field.offset, path)?;
+                    let field_descriptor =
+                        descriptor_fields.get(*reader_index).ok_or_else(|| {
+                            StencilError::Unsupported {
+                                path: format!("{path}.{name}"),
+                                reason: "reader descriptor field index is out of range",
+                            }
+                        })?;
+                    let field_offset = checked_offset(
+                        output_offset,
+                        local_direct_offset(&field_descriptor.access, path)?,
+                        path,
+                    )?;
                     self.compile_node(
                         reader_field.shape.get(),
+                        &field_descriptor.descriptor,
                         plan,
                         field_offset,
                         &format!("{path}.{name}"),
@@ -639,6 +743,7 @@ impl CursorStencilCompiler<'_> {
     fn compile_node(
         &mut self,
         reader_shape: &'static Shape,
+        reader_descriptor: &LocalTypeDescriptor,
         node: &PlanNode,
         output_offset: usize,
         path: &str,
@@ -652,22 +757,37 @@ impl CursorStencilCompiler<'_> {
                             path: path.to_owned(),
                             reason: "recursive reader plan node reference is out of range",
                         })?;
-                self.compile_node(reader_shape, node, output_offset, path)
+                self.compile_node(reader_shape, reader_descriptor, node, output_offset, path)
             }
-            PlanNode::List { element } => {
-                self.push_list(reader_shape, element, output_offset, path)
-            }
+            PlanNode::List { element } => self.push_list(
+                reader_shape,
+                reader_descriptor,
+                element,
+                output_offset,
+                path,
+            ),
             PlanNode::Struct { fields } => {
-                self.compile_struct(reader_shape, fields, output_offset, path)
+                self.compile_struct(reader_shape, reader_descriptor, fields, output_offset, path)
             }
-            PlanNode::Tuple { elements } => {
-                self.compile_tuple(reader_shape, elements, output_offset, path)
-            }
+            PlanNode::Tuple { elements } => self.compile_tuple(
+                reader_shape,
+                reader_descriptor,
+                elements,
+                output_offset,
+                path,
+            ),
             PlanNode::Array {
                 dimensions,
                 element,
-            } => self.compile_array(reader_shape, dimensions, element, output_offset, path),
-            _ => self.push_fixed_copy(node, reader_shape, output_offset, path),
+            } => self.compile_array(
+                reader_shape,
+                reader_descriptor,
+                dimensions,
+                element,
+                output_offset,
+                path,
+            ),
+            _ => self.push_fixed_copy(node, reader_shape, reader_descriptor, output_offset, path),
         };
         match result {
             Ok(()) => Ok(()),
@@ -681,11 +801,13 @@ impl CursorStencilCompiler<'_> {
     fn compile_tuple(
         &mut self,
         reader_shape: &'static Shape,
+        reader_descriptor: &LocalTypeDescriptor,
         elements: &[PlanNode],
         output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
         let reader_fields = shape_struct_fields(reader_shape, path)?;
+        let descriptor_fields = local_struct_fields(reader_descriptor, path)?;
         if reader_fields.len() != elements.len() {
             return Err(StencilError::Unsupported {
                 path: path.to_owned(),
@@ -694,9 +816,15 @@ impl CursorStencilCompiler<'_> {
         }
         for (index, element) in elements.iter().enumerate() {
             let reader_field = &reader_fields[index];
-            let element_offset = checked_offset(output_offset, reader_field.offset, path)?;
+            let field_descriptor = &descriptor_fields[index];
+            let element_offset = checked_offset(
+                output_offset,
+                local_direct_offset(&field_descriptor.access, path)?,
+                path,
+            )?;
             self.compile_node(
                 reader_field.shape.get(),
+                &field_descriptor.descriptor,
                 element,
                 element_offset,
                 &format!("{path}.{index}"),
@@ -709,6 +837,7 @@ impl CursorStencilCompiler<'_> {
     fn compile_array(
         &mut self,
         reader_shape: &'static Shape,
+        reader_descriptor: &LocalTypeDescriptor,
         dimensions: &[u64],
         element: &PlanNode,
         output_offset: usize,
@@ -716,11 +845,20 @@ impl CursorStencilCompiler<'_> {
     ) -> Result<(), StencilError> {
         let (element_shape, count, stride) =
             fixed_array_parts(reader_shape, dimensions, path, "reader array")?;
+        let (element_descriptor, descriptor_count, descriptor_stride) =
+            local_inline_fixed_array(reader_descriptor, path)?;
+        if descriptor_count != count || descriptor_stride != stride {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "reader array descriptor differs from Facet array layout",
+            });
+        }
         for index in 0..count {
             let element_offset =
                 checked_offset(output_offset, checked_mul(index, stride, path)?, path)?;
             self.compile_node(
                 element_shape,
+                element_descriptor,
                 element,
                 element_offset,
                 &format!("{path}[{index}]"),
@@ -733,6 +871,7 @@ impl CursorStencilCompiler<'_> {
     fn push_list(
         &mut self,
         reader_shape: &'static Shape,
+        reader_descriptor: &LocalTypeDescriptor,
         element: &PlanNode,
         output_offset: usize,
         path: &str,
@@ -754,15 +893,9 @@ impl CursorStencilCompiler<'_> {
         }
 
         let element_shape = list.t();
-        let element_stride = element_shape
-            .layout
-            .sized_layout()
-            .map_err(|_| StencilError::Unsupported {
-                path: format!("{path}[]"),
-                reason: "reader list element shape is unsized",
-            })?
-            .size();
-        let element_ops = self.compile_list_element(element_shape, element, path)?;
+        let (element_descriptor, element_stride) = local_sequence_element(reader_descriptor, path)?;
+        let element_ops =
+            self.compile_list_element(element_shape, element_descriptor, element, path)?;
         let failure_index = self.push_helper_failure(path)?;
         self.ops.push(HybridStencilOp::List {
             shape: reader_shape,
@@ -777,13 +910,20 @@ impl CursorStencilCompiler<'_> {
     fn compile_list_element(
         &mut self,
         element_shape: &'static Shape,
+        element_descriptor: &LocalTypeDescriptor,
         element: &PlanNode,
         path: &str,
     ) -> Result<Vec<HybridStencilOp>, StencilError> {
         let root_ops = std::mem::take(&mut self.ops);
         let helpers_len = self.helpers.len();
         let failures_len = self.failures.len();
-        let element_result = self.compile_node(element_shape, element, 0, &format!("{path}[]"));
+        let element_result = self.compile_node(
+            element_shape,
+            element_descriptor,
+            element,
+            0,
+            &format!("{path}[]"),
+        );
         let element_ops = std::mem::replace(&mut self.ops, root_ops);
         if let Err(err) = element_result {
             self.helpers.truncate(helpers_len);
@@ -808,6 +948,7 @@ impl CursorStencilCompiler<'_> {
         &mut self,
         node: &PlanNode,
         reader_shape: &'static Shape,
+        reader_descriptor: &LocalTypeDescriptor,
         output_offset: usize,
         path: &str,
     ) -> Result<(), StencilError> {
@@ -816,6 +957,7 @@ impl CursorStencilCompiler<'_> {
             self.plan_nodes,
             node,
             reader_shape,
+            reader_descriptor,
             output_offset,
             path,
         )?;
@@ -1687,6 +1829,105 @@ fn primitive_for_plain_type_ref(type_ref: &TypeRef) -> Option<Primitive> {
     }
 }
 
+fn rust_facet_descriptor(
+    shape: &'static Shape,
+    path: &str,
+) -> Result<LocalTypeDescriptor, StencilError> {
+    rust_facet_descriptor_for_shape(shape).map_err(|_| StencilError::Unsupported {
+        path: path.to_owned(),
+        reason: "failed to build Rust local access descriptor for stencil compilation",
+    })
+}
+
+fn local_struct_fields<'a>(
+    descriptor: &'a LocalTypeDescriptor,
+    path: &str,
+) -> Result<&'a [LocalFieldDescriptor], StencilError> {
+    let LocalTypeKind::Struct { fields } = &descriptor.kind else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor is not a struct layout",
+        });
+    };
+    Ok(fields)
+}
+
+fn local_direct_offset(access: &LocalAccess, path: &str) -> Result<usize, StencilError> {
+    let LocalAccess::Direct { offset } = access else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor field requires an accessor thunk",
+        });
+    };
+    Ok(*offset)
+}
+
+fn local_sequence_element<'a>(
+    descriptor: &'a LocalTypeDescriptor,
+    path: &str,
+) -> Result<(&'a LocalTypeDescriptor, usize), StencilError> {
+    let LocalTypeKind::Sequence { element, storage } = &descriptor.kind else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor is not a sequence layout",
+        });
+    };
+    let element_stride = match storage {
+        LocalSequenceStorage::InlineFixed { element_stride, .. }
+        | LocalSequenceStorage::DirectContiguous { element_stride, .. } => *element_stride,
+        LocalSequenceStorage::Thunk { .. } => {
+            return Err(StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "local sequence descriptor requires an accessor thunk",
+            });
+        }
+    };
+    Ok((element, element_stride))
+}
+
+fn local_inline_fixed_array<'a>(
+    descriptor: &'a LocalTypeDescriptor,
+    path: &str,
+) -> Result<(&'a LocalTypeDescriptor, usize, usize), StencilError> {
+    let LocalTypeKind::Sequence { element, storage } = &descriptor.kind else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor is not an array sequence layout",
+        });
+    };
+    let LocalSequenceStorage::InlineFixed {
+        element_count,
+        element_stride,
+        ..
+    } = storage
+    else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor is not an inline fixed array",
+        });
+    };
+    Ok((element, *element_count, *element_stride))
+}
+
+fn local_enum_variant<'a>(
+    descriptor: &'a LocalTypeDescriptor,
+    index: usize,
+    path: &str,
+) -> Result<&'a crate::local_access::LocalVariantDescriptor, StencilError> {
+    let LocalTypeKind::Enum { variants, .. } = &descriptor.kind else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor is not an enum layout",
+        });
+    };
+    variants
+        .get(index)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor enum variant index is out of range",
+        })
+}
+
 fn shape_struct_fields(
     shape: &'static Shape,
     path: &str,
@@ -1805,6 +2046,7 @@ fn fixed_copy_ops(
     plan_nodes: &[PlanNode],
     node: &PlanNode,
     reader_shape: &'static Shape,
+    reader_descriptor: &LocalTypeDescriptor,
     output_offset: usize,
     path: &str,
 ) -> Result<(Vec<CopyOp>, usize), StencilError> {
@@ -1815,7 +2057,7 @@ fn fixed_copy_ops(
         failures: Vec::new(),
         input_offset: 0,
     };
-    compiler.compile_node(reader_shape, node, output_offset, path)?;
+    compiler.compile_node(reader_shape, reader_descriptor, node, output_offset, path)?;
     if !compiler.failures.is_empty() {
         return Err(StencilError::Unsupported {
             path: path.to_owned(),
