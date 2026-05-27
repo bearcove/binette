@@ -3,8 +3,9 @@ use binette::local_access::rust_facet_descriptor_for;
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 use binette::{
     LocalStencilEncoder, StencilDecoder, StencilEncoder, encode_to_vec_with_stencil,
-    hybrid_local_stencil_encoder_from_plan, hybrid_stencil_decoder_for,
-    hybrid_stencil_encoder_from_plan, strict_stencil_decoder_for, strict_stencil_encoder_from_plan,
+    hybrid_local_stencil_decoder_from_plan, hybrid_local_stencil_encoder_from_plan,
+    hybrid_stencil_decoder_for, hybrid_stencil_encoder_from_plan, strict_stencil_decoder_for,
+    strict_stencil_encoder_from_plan,
 };
 use binette::{
     ReaderPlan, SchemaBundle, SchemaRegistry, decode_from_slice_with_plan, encode_to_vec_with_plan,
@@ -449,6 +450,12 @@ struct DecodeStencilFixture<T> {
 }
 
 #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+struct LocalDecodeStencilFixture {
+    bytes: Vec<u8>,
+    stencil: binette::LocalStencilDecoder,
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
 fn fixed_hybrid_decode_fixture() -> DecodeStencilFixture<fixed_reader::Message> {
     let fixture = fixed_fixture();
     let stencil = hybrid_stencil_decoder_for::<fixed_reader::Message>(
@@ -609,6 +616,36 @@ fn mixed_hybrid_decode_fixture() -> DecodeStencilFixture<reader::Message> {
 
     DecodeStencilFixture {
         bytes: fixture.bytes,
+        stencil,
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+fn mixed_local_schema_decode_fixture() -> LocalDecodeStencilFixture {
+    let writer_plan = writer_plan_for::<writer::Message>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let reader_bundle = binette::schema_bundle_for::<reader::Message>().unwrap();
+    let mut reader_registry = SchemaRegistry::new();
+    reader_registry.install_bundle(&reader_bundle).unwrap();
+    let reader_plan = binette::reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        &reader_bundle.root,
+        &reader_registry,
+    )
+    .unwrap();
+    let descriptor = rust_facet_descriptor_for::<reader::Message>().unwrap();
+    let thunks = binette::local_access::LocalThunkBindings::new();
+    let stencil = hybrid_local_stencil_decoder_from_plan(
+        &reader_plan,
+        &writer_registry,
+        &descriptor,
+        &thunks,
+    )
+    .unwrap();
+
+    LocalDecodeStencilFixture {
+        bytes: encode_to_vec_with_plan(&writer::sample(), &writer_plan).unwrap(),
         stencil,
     }
 }
@@ -1694,6 +1731,23 @@ mod mixed_struct {
         let fixture = mixed_hybrid_decode_fixture();
 
         bencher.bench(|| black_box(fixture.stencil.decode(black_box(&fixture.bytes)).unwrap()));
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[divan::bench]
+    pub fn local_schema(bencher: Bencher) {
+        let fixture = mixed_local_schema_decode_fixture();
+
+        bencher.bench(|| {
+            let mut out = std::mem::MaybeUninit::<reader::Message>::uninit();
+            black_box(unsafe {
+                fixture
+                    .stencil
+                    .decode_raw_into(black_box(&fixture.bytes), out.as_mut_ptr().cast())
+                    .unwrap();
+                out.assume_init()
+            })
+        });
     }
 }
 
