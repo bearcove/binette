@@ -208,11 +208,38 @@ pub(super) enum StencilEncodeHelper {
         element_output_len: usize,
         failure_index: usize,
     },
+    LocalEnum {
+        input_offset: usize,
+        tag_thunks: LocalEnumTagThunks,
+        cases: Vec<LocalEnumEncodeCase>,
+        failure_index: usize,
+    },
     LocalOptionSequenceBytes {
         input_offset: usize,
         option_thunks: LocalOptionEncodeThunks,
         sequence_thunks: LocalSequenceEncodeThunks,
         failure_index: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct LocalEnumEncodeCase {
+    pub(super) local_index: u32,
+    pub(super) wire_index: u32,
+    pub(super) payload: LocalEnumEncodePayload,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum LocalEnumEncodePayload {
+    Unit,
+    Fixed {
+        project_thunks: LocalVariantProjectThunks,
+        ops: Vec<CopyOp>,
+        output_len: usize,
+    },
+    SequenceBytes {
+        project_thunks: LocalVariantProjectThunks,
+        thunks: LocalSequenceEncodeThunks,
     },
 }
 

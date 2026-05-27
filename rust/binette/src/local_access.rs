@@ -113,6 +113,9 @@ pub type LocalOptionWriteNoneThunk =
     unsafe extern "C" fn(value: *mut u8, context: *mut c_void) -> bool;
 pub type LocalOptionWriteSomeBytesThunk =
     unsafe extern "C" fn(value: *mut u8, ptr: *const u8, len: usize, context: *mut c_void) -> bool;
+pub type LocalEnumTagThunk = unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> u32;
+pub type LocalVariantProjectThunk =
+    unsafe extern "C" fn(value: *const u8, context: *mut c_void) -> *const u8;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LocalSequenceEncodeThunks {
@@ -145,6 +148,18 @@ pub struct LocalOptionEncodeThunks {
 pub struct LocalOptionSequenceDecodeThunks {
     pub write_none: LocalOptionWriteNoneThunk,
     pub write_some_bytes: LocalOptionWriteSomeBytesThunk,
+    pub context: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LocalEnumTagThunks {
+    pub tag: LocalEnumTagThunk,
+    pub context: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LocalVariantProjectThunks {
+    pub project: LocalVariantProjectThunk,
     pub context: usize,
 }
 
@@ -182,6 +197,18 @@ pub struct LocalOptionSequenceDecodeThunkBinding {
     pub thunks: LocalOptionSequenceDecodeThunks,
 }
 
+#[derive(Debug, Clone)]
+pub struct LocalEnumTagThunkBinding {
+    pub tag: LocalThunk,
+    pub thunks: LocalEnumTagThunks,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalVariantProjectThunkBinding {
+    pub project: LocalThunk,
+    pub thunks: LocalVariantProjectThunks,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct LocalThunkBindings {
     sequence_u8: Vec<LocalSequenceThunkBinding>,
@@ -189,6 +216,8 @@ pub struct LocalThunkBindings {
     sequence_decode: Vec<LocalSequenceDecodeThunkBinding>,
     option: Vec<LocalOptionThunkBinding>,
     option_sequence_decode: Vec<LocalOptionSequenceDecodeThunkBinding>,
+    enum_tag: Vec<LocalEnumTagThunkBinding>,
+    variant_project: Vec<LocalVariantProjectThunkBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,6 +385,21 @@ impl LocalThunkBindings {
         self
     }
 
+    pub fn with_enum_tag(mut self, tag: LocalThunk, thunks: LocalEnumTagThunks) -> Self {
+        self.enum_tag.push(LocalEnumTagThunkBinding { tag, thunks });
+        self
+    }
+
+    pub fn with_variant_project(
+        mut self,
+        project: LocalThunk,
+        thunks: LocalVariantProjectThunks,
+    ) -> Self {
+        self.variant_project
+            .push(LocalVariantProjectThunkBinding { project, thunks });
+        self
+    }
+
     pub fn sequence_u8(
         &self,
         len: &LocalThunk,
@@ -406,6 +450,20 @@ impl LocalThunkBindings {
             .find(|binding| {
                 &binding.write_none == write_none && &binding.write_some_bytes == write_some_bytes
             })
+            .map(|binding| binding.thunks)
+    }
+
+    pub fn enum_tag(&self, tag: &LocalThunk) -> Option<LocalEnumTagThunks> {
+        self.enum_tag
+            .iter()
+            .find(|binding| &binding.tag == tag)
+            .map(|binding| binding.thunks)
+    }
+
+    pub fn variant_project(&self, project: &LocalThunk) -> Option<LocalVariantProjectThunks> {
+        self.variant_project
+            .iter()
+            .find(|binding| &binding.project == project)
             .map(|binding| binding.thunks)
     }
 }

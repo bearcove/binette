@@ -16,9 +16,9 @@ use crate::encode::{
 };
 use crate::hash::primitive_for_type_id;
 use crate::local_access::{
-    LocalOptionEncodeThunks, LocalOptionSequenceDecodeThunks, LocalSequenceDecodeThunks,
-    LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalThunkBindings,
-    LocalTypeDescriptor,
+    LocalEnumTagThunks, LocalOptionEncodeThunks, LocalOptionSequenceDecodeThunks,
+    LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks,
+    LocalThunkBindings, LocalTypeDescriptor, LocalVariantProjectThunks,
 };
 use crate::plan::{
     EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, ReaderPlan, StructFieldPlan,
@@ -54,8 +54,8 @@ use self::runtime::{
 use self::types::{
     CopyOp, CopyWidth, EncodeBytesKind, EncodeEnumCase, EncodeListLayout, EncodeOptionLayout,
     EncodeStencilOp, EnumCase, FixedEncodeCompiler, FixedEncodeSegment, HybridStencilOp,
-    LengthCheck, StencilEncodeHelper, StencilEncodeRuntime, StencilFailure, StencilHelper,
-    StencilOp, StencilRuntime, TaggedLength,
+    LengthCheck, LocalEnumEncodeCase, LocalEnumEncodePayload, StencilEncodeHelper,
+    StencilEncodeRuntime, StencilFailure, StencilHelper, StencilOp, StencilRuntime, TaggedLength,
 };
 
 type FixedStencilFn = unsafe extern "C" fn(input: *const u8, len: usize, out: *mut u8) -> u32;
@@ -850,6 +850,7 @@ fn encode_helper_paths(
             StencilEncodeHelper::Node { failure_index, .. }
             | StencilEncodeHelper::LocalSequenceBytes { failure_index, .. }
             | StencilEncodeHelper::LocalSequenceFixedElements { failure_index, .. }
+            | StencilEncodeHelper::LocalEnum { failure_index, .. }
             | StencilEncodeHelper::LocalOptionSequenceBytes { failure_index, .. } => {
                 helper_path(failures, *failure_index)
             }

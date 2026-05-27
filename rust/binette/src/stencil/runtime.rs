@@ -167,6 +167,7 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
         StencilEncodeHelper::Node { failure_index, .. }
         | StencilEncodeHelper::LocalSequenceBytes { failure_index, .. }
         | StencilEncodeHelper::LocalSequenceFixedElements { failure_index, .. }
+        | StencilEncodeHelper::LocalEnum { failure_index, .. }
         | StencilEncodeHelper::LocalOptionSequenceBytes { failure_index, .. } => {
             status_for_failure(*failure_index).unwrap_or(1)
         }
@@ -245,6 +246,69 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
                             out.as_mut_ptr().add(element_base + op.output_offset),
                             op.width.bytes(),
                         );
+                    }
+                }
+            }
+        }
+        StencilEncodeHelper::LocalEnum {
+            input_offset,
+            tag_thunks,
+            cases,
+            ..
+        } => {
+            if value.is_null() {
+                return status;
+            }
+            let value = value.wrapping_add(*input_offset);
+            let tag_context = tag_thunks.context as *mut std::ffi::c_void;
+            let local_index = unsafe { (tag_thunks.tag)(value, tag_context) };
+            let Some(case) = cases.iter().find(|case| case.local_index == local_index) else {
+                return status;
+            };
+            out.extend_from_slice(&case.wire_index.to_le_bytes());
+            match &case.payload {
+                LocalEnumEncodePayload::Unit => {}
+                LocalEnumEncodePayload::Fixed {
+                    project_thunks,
+                    ops,
+                    output_len,
+                } => {
+                    let context = project_thunks.context as *mut std::ffi::c_void;
+                    let payload = unsafe { (project_thunks.project)(value, context) };
+                    if payload.is_null() {
+                        return status;
+                    }
+                    let payload_base = out.len();
+                    out.resize(payload_base + output_len, 0);
+                    for op in ops {
+                        let source = unsafe { payload.add(op.input_offset) };
+                        unsafe {
+                            copy_nonoverlapping(
+                                source,
+                                out.as_mut_ptr().add(payload_base + op.output_offset),
+                                op.width.bytes(),
+                            );
+                        }
+                    }
+                }
+                LocalEnumEncodePayload::SequenceBytes {
+                    project_thunks,
+                    thunks,
+                } => {
+                    let project_context = project_thunks.context as *mut std::ffi::c_void;
+                    let payload = unsafe { (project_thunks.project)(value, project_context) };
+                    if payload.is_null() {
+                        return status;
+                    }
+                    let sequence_context = thunks.context as *mut std::ffi::c_void;
+                    let len = unsafe { (thunks.len)(payload, sequence_context) };
+                    let Ok(len_u32) = u32::try_from(len) else {
+                        return status;
+                    };
+                    out.extend_from_slice(&len_u32.to_le_bytes());
+                    out.reserve(len);
+                    for index in 0..len {
+                        out.push(unsafe { (thunks.element_u8)(payload, index, sequence_context) });
                     }
                 }
             }

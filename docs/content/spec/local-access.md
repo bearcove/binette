@@ -80,6 +80,9 @@ inside the current process.
 > encode and construction thunks for decode; hybrid execution treats the
 > optional node as the fallback boundary unless the engine has proven direct
 > local layout facts for that optional representation.
+> For an enum subtree, a backend may provide a tag thunk plus per-variant
+> payload projectors; hybrid execution writes the binette variant index and
+> encodes the projected payload using the variant payload descriptor.
 
 > r[binette.local-access.runtime-facts]
 >

@@ -4,11 +4,12 @@ use super::*;
 use crate::encode::{encode_to_vec_with_plan, writer_plan_for};
 use crate::hash::primitive_type_id;
 use crate::local_access::{
-    LocalAccess, LocalBackend, LocalDescriptorImport, LocalDescriptorImportKind, LocalFieldImport,
-    LocalOptionEncodeThunks, LocalOptionRepresentation, LocalOptionSequenceDecodeThunks,
-    LocalScalarAccess, LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks,
-    LocalSequenceEncodeThunks, LocalSequenceStorage, LocalThunk, LocalThunkBindings,
-    LocalTypeDescriptor, LocalValueLayout,
+    LocalAccess, LocalBackend, LocalDescriptorImport, LocalDescriptorImportKind,
+    LocalEnumTagThunks, LocalFieldImport, LocalOptionEncodeThunks, LocalOptionRepresentation,
+    LocalOptionSequenceDecodeThunks, LocalScalarAccess, LocalSequenceDecodeThunks,
+    LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceStorage,
+    LocalThunk, LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout,
+    LocalVariantProjectThunks,
 };
 use crate::reader_plan_for_bundle;
 
@@ -49,6 +50,29 @@ struct SwiftMaybeText {
 struct SwiftNumbers {
     id: u64,
     values: Vec<i64>,
+    code: u16,
+}
+
+#[derive(Debug, PartialEq, Facet)]
+#[repr(C)]
+struct SwiftLeaf {
+    count: i32,
+    flag: bool,
+}
+
+#[derive(Debug, PartialEq, Facet)]
+#[repr(C)]
+enum SwiftProbeEvent {
+    Empty,
+    Titled(String),
+    Nested(SwiftLeaf),
+}
+
+#[derive(Debug, PartialEq, Facet)]
+#[repr(C)]
+struct SwiftEventEnvelope {
+    id: u64,
+    event: SwiftProbeEvent,
     code: u16,
 }
 
@@ -317,6 +341,53 @@ fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_array_subtree() {
     assert_eq!(actual, encode_to_vec_with_plan(&value, &plan).unwrap());
 }
 
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn hybrid_local_encode_stencil_uses_bound_backend_thunks_for_enum_subtree() {
+    let values = [
+        SwiftEventEnvelope {
+            id: 0x0102_0304_0506_0708,
+            event: SwiftProbeEvent::Empty,
+            code: 0x1122,
+        },
+        SwiftEventEnvelope {
+            id: 0x1112_1314_1516_1718,
+            event: SwiftProbeEvent::Titled("payload".to_owned()),
+            code: 0x3344,
+        },
+        SwiftEventEnvelope {
+            id: 0x2122_2324_2526_2728,
+            event: SwiftProbeEvent::Nested(SwiftLeaf {
+                count: -42,
+                flag: true,
+            }),
+            code: 0x5566,
+        },
+    ];
+    let plan = writer_plan_for::<SwiftEventEnvelope>().unwrap();
+    let descriptor = swift_event_envelope_descriptor(plan.root());
+
+    let strict_error = match strict_local_stencil_encoder_from_plan(&plan, &descriptor) {
+        Ok(_) => panic!("strict local encode must reject thunk-backed enum fields"),
+        Err(err) => err,
+    };
+    assert!(matches!(strict_error, StencilError::Unsupported { .. }));
+
+    let thunks = swift_string_thunk_bindings();
+    let encoder = hybrid_local_stencil_encoder_from_plan(&plan, &descriptor, &thunks).unwrap();
+
+    assert_eq!(encoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(encoder.report().helper_count, 1);
+    assert_eq!(encoder.report().helper_paths, vec!["$.event".to_owned()]);
+    for value in values {
+        let actual =
+            unsafe { encoder.encode_raw_to_vec((&value as *const SwiftEventEnvelope).cast()) }
+                .unwrap();
+        assert_eq!(actual, encode_to_vec_with_plan(&value, &plan).unwrap());
+    }
+}
+
 fn swift_fixed_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
     LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
         root.clone(),
@@ -449,6 +520,39 @@ fn swift_numbers_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
     .unwrap()
 }
 
+fn swift_event_envelope_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
+    LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
+        root.clone(),
+        LocalValueLayout::of::<SwiftEventEnvelope>(),
+        LocalDescriptorImportKind::Struct {
+            fields: vec![
+                LocalFieldImport {
+                    name: "id".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftEventEnvelope, id),
+                    },
+                    descriptor: primitive_import(Primitive::U64, LocalValueLayout::of::<u64>()),
+                },
+                LocalFieldImport {
+                    name: "event".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftEventEnvelope, event),
+                    },
+                    descriptor: swift_probe_event_import(root),
+                },
+                LocalFieldImport {
+                    name: "code".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftEventEnvelope, code),
+                    },
+                    descriptor: primitive_import(Primitive::U16, LocalValueLayout::of::<u16>()),
+                },
+            ],
+        },
+    ))
+    .unwrap()
+}
+
 fn swift_thunk_string_import() -> LocalDescriptorImport {
     LocalDescriptorImport {
         schema: TypeRef::concrete(primitive_type_id(Primitive::String)).into(),
@@ -461,6 +565,69 @@ fn swift_thunk_string_import() -> LocalDescriptorImport {
                 write: Some(swift_string_write_thunk()),
             },
         )),
+    }
+}
+
+fn swift_leaf_import(owner: &TypeRef) -> LocalDescriptorImport {
+    LocalDescriptorImport {
+        schema: crate::local_access::LocalSchemaRef::Position {
+            owner: owner.clone(),
+            path: "event.Nested".to_owned(),
+        },
+        backend: LocalBackend::SwiftProbe,
+        layout: LocalValueLayout::of::<SwiftLeaf>(),
+        kind: LocalDescriptorImportKind::Struct {
+            fields: vec![
+                LocalFieldImport {
+                    name: "count".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftLeaf, count),
+                    },
+                    descriptor: primitive_import(Primitive::I32, LocalValueLayout::of::<i32>()),
+                },
+                LocalFieldImport {
+                    name: "flag".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftLeaf, flag),
+                    },
+                    descriptor: primitive_import(Primitive::Bool, LocalValueLayout::of::<bool>()),
+                },
+            ],
+        },
+    }
+}
+
+fn swift_probe_event_import(owner: &TypeRef) -> LocalDescriptorImport {
+    LocalDescriptorImport {
+        schema: crate::local_access::LocalSchemaRef::Position {
+            owner: owner.clone(),
+            path: "event".to_owned(),
+        },
+        backend: LocalBackend::SwiftProbe,
+        layout: LocalValueLayout::of::<SwiftProbeEvent>(),
+        kind: LocalDescriptorImportKind::Enum {
+            tag: LocalAccess::Thunk(swift_event_tag_thunk()),
+            variants: vec![
+                crate::local_access::LocalVariantImport {
+                    name: "Empty".to_owned(),
+                    index: 0,
+                    access: LocalAccess::Thunk(swift_event_project_empty_thunk()),
+                    payload: None,
+                },
+                crate::local_access::LocalVariantImport {
+                    name: "Titled".to_owned(),
+                    index: 1,
+                    access: LocalAccess::Thunk(swift_event_project_titled_thunk()),
+                    payload: Some(swift_thunk_string_import()),
+                },
+                crate::local_access::LocalVariantImport {
+                    name: "Nested".to_owned(),
+                    index: 2,
+                    access: LocalAccess::Thunk(swift_event_project_nested_thunk()),
+                    payload: Some(swift_leaf_import(owner)),
+                },
+            ],
+        },
     }
 }
 
@@ -533,6 +700,27 @@ fn swift_string_thunk_bindings() -> LocalThunkBindings {
                 context: 0,
             },
         )
+        .with_enum_tag(
+            swift_event_tag_thunk(),
+            LocalEnumTagThunks {
+                tag: test_swift_event_tag,
+                context: 0,
+            },
+        )
+        .with_variant_project(
+            swift_event_project_titled_thunk(),
+            LocalVariantProjectThunks {
+                project: test_swift_event_project_titled,
+                context: 0,
+            },
+        )
+        .with_variant_project(
+            swift_event_project_nested_thunk(),
+            LocalVariantProjectThunks {
+                project: test_swift_event_project_nested,
+                context: 0,
+            },
+        )
         .with_option(
             swift_option_is_some_thunk(),
             swift_option_some_thunk(),
@@ -571,6 +759,22 @@ fn swift_array_len_thunk() -> LocalThunk {
 
 fn swift_array_element_thunk() -> LocalThunk {
     LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Array.element")
+}
+
+fn swift_event_tag_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "ProbeEnum.discriminant")
+}
+
+fn swift_event_project_empty_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "ProbeEnum.project.empty")
+}
+
+fn swift_event_project_titled_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "ProbeEnum.project.titled")
+}
+
+fn swift_event_project_nested_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "ProbeEnum.project.nested")
 }
 
 fn swift_option_is_some_thunk() -> LocalThunk {
@@ -637,6 +841,37 @@ unsafe extern "C" fn test_swift_array_i64_element_ptr(
         (&*value.cast::<Vec<i64>>())
             .get(index)
             .map_or(std::ptr::null(), |value| value as *const i64 as *const u8)
+    }
+}
+
+unsafe extern "C" fn test_swift_event_tag(
+    value: *const u8,
+    _context: *mut std::ffi::c_void,
+) -> u32 {
+    match unsafe { &*value.cast::<SwiftProbeEvent>() } {
+        SwiftProbeEvent::Empty => 0,
+        SwiftProbeEvent::Titled(_) => 1,
+        SwiftProbeEvent::Nested(_) => 2,
+    }
+}
+
+unsafe extern "C" fn test_swift_event_project_titled(
+    value: *const u8,
+    _context: *mut std::ffi::c_void,
+) -> *const u8 {
+    match unsafe { &*value.cast::<SwiftProbeEvent>() } {
+        SwiftProbeEvent::Titled(title) => title as *const String as *const u8,
+        _ => std::ptr::null(),
+    }
+}
+
+unsafe extern "C" fn test_swift_event_project_nested(
+    value: *const u8,
+    _context: *mut std::ffi::c_void,
+) -> *const u8 {
+    match unsafe { &*value.cast::<SwiftProbeEvent>() } {
+        SwiftProbeEvent::Nested(leaf) => leaf as *const SwiftLeaf as *const u8,
+        _ => std::ptr::null(),
     }
 }
 

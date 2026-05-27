@@ -1,10 +1,11 @@
 use super::*;
 use crate::hash::primitive_type_id;
 use crate::local_access::{
-    LocalAccess, LocalFieldDescriptor, LocalOptionEncodeThunks, LocalOptionRepresentation,
-    LocalOptionSequenceDecodeThunks, LocalScalarAccess, LocalSchemaRef, LocalSequenceDecodeThunks,
-    LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceStorage,
-    LocalThunkBindings, LocalTypeDescriptor, LocalTypeKind, rust_facet_descriptor_for_shape,
+    LocalAccess, LocalEnumTagThunks, LocalFieldDescriptor, LocalOptionEncodeThunks,
+    LocalOptionRepresentation, LocalOptionSequenceDecodeThunks, LocalScalarAccess, LocalSchemaRef,
+    LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks,
+    LocalSequenceStorage, LocalThunkBindings, LocalTypeDescriptor, LocalTypeKind,
+    LocalVariantProjectThunks, rust_facet_descriptor_for_shape,
 };
 use crate::schema::TypeRef;
 
@@ -2298,7 +2299,6 @@ impl LocalEncodeStencilCompiler<'_> {
             }
             WriterNode::External => Ok(()),
             WriterNode::Ref { .. }
-            | WriterNode::Enum { .. }
             | WriterNode::Result { .. }
             | WriterNode::Set { .. }
             | WriterNode::Map { .. }
@@ -2307,6 +2307,10 @@ impl LocalEncodeStencilCompiler<'_> {
                 path: path.to_owned(),
                 reason: "local hybrid encode has no backend thunk for this subtree",
             }),
+            WriterNode::Enum { variants } => {
+                self.flush_direct_segment(pending);
+                self.push_projected_enum(descriptor, variants, input_offset, path)
+            }
             WriterNode::List { element } => {
                 self.flush_direct_segment(pending);
                 self.push_sequence_fixed_elements(descriptor, element, input_offset, path)
@@ -2468,6 +2472,95 @@ impl LocalEncodeStencilCompiler<'_> {
             });
         self.ops.push(EncodeStencilOp::Helper { helper_index });
         Ok(())
+    }
+
+    fn push_projected_enum(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        variants: &[WriterVariantPlan],
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let (tag_thunks, local_variants) = local_enum_tag_thunks(descriptor, self.thunks, path)?;
+        let mut cases = Vec::with_capacity(variants.len());
+        for variant in variants {
+            let local_variant = local_variants.get(variant.facet_index).ok_or_else(|| {
+                StencilError::Unsupported {
+                    path: path.to_owned(),
+                    reason: "writer enum variant index is out of range",
+                }
+            })?;
+            let variant_path = format!("{path}.{}", local_variant.name);
+            let payload = self.compile_projected_enum_payload(
+                local_variant,
+                &variant.payload,
+                &variant_path,
+            )?;
+            cases.push(LocalEnumEncodeCase {
+                local_index: local_variant.index,
+                wire_index: variant.wire_index,
+                payload,
+            });
+        }
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilEncodeHelper::LocalEnum {
+            input_offset,
+            tag_thunks,
+            cases,
+            failure_index,
+        });
+        self.ops.push(EncodeStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
+    fn compile_projected_enum_payload(
+        &self,
+        local_variant: &crate::local_access::LocalVariantDescriptor,
+        payload: &WriterVariantPayloadPlan,
+        path: &str,
+    ) -> Result<LocalEnumEncodePayload, StencilError> {
+        match payload {
+            WriterVariantPayloadPlan::Unit => Ok(LocalEnumEncodePayload::Unit),
+            WriterVariantPayloadPlan::Newtype(element) => {
+                let payload_descriptor =
+                    local_variant
+                        .payload
+                        .as_deref()
+                        .ok_or_else(|| StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "writer enum payload is missing local descriptor",
+                        })?;
+                let project_thunks =
+                    local_variant_project_thunks(&local_variant.access, self.thunks, path)?;
+                if matches!(
+                    element.node,
+                    WriterNode::Primitive(
+                        Primitive::String | Primitive::Bytes | Primitive::Payload
+                    )
+                ) {
+                    let thunks =
+                        local_sequence_bytes_thunks(payload_descriptor, self.thunks, path)?;
+                    return Ok(LocalEnumEncodePayload::SequenceBytes {
+                        project_thunks,
+                        thunks,
+                    });
+                }
+                let segment =
+                    fixed_descriptor_encode_segment(payload_descriptor, &element.node, 0, 0, path)?;
+                Ok(LocalEnumEncodePayload::Fixed {
+                    project_thunks,
+                    ops: segment.ops,
+                    output_len: segment.output_len,
+                })
+            }
+            WriterVariantPayloadPlan::Tuple(_) | WriterVariantPayloadPlan::Struct(_) => {
+                Err(StencilError::Unsupported {
+                    path: path.to_owned(),
+                    reason: "local projected enum helper currently supports unit and newtype payloads",
+                })
+            }
+        }
     }
 
     fn push_option_sequence_bytes(
@@ -3316,6 +3409,57 @@ fn local_byte_sequence_descriptor(
             reason: "local option byte-sequence payload is not thunk-backed",
         })
     }
+}
+
+fn local_enum_tag_thunks<'a>(
+    descriptor: &'a LocalTypeDescriptor,
+    bindings: &LocalThunkBindings,
+    path: &str,
+) -> Result<
+    (
+        LocalEnumTagThunks,
+        &'a [crate::local_access::LocalVariantDescriptor],
+    ),
+    StencilError,
+> {
+    let LocalTypeKind::Enum { tag, variants } = &descriptor.kind else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local descriptor is not an enum layout",
+        });
+    };
+    let LocalAccess::Thunk(tag) = tag else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local enum descriptor does not use a backend tag thunk",
+        });
+    };
+    let tag_thunks = bindings
+        .enum_tag(tag)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local enum tag thunk is not bound",
+        })?;
+    Ok((tag_thunks, variants))
+}
+
+fn local_variant_project_thunks(
+    access: &LocalAccess,
+    bindings: &LocalThunkBindings,
+    path: &str,
+) -> Result<LocalVariantProjectThunks, StencilError> {
+    let LocalAccess::Thunk(project) = access else {
+        return Err(StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local enum variant descriptor does not use a backend projector thunk",
+        });
+    };
+    bindings
+        .variant_project(project)
+        .ok_or_else(|| StencilError::Unsupported {
+            path: path.to_owned(),
+            reason: "local enum variant projector thunk is not bound",
+        })
 }
 
 fn local_enum_variant<'a>(
