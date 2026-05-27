@@ -1151,7 +1151,7 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
     ) -> Result<(), StencilError> {
         let (element_descriptor, element_stride, thunks) =
             local_sequence_fixed_decode_thunks(reader, self.thunks, path)?;
-        let (element_ops, element_input_len) = fixed_local_copy_ops(
+        let (element_ops, element_input_len) = fixed_local_decode_ops(
             self.writer_registry,
             self.plan_nodes,
             element,

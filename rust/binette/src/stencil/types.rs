@@ -104,7 +104,7 @@ pub(super) enum StencilHelper {
     LocalSequenceFixedElements {
         output_offset: usize,
         thunks: LocalSequenceFixedDecodeThunks,
-        element_ops: Vec<CopyOp>,
+        element_ops: Vec<StencilOp>,
         element_input_len: usize,
         element_stride: usize,
         failure_index: usize,

@@ -55,6 +55,14 @@ struct SwiftNumbers {
 
 #[derive(Debug, PartialEq, Facet)]
 #[repr(C)]
+struct SwiftLeafList {
+    id: u64,
+    values: Vec<SwiftLeaf>,
+    code: u16,
+}
+
+#[derive(Debug, PartialEq, Facet)]
+#[repr(C)]
 struct SwiftLeaf {
     count: i32,
     flag: bool,
@@ -394,6 +402,103 @@ fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_array_subtree() {
 // r[verify binette.local-access.descriptor]
 // r[verify binette.local-access.strict-hybrid]
 #[test]
+fn hybrid_local_encode_stencil_uses_bound_backend_thunk_for_struct_array_subtree() {
+    let value = SwiftLeafList {
+        id: 0x0102_0304_0506_0708,
+        values: vec![
+            SwiftLeaf {
+                count: 7,
+                flag: true,
+            },
+            SwiftLeaf {
+                count: -11,
+                flag: false,
+            },
+        ],
+        code: 0x1122,
+    };
+    let plan = writer_plan_for::<SwiftLeafList>().unwrap();
+    let descriptor = swift_leaf_list_descriptor(plan.root());
+
+    let strict_error = match strict_local_stencil_encoder_from_plan(&plan, &descriptor) {
+        Ok(_) => panic!("strict local encode must reject thunk-backed struct array fields"),
+        Err(err) => err,
+    };
+    assert!(matches!(strict_error, StencilError::Unsupported { .. }));
+
+    let thunks = swift_string_thunk_bindings();
+    let encoder = hybrid_local_stencil_encoder_from_plan(&plan, &descriptor, &thunks).unwrap();
+
+    assert_eq!(encoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(encoder.report().helper_count, 1);
+    assert_eq!(encoder.report().helper_paths, vec!["$.values".to_owned()]);
+    let actual =
+        unsafe { encoder.encode_raw_to_vec((&value as *const SwiftLeafList).cast()) }.unwrap();
+    assert_eq!(actual, encode_to_vec_with_plan(&value, &plan).unwrap());
+}
+
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
+fn hybrid_local_decode_stencil_uses_bound_backend_thunk_for_struct_array_subtree() {
+    let value = SwiftLeafList {
+        id: 0x1112_1314_1516_1718,
+        values: vec![
+            SwiftLeaf {
+                count: 8,
+                flag: true,
+            },
+            SwiftLeaf {
+                count: -5,
+                flag: false,
+            },
+        ],
+        code: 0x3344,
+    };
+    let writer_plan = writer_plan_for::<SwiftLeafList>().unwrap();
+    let mut writer_registry = SchemaRegistry::new();
+    writer_registry
+        .install_bundle(writer_plan.schema_bundle())
+        .unwrap();
+    let reader_plan = reader_plan_for_bundle(
+        writer_plan.root(),
+        &writer_registry,
+        writer_plan.root(),
+        &writer_registry,
+    )
+    .unwrap();
+    let descriptor = swift_leaf_list_descriptor(reader_plan.reader_root());
+
+    let strict_error =
+        match strict_local_stencil_decoder_from_plan(&reader_plan, &writer_registry, &descriptor) {
+            Ok(_) => panic!("strict local decode must reject thunk-backed struct array fields"),
+            Err(err) => err,
+        };
+    assert!(matches!(strict_error, StencilError::Unsupported { .. }));
+
+    let thunks = swift_string_thunk_bindings();
+    let decoder = hybrid_local_stencil_decoder_from_plan(
+        &reader_plan,
+        &writer_registry,
+        &descriptor,
+        &thunks,
+    )
+    .unwrap();
+    let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+
+    assert_eq!(decoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(decoder.report().helper_count, 1);
+    assert_eq!(decoder.report().helper_paths, vec!["$.values".to_owned()]);
+
+    let mut decoded = std::mem::MaybeUninit::<SwiftLeafList>::uninit();
+    unsafe { decoder.decode_raw_into(&bytes, decoded.as_mut_ptr().cast()) }.unwrap();
+    let decoded = unsafe { decoded.assume_init() };
+    assert_eq!(decoded, value);
+}
+
+// r[verify binette.local-access.descriptor]
+// r[verify binette.local-access.strict-hybrid]
+#[test]
 fn hybrid_local_encode_stencil_uses_bound_backend_thunks_for_enum_subtree() {
     let values = [
         SwiftEventEnvelope {
@@ -637,6 +742,39 @@ fn swift_numbers_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
     .unwrap()
 }
 
+fn swift_leaf_list_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
+    LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
+        root.clone(),
+        LocalValueLayout::of::<SwiftLeafList>(),
+        LocalDescriptorImportKind::Struct {
+            fields: vec![
+                LocalFieldImport {
+                    name: "id".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftLeafList, id),
+                    },
+                    descriptor: primitive_import(Primitive::U64, LocalValueLayout::of::<u64>()),
+                },
+                LocalFieldImport {
+                    name: "values".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftLeafList, values),
+                    },
+                    descriptor: swift_leaf_array_import(root),
+                },
+                LocalFieldImport {
+                    name: "code".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftLeafList, code),
+                    },
+                    descriptor: primitive_import(Primitive::U16, LocalValueLayout::of::<u16>()),
+                },
+            ],
+        },
+    ))
+    .unwrap()
+}
+
 fn swift_event_envelope_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
     LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
         root.clone(),
@@ -773,6 +911,54 @@ fn swift_i64_array_import(owner: &TypeRef) -> LocalDescriptorImport {
     }
 }
 
+fn swift_leaf_array_import(owner: &TypeRef) -> LocalDescriptorImport {
+    LocalDescriptorImport {
+        schema: crate::local_access::LocalSchemaRef::Position {
+            owner: owner.clone(),
+            path: "values".to_owned(),
+        },
+        backend: LocalBackend::SwiftProbe,
+        layout: LocalValueLayout::of::<Vec<SwiftLeaf>>(),
+        kind: LocalDescriptorImportKind::Sequence {
+            element: Box::new(swift_leaf_values_element_import(owner)),
+            storage: LocalSequenceStorage::Thunk {
+                len: swift_leaf_array_len_thunk(),
+                element: swift_leaf_array_element_thunk(),
+                write: Some(swift_leaf_array_write_thunk()),
+            },
+        },
+    }
+}
+
+fn swift_leaf_values_element_import(owner: &TypeRef) -> LocalDescriptorImport {
+    LocalDescriptorImport {
+        schema: crate::local_access::LocalSchemaRef::Position {
+            owner: owner.clone(),
+            path: "values[]".to_owned(),
+        },
+        backend: LocalBackend::SwiftProbe,
+        layout: LocalValueLayout::of::<SwiftLeaf>(),
+        kind: LocalDescriptorImportKind::Struct {
+            fields: vec![
+                LocalFieldImport {
+                    name: "count".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftLeaf, count),
+                    },
+                    descriptor: primitive_import(Primitive::I32, LocalValueLayout::of::<i32>()),
+                },
+                LocalFieldImport {
+                    name: "flag".to_owned(),
+                    access: LocalAccess::Direct {
+                        offset: std::mem::offset_of!(SwiftLeaf, flag),
+                    },
+                    descriptor: primitive_import(Primitive::Bool, LocalValueLayout::of::<bool>()),
+                },
+            ],
+        },
+    }
+}
+
 fn swift_option_string_import(owner: &TypeRef) -> LocalDescriptorImport {
     LocalDescriptorImport {
         schema: crate::local_access::LocalSchemaRef::Position {
@@ -824,6 +1010,22 @@ fn swift_string_thunk_bindings() -> LocalThunkBindings {
             swift_array_write_thunk(),
             LocalSequenceFixedDecodeThunks {
                 write_elements: test_swift_array_i64_write,
+                context: 0,
+            },
+        )
+        .with_sequence_element_ptr(
+            swift_leaf_array_len_thunk(),
+            swift_leaf_array_element_thunk(),
+            LocalSequenceElementPtrEncodeThunks {
+                len: test_swift_leaf_array_len,
+                element_ptr: test_swift_leaf_array_element_ptr,
+                context: 0,
+            },
+        )
+        .with_sequence_fixed_decode(
+            swift_leaf_array_write_thunk(),
+            LocalSequenceFixedDecodeThunks {
+                write_elements: test_swift_leaf_array_write,
                 context: 0,
             },
         )
@@ -911,6 +1113,21 @@ fn swift_array_element_thunk() -> LocalThunk {
 
 fn swift_array_write_thunk() -> LocalThunk {
     LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Array.init.elements")
+}
+
+fn swift_leaf_array_len_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Array<ProbeLeaf>.count")
+}
+
+fn swift_leaf_array_element_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Array<ProbeLeaf>.element")
+}
+
+fn swift_leaf_array_write_thunk() -> LocalThunk {
+    LocalThunk::new(
+        LocalBackend::SwiftProbe,
+        "Swift.Array<ProbeLeaf>.init.elements",
+    )
 }
 
 fn swift_event_tag_thunk() -> LocalThunk {
@@ -1020,6 +1237,56 @@ unsafe extern "C" fn test_swift_array_i64_write(
     }
     let elements = unsafe { std::slice::from_raw_parts(ptr.cast::<i64>(), count) };
     unsafe { value.cast::<Vec<i64>>().write(elements.to_vec()) };
+    true
+}
+
+unsafe extern "C" fn test_swift_leaf_array_len(
+    value: *const u8,
+    _context: *mut std::ffi::c_void,
+) -> usize {
+    unsafe { (&*value.cast::<Vec<SwiftLeaf>>()).len() }
+}
+
+unsafe extern "C" fn test_swift_leaf_array_element_ptr(
+    value: *const u8,
+    index: usize,
+    _context: *mut std::ffi::c_void,
+) -> *const u8 {
+    unsafe {
+        (&*value.cast::<Vec<SwiftLeaf>>())
+            .get(index)
+            .map_or(std::ptr::null(), |value| {
+                value as *const SwiftLeaf as *const u8
+            })
+    }
+}
+
+unsafe extern "C" fn test_swift_leaf_array_write(
+    value: *mut u8,
+    ptr: *const u8,
+    count: usize,
+    element_stride: usize,
+    _context: *mut std::ffi::c_void,
+) -> bool {
+    if element_stride != std::mem::size_of::<SwiftLeaf>() {
+        return false;
+    }
+    let mut leaves = Vec::with_capacity(count);
+    for index in 0..count {
+        let Some(offset) = index.checked_mul(element_stride) else {
+            return false;
+        };
+        let mut leaf = std::mem::MaybeUninit::<SwiftLeaf>::uninit();
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                ptr.add(offset),
+                leaf.as_mut_ptr().cast::<u8>(),
+                std::mem::size_of::<SwiftLeaf>(),
+            )
+        };
+        leaves.push(unsafe { leaf.assume_init() });
+    }
+    unsafe { value.cast::<Vec<SwiftLeaf>>().write(leaves) };
     true
 }
 

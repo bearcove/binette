@@ -111,19 +111,18 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
             for index in 0..count {
                 let input_base = index * element_input_len;
                 let output_base = index * element_stride;
-                for op in element_ops {
-                    let source_offset = input_base + op.input_offset;
-                    let output_offset = output_base + op.output_offset;
-                    let width = op.width.bytes();
-                    let Some(source) = input_elements.get(source_offset..source_offset + width)
-                    else {
-                        return hybrid_error_for_helper(helper);
-                    };
-                    let Some(output) = elements.get_mut(output_offset..output_offset + width)
-                    else {
-                        return hybrid_error_for_helper(helper);
-                    };
-                    output.copy_from_slice(source);
+                let Some(input_element) =
+                    input_elements.get(input_base..input_base + element_input_len)
+                else {
+                    return hybrid_error_for_helper(helper);
+                };
+                let Some(output_element) =
+                    elements.get_mut(output_base..output_base + element_stride)
+                else {
+                    return hybrid_error_for_helper(helper);
+                };
+                if !run_fixed_decode_ops(element_ops, input_element, output_element) {
+                    return hybrid_error_for_helper(helper);
                 }
             }
             let output = unsafe { out.add(*output_offset) };
@@ -208,46 +207,8 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
                         return hybrid_error_for_helper(helper);
                     };
                     let mut payload = vec![0u8; *local_size];
-                    for op in ops {
-                        match op {
-                            StencilOp::Copy(op) => {
-                                let source_offset = op.input_offset;
-                                let output_offset = op.output_offset;
-                                let width = op.width.bytes();
-                                let Some(source) =
-                                    input_payload.get(source_offset..source_offset + width)
-                                else {
-                                    return hybrid_error_for_helper(helper);
-                                };
-                                let Some(output) =
-                                    payload.get_mut(output_offset..output_offset + width)
-                                else {
-                                    return hybrid_error_for_helper(helper);
-                                };
-                                output.copy_from_slice(source);
-                            }
-                            StencilOp::Bool {
-                                input_offset,
-                                output_offset,
-                                ..
-                            } => {
-                                let Some(value) = input_payload.get(*input_offset).copied() else {
-                                    return hybrid_error_for_helper(helper);
-                                };
-                                if value > 1 {
-                                    return hybrid_error_for_helper(helper);
-                                }
-                                if let Some(output_offset) = output_offset {
-                                    let Some(output) = payload.get_mut(*output_offset) else {
-                                        return hybrid_error_for_helper(helper);
-                                    };
-                                    *output = value;
-                                }
-                            }
-                            StencilOp::RootEnum { .. } | StencilOp::RootList { .. } => {
-                                return hybrid_error_for_helper(helper);
-                            }
-                        }
+                    if !run_fixed_decode_ops(ops, input_payload, &mut payload) {
+                        return hybrid_error_for_helper(helper);
                     }
                     if !unsafe {
                         (case.construct_thunks.construct)(
@@ -312,6 +273,45 @@ fn hybrid_error_for_helper(helper: &StencilHelper) -> usize {
         | StencilHelper::LocalEnum { failure_index, .. }
         | StencilHelper::Skip { failure_index, .. } => hybrid_error_for_failure(*failure_index),
     }
+}
+
+fn run_fixed_decode_ops(ops: &[StencilOp], input: &[u8], output: &mut [u8]) -> bool {
+    for op in ops {
+        match op {
+            StencilOp::Copy(op) => {
+                let source_offset = op.input_offset;
+                let output_offset = op.output_offset;
+                let width = op.width.bytes();
+                let Some(source) = input.get(source_offset..source_offset + width) else {
+                    return false;
+                };
+                let Some(output) = output.get_mut(output_offset..output_offset + width) else {
+                    return false;
+                };
+                output.copy_from_slice(source);
+            }
+            StencilOp::Bool {
+                input_offset,
+                output_offset,
+                ..
+            } => {
+                let Some(value) = input.get(*input_offset).copied() else {
+                    return false;
+                };
+                if value > 1 {
+                    return false;
+                }
+                if let Some(output_offset) = output_offset {
+                    let Some(output) = output.get_mut(*output_offset) else {
+                        return false;
+                    };
+                    *output = value;
+                }
+            }
+            StencilOp::RootEnum { .. } | StencilOp::RootList { .. } => return false,
+        }
+    }
+    true
 }
 
 pub(super) unsafe extern "C" fn stencil_encode_helper(
