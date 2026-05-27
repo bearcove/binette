@@ -18,43 +18,6 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertTrue(validateProbeRuntimeFacts())
     }
 
-    // r[verify binette.local-access.boundary]
-    // r[verify binette.local-access.descriptor+2]
-    // r[verify binette.local-access.swift-probes+2]
-    func testProbeDescriptorsExportAsCodableHandoff() throws {
-        let exports = exportProbeDescriptors()
-        let data = try JSONEncoder().encode(exports)
-        let decoded = try JSONDecoder().decode([BinetteDescriptorExport].self, from: data)
-
-        XCTAssertEqual(decoded, exports)
-        XCTAssertTrue(exports.allSatisfy { $0.backend == "swift-probe" })
-
-        let nested = try XCTUnwrap(exports.first { $0.schemaName == "ProbeNested" })
-        XCTAssertEqual(nested.kind.tag, "struct")
-        XCTAssertEqual(nested.kind.fields?.map(\.access.tag), ["direct", "direct", "direct"])
-
-        let enumDescriptor = try XCTUnwrap(exports.first { $0.schemaName == "ProbeEnum" })
-        XCTAssertEqual(enumDescriptor.kind.tag, "enum")
-        XCTAssertEqual(enumDescriptor.kind.variants?.map(\.name), ["empty", "titled", "nested"])
-        XCTAssertEqual(enumDescriptor.kind.variants?[1].payload?.schemaName, "string")
-
-        let string = try XCTUnwrap(exports.first { $0.schemaName == "string" })
-        XCTAssertEqual(string.kind.tag, "string")
-        XCTAssertEqual(string.kind.storage?.tag, "thunk")
-        XCTAssertEqual(string.kind.storage?.count, "Swift.String.utf8.count")
-        XCTAssertEqual(string.kind.storage?.write, "Swift.String.init.utf8")
-
-        let optionalUInt16 = try XCTUnwrap(exports.first { $0.schemaName == "option<u16>" })
-        XCTAssertEqual(optionalUInt16.kind.tag, "option")
-        XCTAssertEqual(optionalUInt16.kind.storage?.tag, "direct-tag")
-        XCTAssertEqual(optionalUInt16.kind.storage?.optionTagWidth, MemoryLayout<UInt8>.size)
-
-        let optionalBool = try XCTUnwrap(exports.first { $0.schemaName == "option<bool>" })
-        XCTAssertEqual(optionalBool.kind.tag, "option")
-        XCTAssertEqual(optionalBool.kind.storage?.tag, "niche-tag")
-        XCTAssertEqual(optionalBool.kind.storage?.optionTagWidth, MemoryLayout<UInt8>.size)
-    }
-
     // r[verify binette.local-access.descriptor+2]
     // r[verify binette.local-access.runtime-facts]
     func testStoredStructFieldsUseDirectOffsets() throws {
@@ -195,11 +158,7 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertEqual(loadByte(from: someOptional, offset: offset), UInt8(someValue))
         XCTAssertEqual(loadUInt16(from: someOptional, offset: someOffset), 0xCAFE)
 
-        let export = try XCTUnwrap(
-            exportProbeDescriptors().first { $0.schemaName == "option<u16>" }
-        )
-        XCTAssertEqual(export.kind.storage?.optionTagWidth, MemoryLayout<UInt8>.size)
-        XCTAssertEqual(export.kind.storage?.someOffset, someOffset)
+        XCTAssertEqual(someOffset, 0)
     }
 
     // r[verify binette.local-access.descriptor+2]
@@ -228,12 +187,7 @@ final class BinetteSwiftProbesTests: XCTestCase {
         XCTAssertFalse(loadBool(from: someFalse, offset: someOffset))
         XCTAssertTrue(loadBool(from: someTrue, offset: someOffset))
 
-        let export = try XCTUnwrap(
-            exportProbeDescriptors().first { $0.schemaName == "option<bool>" }
-        )
-        XCTAssertEqual(export.kind.storage?.tag, "niche-tag")
-        XCTAssertEqual(export.kind.storage?.noneValue, noneValue)
-        XCTAssertNil(export.kind.storage?.someValue)
+        XCTAssertEqual(noneValue, 2)
     }
 }
 

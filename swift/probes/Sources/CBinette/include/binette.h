@@ -301,7 +301,19 @@ void binette_byte_buffer_free(struct BinetteByteBuffer buffer);
 
 uint64_t binette_primitive_string_type_id(void);
 
+uint64_t binette_primitive_bool_type_id(void);
+
+uint64_t binette_primitive_u8_type_id(void);
+
+uint64_t binette_primitive_u16_type_id(void);
+
 uint64_t binette_primitive_u32_type_id(void);
+
+uint64_t binette_primitive_i32_type_id(void);
+
+uint64_t binette_primitive_i64_type_id(void);
+
+uint64_t binette_primitive_bytes_type_id(void);
 
 uint64_t binette_canary_message_type_id(void);
 

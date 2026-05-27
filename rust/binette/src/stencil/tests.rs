@@ -11,7 +11,7 @@ use crate::local_access::{
     LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks,
     LocalSequenceStorage, LocalStorageExport, LocalThunk, LocalThunkBindings, LocalTypeDescriptor,
     LocalTypeKind, LocalValueLayout, LocalVariantConstructThunks, LocalVariantProjectThunks,
-    local_descriptor_exports_from_json, rust_facet_descriptor_for,
+    rust_facet_descriptor_for,
 };
 use crate::reader_plan_for_bundle;
 
@@ -358,7 +358,7 @@ fn strict_local_decode_stencil_accepts_swift_imported_fixed_descriptor() {
 #[test]
 fn swift_probe_fixture_direct_option_drives_strict_local_stencils() {
     let writer_plan = writer_plan_for::<Option<u16>>().unwrap();
-    let descriptor = swift_fixture_descriptor("option<u16>", writer_plan.root()).unwrap();
+    let descriptor = swift_fixture_descriptor("option<u16>", writer_plan.root());
 
     let value = SwiftOptionalU16 {
         value: 0x3344,
@@ -386,8 +386,7 @@ fn swift_probe_fixture_direct_option_drives_strict_local_stencils() {
         &writer_registry,
     )
     .unwrap();
-    let reader_descriptor =
-        swift_fixture_descriptor("option<u16>", reader_plan.reader_root()).unwrap();
+    let reader_descriptor = swift_fixture_descriptor("option<u16>", reader_plan.reader_root());
     let decoder =
         strict_local_stencil_decoder_from_plan(&reader_plan, &writer_registry, &reader_descriptor)
             .unwrap();
@@ -415,7 +414,7 @@ fn swift_probe_fixture_direct_option_drives_strict_local_stencils() {
 #[test]
 fn swift_probe_fixture_niche_option_drives_strict_local_stencils() {
     let writer_plan = writer_plan_for::<Option<bool>>().unwrap();
-    let descriptor = swift_fixture_descriptor("option<bool>", writer_plan.root()).unwrap();
+    let descriptor = swift_fixture_descriptor("option<bool>", writer_plan.root());
 
     let some_true = SwiftOptionalBool { byte: 1 };
     let some_false = SwiftOptionalBool { byte: 0 };
@@ -450,8 +449,7 @@ fn swift_probe_fixture_niche_option_drives_strict_local_stencils() {
         &writer_registry,
     )
     .unwrap();
-    let reader_descriptor =
-        swift_fixture_descriptor("option<bool>", reader_plan.reader_root()).unwrap();
+    let reader_descriptor = swift_fixture_descriptor("option<bool>", reader_plan.reader_root());
     let decoder =
         strict_local_stencil_decoder_from_plan(&reader_plan, &writer_registry, &reader_descriptor)
             .unwrap();
@@ -1507,28 +1505,44 @@ fn swift_text_export_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
         .unwrap()
 }
 
-fn swift_fixture_descriptor(
-    schema_name: &str,
-    root: &TypeRef,
-) -> Result<LocalTypeDescriptor, crate::local_access::LocalDescriptorExportError> {
-    let export = local_descriptor_exports_from_json(include_str!(
-        "../../tests/fixtures/swift-probe-descriptors.json"
+fn swift_fixture_descriptor(schema_name: &str, root: &TypeRef) -> LocalTypeDescriptor {
+    let (some, some_layout, representation, layout) = match schema_name {
+        "option<u16>" => (
+            Primitive::U16,
+            LocalValueLayout::of::<u16>(),
+            LocalOptionRepresentation::Tag {
+                tag: LocalAccess::Direct { offset: 2 },
+                tag_width: 1,
+                none_value: 1,
+                some_value: 0,
+                some: LocalAccess::Direct { offset: 0 },
+            },
+            LocalValueLayout::new(4, 2, 4),
+        ),
+        "option<bool>" => (
+            Primitive::Bool,
+            LocalValueLayout::of::<bool>(),
+            LocalOptionRepresentation::Niche {
+                tag: LocalAccess::Direct { offset: 0 },
+                tag_width: 1,
+                none_value: 2,
+                none_bytes: Some(vec![2]),
+                some: LocalAccess::Direct { offset: 0 },
+            },
+            LocalValueLayout::new(1, 1, 1),
+        ),
+        _ => panic!("missing Swift fixture descriptor {schema_name}"),
+    };
+
+    LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
+        crate::local_access::LocalSchemaRef::Type(root.clone()),
+        layout,
+        LocalDescriptorImportKind::Option {
+            some: Box::new(primitive_import(some, some_layout)),
+            representation,
+        },
     ))
     .unwrap()
-    .into_iter()
-    .find(|export| export.schema_name == schema_name)
-    .unwrap_or_else(|| panic!("missing Swift fixture descriptor {schema_name}"));
-    LocalTypeDescriptor::from_export(export, |schema_name| match schema_name {
-        "option<u16>" => Some(crate::local_access::LocalSchemaRef::Type(root.clone())),
-        "option<bool>" => Some(crate::local_access::LocalSchemaRef::Type(root.clone())),
-        "bool" => Some(crate::local_access::LocalSchemaRef::Type(
-            TypeRef::concrete(primitive_type_id(Primitive::Bool)),
-        )),
-        "u16" => Some(crate::local_access::LocalSchemaRef::Type(
-            TypeRef::concrete(primitive_type_id(Primitive::U16)),
-        )),
-        _ => None,
-    })
 }
 
 fn swift_export_schema(

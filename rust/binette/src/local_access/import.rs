@@ -161,19 +161,6 @@ pub enum LocalDescriptorExportError {
     Import(#[from] LocalDescriptorImportError),
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum LocalDescriptorHandoffError {
-    #[error(transparent)]
-    Json(#[from] facet_json::DeserializeError),
-}
-
-// r[impl binette.local-access.swift-probes+2]
-pub fn local_descriptor_exports_from_json(
-    input: &str,
-) -> Result<Vec<LocalDescriptorExport>, LocalDescriptorHandoffError> {
-    Ok(facet_json::from_str(input)?)
-}
-
 impl LocalTypeDescriptor {
     pub fn from_import(import: LocalDescriptorImport) -> Result<Self, LocalDescriptorImportError> {
         import.into_descriptor("$")

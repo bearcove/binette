@@ -7,6 +7,17 @@ private enum Message: Equatable {
     case Bye(UInt32)
 }
 
+private struct VoxLikeChannel {
+    var raw: UInt64
+}
+
+private struct VoxLikeRequest {
+    var title: String
+    var payload: [UInt8]
+    var retry: UInt16?
+    var stream: VoxLikeChannel
+}
+
 private typealias CVariantProject = @convention(c) (UnsafePointer<UInt8>?, UnsafeMutableRawPointer?) -> UnsafePointer<UInt8>?
 
 final class BinetteCAbiCanaryTests: XCTestCase {
@@ -40,6 +51,14 @@ final class BinetteCAbiCanaryTests: XCTestCase {
 
         let rustValue = try decodeMessage(handle: handle, bytes: rustBytes)
         XCTAssertEqual(rustValue, Message.Hi("hello from rust"))
+    }
+
+    // r[verify binette.local-access.boundary]
+    // r[verify binette.local-access.descriptor+2]
+    // r[verify binette.local-access.swift-probes+2]
+    func testVoxLikeSwiftDescriptorTreeImportsThroughCAbi() throws {
+        let handle = try importVoxLikeRequestDescriptor()
+        binette_local_descriptor_free(handle)
     }
 }
 
@@ -108,6 +127,73 @@ private func importMessageDescriptor() throws -> OpaquePointer {
                 let status = binette_local_descriptor_import(&descriptor, &handle)
                 XCTAssertEqual(status, BINETTE_STATUS_OK)
                 return try XCTUnwrap(handle)
+            }
+        }
+    }
+}
+
+private func importVoxLikeRequestDescriptor() throws -> OpaquePointer {
+    var stringDescriptor = stringDescriptor()
+    var bytesDescriptor = bytesDescriptor()
+    var u16Descriptor = plainDescriptor(
+        typeID: binette_primitive_u16_type_id(),
+        size: MemoryLayout<UInt16>.size,
+        align: MemoryLayout<UInt16>.alignment,
+        stride: MemoryLayout<UInt16>.stride
+    )
+    var optionalU16Descriptor = optionU16Descriptor(some: &u16Descriptor)
+    var channelDescriptor = externalAttachmentDescriptor(
+        typeID: 0xB1_0000_0000_0001,
+        kind: "vox.channel",
+        size: MemoryLayout<VoxLikeChannel>.size,
+        align: MemoryLayout<VoxLikeChannel>.alignment,
+        stride: MemoryLayout<VoxLikeChannel>.stride
+    )
+
+    return try withUnsafePointer(to: &stringDescriptor) { stringPtr in
+        try withUnsafePointer(to: &bytesDescriptor) { bytesPtr in
+            try withUnsafePointer(to: &optionalU16Descriptor) { retryPtr in
+                try withUnsafePointer(to: &channelDescriptor) { channelPtr in
+                    let fields = [
+                        BinetteLocalFieldAbi(
+                            name: localStr("title"),
+                            offset: MemoryLayout<VoxLikeRequest>.offset(of: \VoxLikeRequest.title)!,
+                            descriptor: stringPtr
+                        ),
+                        BinetteLocalFieldAbi(
+                            name: localStr("payload"),
+                            offset: MemoryLayout<VoxLikeRequest>.offset(of: \VoxLikeRequest.payload)!,
+                            descriptor: bytesPtr
+                        ),
+                        BinetteLocalFieldAbi(
+                            name: localStr("retry"),
+                            offset: MemoryLayout<VoxLikeRequest>.offset(of: \VoxLikeRequest.retry)!,
+                            descriptor: retryPtr
+                        ),
+                        BinetteLocalFieldAbi(
+                            name: localStr("stream"),
+                            offset: MemoryLayout<VoxLikeRequest>.offset(of: \VoxLikeRequest.stream)!,
+                            descriptor: channelPtr
+                        ),
+                    ]
+
+                    return try fields.withUnsafeBufferPointer { fieldsPtr in
+                        var descriptor = BinetteLocalDescriptorAbi(
+                            schema: typeSchema(0xB1_0000_0000_1000),
+                            backend: UInt32(BINETTE_LOCAL_BACKEND_SWIFT),
+                            layout: BinetteLocalLayoutAbi(
+                                size: MemoryLayout<VoxLikeRequest>.size,
+                                align: MemoryLayout<VoxLikeRequest>.alignment,
+                                stride: MemoryLayout<VoxLikeRequest>.stride
+                            ),
+                            kind: structKind(fields: fieldsPtr)
+                        )
+                        var handle: OpaquePointer?
+                        let status = binette_local_descriptor_import(&descriptor, &handle)
+                        XCTAssertEqual(status, BINETTE_STATUS_OK)
+                        return try XCTUnwrap(handle)
+                    }
+                }
             }
         }
     }
@@ -194,6 +280,88 @@ private func stringDescriptor() -> BinetteLocalDescriptorAbi {
     )
 }
 
+private func bytesDescriptor() -> BinetteLocalDescriptorAbi {
+    BinetteLocalDescriptorAbi(
+        schema: typeSchema(binette_primitive_bytes_type_id()),
+        backend: UInt32(BINETTE_LOCAL_BACKEND_SWIFT),
+        layout: BinetteLocalLayoutAbi(
+            size: MemoryLayout<[UInt8]>.size,
+            align: MemoryLayout<[UInt8]>.alignment,
+            stride: MemoryLayout<[UInt8]>.stride
+        ),
+        kind: scalarKind(
+            tag: UInt32(BINETTE_LOCAL_SCALAR_BYTES),
+            storage: byteArrayStorage()
+        )
+    )
+}
+
+private func optionU16Descriptor(
+    some: UnsafePointer<BinetteLocalDescriptorAbi>
+) -> BinetteLocalDescriptorAbi {
+    BinetteLocalDescriptorAbi(
+        schema: typeSchema(0xB1_0000_0000_0002),
+        backend: UInt32(BINETTE_LOCAL_BACKEND_SWIFT),
+        layout: BinetteLocalLayoutAbi(
+            size: MemoryLayout<UInt16?>.size,
+            align: MemoryLayout<UInt16?>.alignment,
+            stride: MemoryLayout<UInt16?>.stride
+        ),
+        kind: optionKind(
+            some: some,
+            representation: optionalU16Representation()
+        )
+    )
+}
+
+private func optionalU16Representation() -> BinetteLocalOptionRepresentationAbi {
+    let none: UInt16? = nil
+    let zero: UInt16? = 0
+    let some: UInt16? = 0xCAFE
+    let noneBytes = bytes(of: none)
+    let zeroBytes = bytes(of: zero)
+    let someBytes = bytes(of: some)
+    let tagOffset = noneBytes.indices.first {
+        noneBytes[$0] != someBytes[$0] && zeroBytes[$0] == someBytes[$0]
+    }!
+
+    return BinetteLocalOptionRepresentationAbi(
+        tag: UInt32(BINETTE_LOCAL_OPTION_DIRECT_TAG),
+        tag_offset: tagOffset,
+        tag_width: MemoryLayout<UInt8>.size,
+        none_value: Int(noneBytes[tagOffset]),
+        some_value: Int(someBytes[tagOffset]),
+        some_offset: 0,
+        none_bytes: nil,
+        none_bytes_len: 0,
+        thunks: BinetteLocalOptionThunksAbi(
+            is_some: nil,
+            some: nil,
+            write_none: nil,
+            write_some_bytes: nil,
+            context: nil
+        )
+    )
+}
+
+private func externalAttachmentDescriptor(
+    typeID: UInt64,
+    kind: StaticString,
+    size: Int,
+    align: Int,
+    stride: Int
+) -> BinetteLocalDescriptorAbi {
+    var localKind = emptyKind()
+    localKind.tag = UInt32(BINETTE_LOCAL_KIND_EXTERNAL_ATTACHMENT)
+    localKind.text = localStr(kind)
+    return BinetteLocalDescriptorAbi(
+        schema: typeSchema(typeID),
+        backend: UInt32(BINETTE_LOCAL_BACKEND_SWIFT),
+        layout: BinetteLocalLayoutAbi(size: size, align: align, stride: stride),
+        kind: localKind
+    )
+}
+
 private func scalarKind(
     tag: UInt32,
     storage: BinetteLocalSequenceStorageAbi
@@ -201,6 +369,18 @@ private func scalarKind(
     var kind = emptyKind()
     kind.tag = UInt32(BINETTE_LOCAL_KIND_SCALAR)
     kind.scalar = BinetteLocalScalarAbi(tag: tag, storage: storage)
+    return kind
+}
+
+private func structKind(
+    fields: UnsafeBufferPointer<BinetteLocalFieldAbi>
+) -> BinetteLocalKindAbi {
+    var kind = emptyKind()
+    kind.tag = UInt32(BINETTE_LOCAL_KIND_STRUCT)
+    kind.structure = BinetteLocalStructAbi(
+        fields: fields.baseAddress,
+        field_count: fields.count
+    )
     return kind
 }
 
@@ -218,6 +398,16 @@ private func enumKind(
         variants: variants.baseAddress,
         variant_count: variants.count
     )
+    return kind
+}
+
+private func optionKind(
+    some: UnsafePointer<BinetteLocalDescriptorAbi>,
+    representation: BinetteLocalOptionRepresentationAbi
+) -> BinetteLocalKindAbi {
+    var kind = emptyKind()
+    kind.tag = UInt32(BINETTE_LOCAL_KIND_OPTION)
+    kind.option = BinetteLocalOptionAbi(some: some, representation: representation)
     return kind
 }
 
@@ -278,6 +468,27 @@ private func emptySequenceStorage() -> BinetteLocalSequenceStorageAbi {
             element_u8: nil,
             element_ptr: nil,
             write_bytes: nil,
+            write_fixed_elements: nil,
+            context: nil
+        )
+    )
+}
+
+private func byteArrayStorage() -> BinetteLocalSequenceStorageAbi {
+    BinetteLocalSequenceStorageAbi(
+        tag: UInt32(BINETTE_LOCAL_SEQUENCE_THUNK),
+        offset: 0,
+        element_count: 0,
+        pointer_offset: 0,
+        length_offset: 0,
+        has_capacity: 0,
+        capacity_offset: 0,
+        element_stride: MemoryLayout<UInt8>.stride,
+        thunks: BinetteLocalSequenceThunksAbi(
+            len: byteArrayLen,
+            element_u8: byteArrayElement,
+            element_ptr: nil,
+            write_bytes: byteArrayWrite,
             write_fixed_elements: nil,
             context: nil
         )
@@ -404,4 +615,35 @@ private func swiftStringWrite(
     guard let text = String(bytes: bytes, encoding: .utf8) else { return false }
     UnsafeMutableRawPointer(value!).assumingMemoryBound(to: String.self).initialize(to: text)
     return true
+}
+
+private func byteArrayLen(
+    _ value: UnsafePointer<UInt8>?,
+    _ context: UnsafeMutableRawPointer?
+) -> Int {
+    UnsafeRawPointer(value!).assumingMemoryBound(to: [UInt8].self).pointee.count
+}
+
+private func byteArrayElement(
+    _ value: UnsafePointer<UInt8>?,
+    _ index: Int,
+    _ context: UnsafeMutableRawPointer?
+) -> UInt8 {
+    UnsafeRawPointer(value!).assumingMemoryBound(to: [UInt8].self).pointee[index]
+}
+
+private func byteArrayWrite(
+    _ value: UnsafeMutablePointer<UInt8>?,
+    _ ptr: UnsafePointer<UInt8>?,
+    _ len: Int,
+    _ context: UnsafeMutableRawPointer?
+) -> Bool {
+    let bytes = Array(UnsafeBufferPointer(start: ptr, count: len))
+    UnsafeMutableRawPointer(value!).assumingMemoryBound(to: [UInt8].self).initialize(to: bytes)
+    return true
+}
+
+private func bytes<T>(of value: T) -> [UInt8] {
+    var value = value
+    return withUnsafeBytes(of: &value) { Array($0) }
 }

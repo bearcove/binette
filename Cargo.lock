@@ -49,7 +49,6 @@ dependencies = [
  "divan",
  "facet",
  "facet-core",
- "facet-json",
  "facet-reflect",
  "facet-value",
  "libc",
@@ -230,18 +229,6 @@ dependencies = [
  "facet-path",
  "facet-reflect",
  "facet-solver",
-]
-
-[[package]]
-name = "facet-json"
-version = "0.46.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6fbb1d8aa586b5e6b189575d1eda196cd3014347aff36be8dd097401024fe6d"
-dependencies = [
- "facet",
- "facet-core",
- "facet-format",
- "facet-reflect",
 ]
 
 [[package]]

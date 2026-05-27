@@ -97,8 +97,44 @@ pub extern "C" fn binette_primitive_string_type_id() -> u64 {
 
 // r[impl binette.local-access.boundary]
 #[unsafe(no_mangle)]
+pub extern "C" fn binette_primitive_bool_type_id() -> u64 {
+    primitive_type_id(Primitive::Bool).0
+}
+
+// r[impl binette.local-access.boundary]
+#[unsafe(no_mangle)]
+pub extern "C" fn binette_primitive_u8_type_id() -> u64 {
+    primitive_type_id(Primitive::U8).0
+}
+
+// r[impl binette.local-access.boundary]
+#[unsafe(no_mangle)]
+pub extern "C" fn binette_primitive_u16_type_id() -> u64 {
+    primitive_type_id(Primitive::U16).0
+}
+
+// r[impl binette.local-access.boundary]
+#[unsafe(no_mangle)]
 pub extern "C" fn binette_primitive_u32_type_id() -> u64 {
     primitive_type_id(Primitive::U32).0
+}
+
+// r[impl binette.local-access.boundary]
+#[unsafe(no_mangle)]
+pub extern "C" fn binette_primitive_i32_type_id() -> u64 {
+    primitive_type_id(Primitive::I32).0
+}
+
+// r[impl binette.local-access.boundary]
+#[unsafe(no_mangle)]
+pub extern "C" fn binette_primitive_i64_type_id() -> u64 {
+    primitive_type_id(Primitive::I64).0
+}
+
+// r[impl binette.local-access.boundary]
+#[unsafe(no_mangle)]
+pub extern "C" fn binette_primitive_bytes_type_id() -> u64 {
+    primitive_type_id(Primitive::Bytes).0
 }
 
 // r[impl binette.local-access.boundary]

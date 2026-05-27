@@ -9,10 +9,6 @@ let package = Package(
             name: "BinetteSwiftProbes",
             targets: ["BinetteSwiftProbes"]
         ),
-        .executable(
-            name: "binette-swift-probes",
-            targets: ["BinetteSwiftProbeDump"]
-        ),
     ],
     targets: [
         .target(
@@ -27,10 +23,6 @@ let package = Package(
             ]
         ),
         .target(name: "BinetteSwiftProbes"),
-        .executableTarget(
-            name: "BinetteSwiftProbeDump",
-            dependencies: ["BinetteSwiftProbes"]
-        ),
         .testTarget(
             name: "BinetteSwiftProbesTests",
             dependencies: ["BinetteSwiftProbes", "CBinette"]

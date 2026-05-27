@@ -32,11 +32,9 @@ pub use c_abi::{
     BinetteLocalVariantProjectThunkAbi, LocalDescriptorAbiError, LocalDescriptorAbiImport,
 };
 pub use import::{
-    LocalAccessExport, LocalDescriptorExport, LocalDescriptorExportError,
-    LocalDescriptorHandoffError, LocalDescriptorImport, LocalDescriptorImportError,
-    LocalDescriptorImportKind, LocalFieldExport, LocalFieldImport, LocalKindExport,
-    LocalLayoutExport, LocalStorageExport, LocalVariantExport, LocalVariantImport,
-    local_descriptor_exports_from_json,
+    LocalAccessExport, LocalDescriptorExport, LocalDescriptorExportError, LocalDescriptorImport,
+    LocalDescriptorImportError, LocalDescriptorImportKind, LocalFieldExport, LocalFieldImport,
+    LocalKindExport, LocalLayoutExport, LocalStorageExport, LocalVariantExport, LocalVariantImport,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2121,180 +2119,6 @@ mod tests {
     }
 
     // r[verify binette.local-access.swift-probes+2]
-    // r[verify binette.local-access.descriptor+2]
-    #[test]
-    fn swift_probe_json_handoff_lowers_to_runtime_descriptor_tree() {
-        let exports = local_descriptor_exports_from_json(include_str!(
-            "../tests/fixtures/swift-probe-descriptors.json"
-        ))
-        .unwrap();
-        assert_eq!(exports.len(), 12);
-        let descriptors = exports
-            .into_iter()
-            .map(|export| {
-                let name = export.schema_name.clone();
-                LocalTypeDescriptor::from_export(export, resolve_swift_handoff_schema)
-                    .map(|descriptor| (name, descriptor))
-            })
-            .collect::<Result<std::collections::HashMap<_, _>, _>>()
-            .unwrap();
-        let descriptor = descriptors.get("ProbeNested").unwrap();
-        let option_descriptor = descriptors.get("option<string>").unwrap();
-        let option_bool_descriptor = descriptors.get("option<bool>").unwrap();
-        let option_u16_descriptor = descriptors.get("option<u16>").unwrap();
-        let enum_descriptor = descriptors.get("ProbeEnum").unwrap();
-
-        assert_eq!(descriptor.backend, LocalBackend::SwiftProbe);
-        let LocalTypeKind::Struct { fields } = &descriptor.kind else {
-            panic!("expected Swift handoff root struct");
-        };
-        assert_eq!(
-            fields
-                .iter()
-                .map(|field| field.name.as_str())
-                .collect::<Vec<_>>(),
-            ["title", "leaf", "values"]
-        );
-        assert_eq!(fields[0].access, LocalAccess::Direct { offset: 0 });
-        assert!(matches!(
-            fields[0].descriptor.kind,
-            LocalTypeKind::Scalar(LocalScalarAccess::String(
-                LocalSequenceStorage::Thunk { .. }
-            ))
-        ));
-        assert!(matches!(
-            fields[1].descriptor.kind,
-            LocalTypeKind::Struct { .. }
-        ));
-        assert!(matches!(
-            fields[2].descriptor.kind,
-            LocalTypeKind::Sequence {
-                storage: LocalSequenceStorage::Thunk { .. },
-                ..
-            }
-        ));
-
-        assert_eq!(option_descriptor.backend, LocalBackend::SwiftProbe);
-        let LocalTypeKind::Option {
-            some,
-            representation:
-                LocalOptionRepresentation::Thunk {
-                    is_some,
-                    some: some_thunk,
-                    write_none: Some(write_none),
-                    write_some_bytes: Some(write_some_bytes),
-                },
-        } = &option_descriptor.kind
-        else {
-            panic!("expected Swift handoff option descriptor");
-        };
-        assert!(matches!(
-            some.kind,
-            LocalTypeKind::Scalar(LocalScalarAccess::String(
-                LocalSequenceStorage::Thunk { .. }
-            ))
-        ));
-        assert_eq!(
-            *is_some,
-            LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Optional.isSome")
-        );
-        assert_eq!(
-            *some_thunk,
-            LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Optional.some")
-        );
-        assert_eq!(
-            *write_none,
-            LocalThunk::new(LocalBackend::SwiftProbe, "Swift.Optional.init.none")
-        );
-        assert_eq!(
-            *write_some_bytes,
-            LocalThunk::new(
-                LocalBackend::SwiftProbe,
-                "Swift.Optional<String>.init.some.utf8"
-            )
-        );
-
-        assert_eq!(option_bool_descriptor.backend, LocalBackend::SwiftProbe);
-        let LocalTypeKind::Option {
-            some,
-            representation:
-                LocalOptionRepresentation::Niche {
-                    tag,
-                    tag_width,
-                    none_value,
-                    some: some_access,
-                    ..
-                },
-        } = &option_bool_descriptor.kind
-        else {
-            panic!("expected Swift niche-tag option descriptor");
-        };
-        assert!(matches!(
-            some.kind,
-            LocalTypeKind::Scalar(LocalScalarAccess::Plain)
-        ));
-        assert_eq!(*tag, LocalAccess::Direct { offset: 0 });
-        assert_eq!(*tag_width, 1);
-        assert_eq!(*none_value, 2);
-        assert_eq!(*some_access, LocalAccess::Direct { offset: 0 });
-
-        assert_eq!(option_u16_descriptor.backend, LocalBackend::SwiftProbe);
-        let LocalTypeKind::Option {
-            some,
-            representation:
-                LocalOptionRepresentation::Tag {
-                    tag,
-                    tag_width,
-                    none_value,
-                    some_value,
-                    some: some_access,
-                },
-        } = &option_u16_descriptor.kind
-        else {
-            panic!("expected Swift direct-tag option descriptor");
-        };
-        assert!(matches!(
-            some.kind,
-            LocalTypeKind::Scalar(LocalScalarAccess::Plain)
-        ));
-        assert_eq!(*tag, LocalAccess::Direct { offset: 2 });
-        assert_eq!(*tag_width, 1);
-        assert_eq!(*none_value, 1);
-        assert_eq!(*some_value, 0);
-        assert_eq!(*some_access, LocalAccess::Direct { offset: 0 });
-
-        assert_eq!(enum_descriptor.backend, LocalBackend::SwiftProbe);
-        let LocalTypeKind::Enum { tag, variants } = &enum_descriptor.kind else {
-            panic!("expected Swift handoff enum descriptor");
-        };
-        assert_eq!(
-            *tag,
-            LocalAccess::Thunk(LocalThunk::new(
-                LocalBackend::SwiftProbe,
-                "ProbeEnum.discriminant"
-            ))
-        );
-        assert_eq!(
-            variants
-                .iter()
-                .map(|variant| variant.name.as_str())
-                .collect::<Vec<_>>(),
-            ["empty", "titled", "nested"]
-        );
-        assert!(variants[0].payload.is_none());
-        assert!(matches!(
-            variants[1].payload.as_deref().map(|payload| &payload.kind),
-            Some(LocalTypeKind::Scalar(LocalScalarAccess::String(
-                LocalSequenceStorage::Thunk { .. }
-            )))
-        ));
-        assert!(matches!(
-            variants[2].payload.as_deref().map(|payload| &payload.kind),
-            Some(LocalTypeKind::Struct { .. })
-        ));
-    }
-
-    // r[verify binette.local-access.swift-probes+2]
     #[test]
     fn imported_descriptor_rejects_cross_backend_thunks() {
         let import = LocalDescriptorImport::swift_probe(
@@ -2318,27 +2142,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    fn resolve_swift_handoff_schema(schema_name: &str) -> Option<LocalSchemaRef> {
-        let type_ref = match schema_name {
-            "bool" => TypeRef::concrete(primitive_type_id(Primitive::Bool)),
-            "u8" => TypeRef::concrete(primitive_type_id(Primitive::U8)),
-            "u16" => TypeRef::concrete(primitive_type_id(Primitive::U16)),
-            "i32" => TypeRef::concrete(primitive_type_id(Primitive::I32)),
-            "i64" => TypeRef::concrete(primitive_type_id(Primitive::I64)),
-            "u32" => TypeRef::concrete(primitive_type_id(Primitive::U32)),
-            "string" => TypeRef::concrete(primitive_type_id(Primitive::String)),
-            "ProbeLeaf" => TypeRef::concrete(TypeId(0x5E_AE_00_01)),
-            "ProbeNested" => TypeRef::concrete(TypeId(0x5E_AE_00_02)),
-            "ProbeEnum" => TypeRef::concrete(TypeId(0x5E_AE_00_03)),
-            "array<i64>" => TypeRef::concrete(TypeId(0x5E_AE_00_04)),
-            "option<string>" => TypeRef::concrete(TypeId(0x5E_AE_00_05)),
-            "option<u16>" => TypeRef::concrete(TypeId(0x5E_AE_00_06)),
-            "option<bool>" => TypeRef::concrete(TypeId(0x5E_AE_00_07)),
-            _ => return None,
-        };
-        Some(LocalSchemaRef::Type(type_ref))
     }
 
     // r[verify binette.local-access.backends]
