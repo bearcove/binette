@@ -12,3 +12,8 @@ Facet is the Rust backend for local access descriptors. Other runtimes, such as
 Swift probe fixtures in this repository, feed equivalent descriptors and thunks
 into the same binette planning and stencil machinery rather than defining a
 separate codec.
+
+Swift descriptor dumps use a tagged, snake_case JSON handoff. The Rust crate
+decodes that handoff through Facet into `LocalDescriptorExport` values, then
+validates and lowers them into `LocalTypeDescriptor` trees before any stencil
+or JIT path consumes them.

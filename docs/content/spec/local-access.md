@@ -146,6 +146,7 @@ inside the current process.
 > available, enum variant projectors, sequence/optional access, and explicit
 > thunk names for cases that require Swift-owned accessors. The handoff is
 > rejected if Swift descriptor nodes contain thunks from another backend. A
-> Swift backend may export this handoff as a tagged descriptor tree; that export
-> is metadata for binette engines, not encoded binette data and not a Swift
-> codec.
+> Swift backend may export this handoff as a tagged descriptor tree. If the
+> handoff crosses an FFI or process boundary as JSON, Rust/binette decodes it as
+> typed Facet data before lowering it into runtime descriptors. That export is
+> metadata for binette engines, not encoded binette data and not a Swift codec.

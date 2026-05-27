@@ -14,8 +14,9 @@ fixtures, and archives.
   local-access descriptor and stencil/JIT machinery.
 - `typescript/binette`: TypeScript implementation, starting with the generic
   self-describing value codec.
-- `swift/probes`: Swift probe fixtures for producing process-local access
-  descriptors consumed by the Rust/binette execution engine.
+- `swift/probes`: Swift probe fixtures and a descriptor-dump executable for
+  producing process-local access descriptors consumed by the Rust/binette
+  execution engine.
 
 ## Local Access
 
@@ -26,6 +27,10 @@ probes are sibling descriptor producers; neither defines the binary format.
 Strict optimized execution uses only direct descriptor facts. Hybrid optimized
 execution compiles supported subtrees and uses explicit backend thunks only at
 unsupported subtree boundaries.
+
+The Swift probe handoff is a tagged descriptor tree. The Rust crate can decode
+the JSON form of that handoff through Facet and lower it into the same local
+descriptor model used by Rust/Facet.
 
 ## Benchmarks
 
