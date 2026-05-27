@@ -126,6 +126,14 @@ pub(super) enum StencilHelper {
         primitive: Primitive,
         failure_index: usize,
     },
+    DirectOptionFixed {
+        output_offset: usize,
+        option: DirectOptionDecodeLayout,
+        element_ops: Vec<StencilOp>,
+        element_input_len: usize,
+        element_output_len: usize,
+        failure_index: usize,
+    },
     OptionSequenceBytes {
         output_offset: usize,
         thunks: LocalOptionSequenceDecodeThunks,

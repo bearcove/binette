@@ -28,13 +28,17 @@ final class BinetteCAbiCanaryTests: XCTestCase {
     func testSwiftMessageCrossesRustCAbiThroughLocalDescriptor() throws {
         let handle = try importMessageDescriptor()
         defer { binette_local_descriptor_free(handle) }
+        let schemaBundle = try canaryMessageSchemaBundle()
+        defer { binette_byte_buffer_free(schemaBundle) }
 
         for value in [Message.Hi("hello from swift"), Message.Bye(0xCAFE_BABE)] {
             var message = value
             var encoded = BinetteByteBuffer()
             let encodeStatus = withUnsafePointer(to: &message) { pointer in
-                binette_canary_message_encode(
+                binette_local_encode_with_schema_bundle(
                     handle,
+                    UnsafePointer(schemaBundle.ptr),
+                    schemaBundle.len,
                     UnsafeRawPointer(pointer).assumingMemoryBound(to: UInt8.self),
                     &encoded
                 )
@@ -166,9 +170,15 @@ private func decodeMessage(
     handle: OpaquePointer,
     bytes: BinetteByteBuffer
 ) throws -> Message {
+    let schemaBundle = try canaryMessageSchemaBundle()
+    defer { binette_byte_buffer_free(schemaBundle) }
     let out = UnsafeMutablePointer<Message>.allocate(capacity: 1)
-    let status = binette_canary_message_decode(
+    let status = binette_local_decode_with_schema_bundles(
         handle,
+        UnsafePointer(schemaBundle.ptr),
+        schemaBundle.len,
+        UnsafePointer(schemaBundle.ptr),
+        schemaBundle.len,
         UnsafePointer(bytes.ptr),
         bytes.len,
         UnsafeMutableRawPointer(out).assumingMemoryBound(to: UInt8.self)
@@ -181,6 +191,16 @@ private func decodeMessage(
     let value = out.move()
     out.deallocate()
     return value
+}
+
+private func canaryMessageSchemaBundle() throws -> BinetteByteBuffer {
+    var schemaBundle = BinetteByteBuffer()
+    let status = binette_canary_message_schema_bundle(&schemaBundle)
+    XCTAssertEqual(status, BINETTE_STATUS_OK)
+    if status != BINETTE_STATUS_OK {
+        throw NSError(domain: "BinetteCAbiCanaryTests", code: Int(status))
+    }
+    return schemaBundle
 }
 
 private func importDescriptor(

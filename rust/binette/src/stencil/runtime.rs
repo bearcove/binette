@@ -198,6 +198,22 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
             *sequence,
             *primitive,
         ),
+        StencilHelper::DirectOptionFixed {
+            output_offset,
+            option,
+            element_ops,
+            element_input_len,
+            element_output_len,
+            ..
+        } => decode_direct_option_fixed(
+            helper,
+            tail,
+            unsafe { out.add(*output_offset) },
+            option,
+            element_ops,
+            *element_input_len,
+            *element_output_len,
+        ),
         StencilHelper::OptionSequenceBytes {
             output_offset,
             thunks,
@@ -335,6 +351,7 @@ fn hybrid_error_for_helper(helper: &StencilHelper) -> usize {
         | StencilHelper::DirectSequenceBytes { failure_index, .. }
         | StencilHelper::DirectSequenceFixedElements { failure_index, .. }
         | StencilHelper::DirectOptionSequenceBytes { failure_index, .. }
+        | StencilHelper::DirectOptionFixed { failure_index, .. }
         | StencilHelper::OptionSequenceBytes { failure_index, .. }
         | StencilHelper::Enum { failure_index, .. }
         | StencilHelper::Skip { failure_index, .. } => hybrid_error_for_failure(*failure_index),
@@ -375,6 +392,51 @@ fn decode_direct_option_sequence_bytes(
             }
             let some_output = unsafe { output.add(option.some_offset) };
             if !unsafe { write_direct_sequence(some_output, sequence, bytes, len) } {
+                return hybrid_error_for_helper(helper);
+            }
+            if let Some(some_value) = option.some_value
+                && !unsafe {
+                    write_direct_option_tag(output, option.tag_offset, option.tag_width, some_value)
+                }
+            {
+                return hybrid_error_for_helper(helper);
+            }
+            end
+        }
+        _ => hybrid_error_for_helper(helper),
+    }
+}
+
+fn decode_direct_option_fixed(
+    helper: &StencilHelper,
+    tail: &[u8],
+    output: *mut u8,
+    option: &DirectOptionDecodeLayout,
+    element_ops: &[StencilOp],
+    element_input_len: usize,
+    element_output_len: usize,
+) -> usize {
+    let Some(tag) = tail.first().copied() else {
+        return hybrid_error_for_helper(helper);
+    };
+    match tag {
+        STENCIL_OPTION_NONE_U8 => {
+            if !unsafe { write_direct_option_none(output, option) } {
+                return hybrid_error_for_helper(helper);
+            }
+            1
+        }
+        STENCIL_OPTION_SOME_U8 => {
+            let Some(end) = 1usize.checked_add(element_input_len) else {
+                return hybrid_error_for_helper(helper);
+            };
+            let Some(input_element) = tail.get(1..end) else {
+                return hybrid_error_for_helper(helper);
+            };
+            let some_output = unsafe { output.add(option.some_offset) };
+            let output_element =
+                unsafe { std::slice::from_raw_parts_mut(some_output, element_output_len) };
+            if !run_fixed_decode_ops(element_ops, input_element, output_element) {
                 return hybrid_error_for_helper(helper);
             }
             if let Some(some_value) = option.some_value

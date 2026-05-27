@@ -830,6 +830,7 @@ fn decode_helper_paths(helpers: &[StencilHelper], failures: &[StencilFailure]) -
             | StencilHelper::DirectSequenceBytes { failure_index, .. }
             | StencilHelper::DirectSequenceFixedElements { failure_index, .. }
             | StencilHelper::DirectOptionSequenceBytes { failure_index, .. }
+            | StencilHelper::DirectOptionFixed { failure_index, .. }
             | StencilHelper::OptionSequenceBytes { failure_index, .. }
             | StencilHelper::Enum { failure_index, .. }
             | StencilHelper::Skip { failure_index, .. } => helper_path(failures, *failure_index),

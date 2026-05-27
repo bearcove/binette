@@ -771,7 +771,13 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
                 element,
             } => self.compile_array(reader, dimensions, element, output_offset, path),
             PlanNode::Option { element } => {
-                self.push_option_sequence_bytes(reader, element, output_offset, path)
+                match self.push_direct_option_fixed(reader, element, output_offset, path) {
+                    Ok(()) => Ok(()),
+                    Err(StencilError::Unsupported { .. }) => {
+                        self.push_option_sequence_bytes(reader, element, output_offset, path)
+                    }
+                    Err(err) => Err(err),
+                }
             }
             PlanNode::External { .. } => Ok(()),
             PlanNode::List { element } => {
@@ -1182,6 +1188,44 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
         self.helpers.push(StencilHelper::OptionSequenceBytes {
             output_offset,
             thunks,
+            failure_index,
+        });
+        self.ops.push(HybridStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
+    fn push_direct_option_fixed(
+        &mut self,
+        reader: &LocalTypeDescriptor,
+        element: &PlanNode,
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let option = local_direct_option_parts(reader, path)?;
+        let (element_ops, element_input_len) = fixed_local_decode_ops(
+            self.writer_registry,
+            self.plan_nodes,
+            element,
+            option.some,
+            0,
+            &format!("{path}.some"),
+        )?;
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilHelper::DirectOptionFixed {
+            output_offset,
+            option: DirectOptionDecodeLayout {
+                tag_offset: option.tag_offset,
+                tag_width: option.tag_width,
+                none_value: option.none_value,
+                none_bytes: option.none_bytes.map(Vec::from),
+                some_value: option.some_value,
+                some_offset: option.some_offset,
+                option_size: option.option_size,
+            },
+            element_ops,
+            element_input_len,
+            element_output_len: option.some.layout.size,
             failure_index,
         });
         self.ops.push(HybridStencilOp::Helper { helper_index });

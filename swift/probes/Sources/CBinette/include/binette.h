@@ -21,6 +21,8 @@
 
 #define BINETTE_STATUS_STENCIL 4
 
+#define BINETTE_STATUS_SCHEMA 5
+
 typedef struct BinetteLocalDescriptorHandle BinetteLocalDescriptorHandle;
 
 typedef uint32_t BinetteLocalSchemaRefTag;
@@ -316,6 +318,26 @@ uint64_t binette_primitive_i64_type_id(void);
 uint64_t binette_primitive_bytes_type_id(void);
 
 uint64_t binette_canary_message_type_id(void);
+
+int32_t binette_canary_message_schema_bundle(struct BinetteByteBuffer *out);
+
+int32_t binette_local_descriptor_synthetic_schema_bundle(struct BinetteLocalDescriptorHandle *handle,
+                                                         struct BinetteByteBuffer *out);
+
+int32_t binette_local_encode_with_schema_bundle(const struct BinetteLocalDescriptorHandle *handle,
+                                                const uint8_t *schema_bundle,
+                                                size_t schema_bundle_len,
+                                                const uint8_t *value,
+                                                struct BinetteByteBuffer *out);
+
+int32_t binette_local_decode_with_schema_bundles(const struct BinetteLocalDescriptorHandle *handle,
+                                                 const uint8_t *writer_schema_bundle,
+                                                 size_t writer_schema_bundle_len,
+                                                 const uint8_t *reader_schema_bundle,
+                                                 size_t reader_schema_bundle_len,
+                                                 const uint8_t *bytes,
+                                                 size_t len,
+                                                 uint8_t *out_value);
 
 int32_t binette_canary_message_encode(const struct BinetteLocalDescriptorHandle *handle,
                                       const uint8_t *value,
