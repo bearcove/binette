@@ -1714,9 +1714,7 @@ fn canonicalize_descriptor_schema(
                 .iter_mut()
                 .map(|variant| {
                     let payload = match &mut variant.payload {
-                        Some(payload) => VariantPayload::Newtype {
-                            type_ref: canonicalize_descriptor_schema(payload, schemas)?,
-                        },
+                        Some(payload) => canonicalize_variant_payload_descriptor(payload, schemas)?,
                         None => VariantPayload::Unit,
                     };
                     Ok(Variant {
@@ -1756,6 +1754,37 @@ fn canonicalize_descriptor_schema(
     };
     descriptor.schema = LocalSchemaRef::Type(type_ref.clone());
     Ok(type_ref)
+}
+
+fn canonicalize_variant_payload_descriptor(
+    payload: &mut LocalTypeDescriptor,
+    schemas: &mut Vec<Schema>,
+) -> Result<VariantPayload, LocalSchemaBundleError> {
+    match &mut payload.kind {
+        LocalTypeKind::Struct { fields } => {
+            let fields = fields
+                .iter_mut()
+                .map(|field| {
+                    Ok(Field {
+                        name: field.name.clone(),
+                        type_ref: canonicalize_descriptor_schema(&mut field.descriptor, schemas)?,
+                        required: true,
+                    })
+                })
+                .collect::<Result<Vec<_>, LocalSchemaBundleError>>()?;
+            Ok(VariantPayload::Struct { fields })
+        }
+        LocalTypeKind::Tuple { fields } => {
+            let elements = fields
+                .iter_mut()
+                .map(|field| canonicalize_descriptor_schema(&mut field.descriptor, schemas))
+                .collect::<Result<Vec<_>, LocalSchemaBundleError>>()?;
+            Ok(VariantPayload::Tuple { elements })
+        }
+        _ => Ok(VariantPayload::Newtype {
+            type_ref: canonicalize_descriptor_schema(payload, schemas)?,
+        }),
+    }
 }
 
 fn canonicalize_external_metadata(

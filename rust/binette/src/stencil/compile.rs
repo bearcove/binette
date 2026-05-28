@@ -1109,10 +1109,48 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
                     local_size: local_payload.layout.size,
                 })
             }
-            EnumPayloadPlan::Tuple(_) | EnumPayloadPlan::Struct(_) => {
-                Err(StencilError::Unsupported {
+            EnumPayloadPlan::Tuple(elements) => {
+                let local_payload = local_payload.ok_or_else(|| StencilError::Unsupported {
                     path: path.to_owned(),
-                    reason: "local constructed enum helper currently supports unit and newtype payloads",
+                    reason: "reader enum tuple payload is missing local descriptor",
+                })?;
+                let payload_node = PlanNode::Tuple {
+                    elements: elements.clone(),
+                };
+                let (ops, input_len) = fixed_local_decode_ops(
+                    self.writer_registry,
+                    self.plan_nodes,
+                    &payload_node,
+                    local_payload,
+                    0,
+                    path,
+                )?;
+                Ok(LocalEnumDecodePayload::Fixed {
+                    ops,
+                    input_len,
+                    local_size: local_payload.layout.size,
+                })
+            }
+            EnumPayloadPlan::Struct(fields) => {
+                let local_payload = local_payload.ok_or_else(|| StencilError::Unsupported {
+                    path: path.to_owned(),
+                    reason: "reader enum struct payload is missing local descriptor",
+                })?;
+                let payload_node = PlanNode::Struct {
+                    fields: fields.clone(),
+                };
+                let (ops, input_len) = fixed_local_decode_ops(
+                    self.writer_registry,
+                    self.plan_nodes,
+                    &payload_node,
+                    local_payload,
+                    0,
+                    path,
+                )?;
+                Ok(LocalEnumDecodePayload::Fixed {
+                    ops,
+                    input_len,
+                    local_size: local_payload.layout.size,
                 })
             }
         }
@@ -1888,10 +1926,58 @@ impl LocalEncodeStencilCompiler<'_> {
                     output_len: segment.output_len,
                 })
             }
-            WriterVariantPayloadPlan::Tuple(_) | WriterVariantPayloadPlan::Struct(_) => {
-                Err(StencilError::Unsupported {
-                    path: path.to_owned(),
-                    reason: "local projected enum helper currently supports unit and newtype payloads",
+            WriterVariantPayloadPlan::Tuple(elements) => {
+                let payload_descriptor =
+                    local_variant
+                        .payload
+                        .as_deref()
+                        .ok_or_else(|| StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "writer enum tuple payload is missing local descriptor",
+                        })?;
+                let payload_node = WriterNode::Tuple {
+                    elements: elements.clone(),
+                };
+                let segment =
+                    fixed_descriptor_encode_segment(payload_descriptor, &payload_node, 0, 0, path)?;
+                let project_into_thunks =
+                    local_variant_project_into_thunks(local_variant, self.thunks, path)?
+                        .ok_or_else(|| StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "writer enum tuple payload needs project-into backend thunks",
+                        })?;
+                Ok(LocalEnumEncodePayload::OwnedFixed {
+                    project_into_thunks,
+                    payload_layout: payload_descriptor.layout,
+                    ops: segment.ops,
+                    output_len: segment.output_len,
+                })
+            }
+            WriterVariantPayloadPlan::Struct(fields) => {
+                let payload_descriptor =
+                    local_variant
+                        .payload
+                        .as_deref()
+                        .ok_or_else(|| StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "writer enum struct payload is missing local descriptor",
+                        })?;
+                let payload_node = WriterNode::Struct {
+                    fields: fields.clone(),
+                };
+                let segment =
+                    fixed_descriptor_encode_segment(payload_descriptor, &payload_node, 0, 0, path)?;
+                let project_into_thunks =
+                    local_variant_project_into_thunks(local_variant, self.thunks, path)?
+                        .ok_or_else(|| StencilError::Unsupported {
+                            path: path.to_owned(),
+                            reason: "writer enum struct payload needs project-into backend thunks",
+                        })?;
+                Ok(LocalEnumEncodePayload::OwnedFixed {
+                    project_into_thunks,
+                    payload_layout: payload_descriptor.layout,
+                    ops: segment.ops,
+                    output_len: segment.output_len,
                 })
             }
         }
