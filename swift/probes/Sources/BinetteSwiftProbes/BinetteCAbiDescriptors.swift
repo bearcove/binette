@@ -77,6 +77,28 @@ public final class BinetteCAbiDescriptorArena {
         )
     }
 
+    public func sequence(
+        typeID: UInt64,
+        layout: BinetteLocalLayoutAbi,
+        element: UnsafePointer<BinetteLocalDescriptorAbi>,
+        storage: BinetteLocalSequenceStorageAbi
+    ) -> UnsafePointer<BinetteLocalDescriptorAbi> {
+        var kind = emptyKind()
+        kind.tag = UInt32(BINETTE_LOCAL_KIND_SEQUENCE)
+        kind.sequence = BinetteLocalSequenceAbi(
+            element: element,
+            storage: storage
+        )
+        return store(
+            BinetteLocalDescriptorAbi(
+                schema: binetteTypeSchema(typeID),
+                backend: UInt32(BINETTE_LOCAL_BACKEND_SWIFT),
+                layout: layout,
+                kind: kind
+            )
+        )
+    }
+
     public func option(
         typeID: UInt64,
         layout: BinetteLocalLayoutAbi,
@@ -286,6 +308,36 @@ public func binetteLayout<T>(of _: T.Type) -> BinetteLocalLayoutAbi {
 
 public func binetteLocalStr(_ value: StaticString) -> BinetteLocalStrAbi {
     BinetteLocalStrAbi(ptr: value.utf8Start, len: value.utf8CodeUnitCount)
+}
+
+public func binetteThunkSequenceStorage(
+    elementStride: Int,
+    len: BinetteLocalSequenceLenThunk?,
+    elementU8: BinetteLocalSequenceU8Thunk? = nil,
+    elementPtr: BinetteLocalSequenceElementPtrThunk? = nil,
+    elementProjectInto: BinetteLocalSequenceElementProjectIntoThunk? = nil,
+    writeBytes: BinetteLocalSequenceWriteBytesThunk? = nil,
+    writeFixedElements: BinetteLocalSequenceWriteFixedElementsThunk? = nil
+) -> BinetteLocalSequenceStorageAbi {
+    BinetteLocalSequenceStorageAbi(
+        tag: UInt32(BINETTE_LOCAL_SEQUENCE_THUNK),
+        offset: 0,
+        element_count: 0,
+        pointer_offset: 0,
+        length_offset: 0,
+        has_capacity: 0,
+        capacity_offset: 0,
+        element_stride: elementStride,
+        thunks: BinetteLocalSequenceThunksAbi(
+            len: len,
+            element_u8: elementU8,
+            element_ptr: elementPtr,
+            element_project_into: elementProjectInto,
+            write_bytes: writeBytes,
+            write_fixed_elements: writeFixedElements,
+            context: nil
+        )
+    )
 }
 
 public func binetteTypeSchema(_ typeID: UInt64) -> BinetteLocalSchemaRefAbi {
@@ -521,6 +573,7 @@ private func emptySequenceStorage() -> BinetteLocalSequenceStorageAbi {
             len: nil,
             element_u8: nil,
             element_ptr: nil,
+            element_project_into: nil,
             write_bytes: nil,
             write_fixed_elements: nil,
             context: nil
@@ -542,6 +595,7 @@ private func stringStorage() -> BinetteLocalSequenceStorageAbi {
             len: binetteSwiftStringLen,
             element_u8: binetteSwiftStringElement,
             element_ptr: nil,
+            element_project_into: nil,
             write_bytes: binetteSwiftStringWrite,
             write_fixed_elements: nil,
             context: nil
@@ -563,6 +617,7 @@ private func byteArrayStorage() -> BinetteLocalSequenceStorageAbi {
             len: binetteSwiftByteArrayLen,
             element_u8: binetteSwiftByteArrayElement,
             element_ptr: nil,
+            element_project_into: nil,
             write_bytes: binetteSwiftByteArrayWrite,
             write_fixed_elements: nil,
             context: nil

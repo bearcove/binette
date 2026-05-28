@@ -32,7 +32,8 @@ pub use c_abi::{
     BinetteLocalOptionRepresentationTag, BinetteLocalOptionSomeThunk, BinetteLocalOptionThunksAbi,
     BinetteLocalOptionWriteNoneThunk, BinetteLocalOptionWriteSomeBytesThunk, BinetteLocalScalarAbi,
     BinetteLocalScalarTag, BinetteLocalSchemaRefAbi, BinetteLocalSchemaRefTag,
-    BinetteLocalSequenceAbi, BinetteLocalSequenceElementPtrThunk, BinetteLocalSequenceLenThunk,
+    BinetteLocalSequenceAbi, BinetteLocalSequenceElementProjectIntoThunk,
+    BinetteLocalSequenceElementPtrThunk, BinetteLocalSequenceLenThunk,
     BinetteLocalSequenceStorageAbi, BinetteLocalSequenceStorageTag, BinetteLocalSequenceThunksAbi,
     BinetteLocalSequenceU8Thunk, BinetteLocalSequenceWriteBytesThunk,
     BinetteLocalSequenceWriteFixedElementsThunk, BinetteLocalStrAbi, BinetteLocalStructAbi,
@@ -195,6 +196,13 @@ pub type LocalSequenceU8Thunk =
     unsafe extern "C" fn(value: *const u8, index: usize, context: *mut c_void) -> u8;
 pub type LocalSequenceElementPtrThunk =
     unsafe extern "C" fn(value: *const u8, index: usize, context: *mut c_void) -> *const u8;
+pub type LocalSequenceElementProjectIntoThunk = unsafe extern "C" fn(
+    value: *const u8,
+    index: usize,
+    out: *mut u8,
+    out_len: usize,
+    context: *mut c_void,
+) -> bool;
 pub type LocalSequenceWriteBytesThunk =
     unsafe extern "C" fn(value: *mut u8, ptr: *const u8, len: usize, context: *mut c_void) -> bool;
 pub type LocalSequenceWriteFixedElementsThunk = unsafe extern "C" fn(
@@ -241,6 +249,13 @@ pub struct LocalSequenceEncodeThunks {
 pub struct LocalSequenceElementPtrEncodeThunks {
     pub len: LocalSequenceLenThunk,
     pub element_ptr: LocalSequenceElementPtrThunk,
+    pub context: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LocalSequenceElementProjectIntoEncodeThunks {
+    pub len: LocalSequenceLenThunk,
+    pub element_project_into: LocalSequenceElementProjectIntoThunk,
     pub context: usize,
 }
 
@@ -311,6 +326,13 @@ pub struct LocalSequenceElementPtrThunkBinding {
 }
 
 #[derive(Debug, Clone)]
+pub struct LocalSequenceElementProjectIntoThunkBinding {
+    pub len: LocalThunk,
+    pub element: LocalThunk,
+    pub thunks: LocalSequenceElementProjectIntoEncodeThunks,
+}
+
+#[derive(Debug, Clone)]
 pub struct LocalSequenceDecodeThunkBinding {
     pub write: LocalThunk,
     pub thunks: LocalSequenceDecodeThunks,
@@ -365,6 +387,7 @@ pub struct LocalVariantConstructThunkBinding {
 pub struct LocalThunkBindings {
     sequence_u8: Vec<LocalSequenceThunkBinding>,
     sequence_element_ptr: Vec<LocalSequenceElementPtrThunkBinding>,
+    sequence_element_project_into: Vec<LocalSequenceElementProjectIntoThunkBinding>,
     sequence_decode: Vec<LocalSequenceDecodeThunkBinding>,
     sequence_fixed_decode: Vec<LocalSequenceFixedDecodeThunkBinding>,
     option: Vec<LocalOptionThunkBinding>,
@@ -526,6 +549,21 @@ impl LocalThunkBindings {
         self
     }
 
+    pub fn with_sequence_element_project_into(
+        mut self,
+        len: LocalThunk,
+        element: LocalThunk,
+        thunks: LocalSequenceElementProjectIntoEncodeThunks,
+    ) -> Self {
+        self.sequence_element_project_into
+            .push(LocalSequenceElementProjectIntoThunkBinding {
+                len,
+                element,
+                thunks,
+            });
+        self
+    }
+
     pub fn with_option(
         mut self,
         is_some: LocalThunk,
@@ -629,6 +667,17 @@ impl LocalThunkBindings {
         element: &LocalThunk,
     ) -> Option<LocalSequenceElementPtrEncodeThunks> {
         self.sequence_element_ptr
+            .iter()
+            .find(|binding| &binding.len == len && &binding.element == element)
+            .map(|binding| binding.thunks)
+    }
+
+    pub fn sequence_element_project_into(
+        &self,
+        len: &LocalThunk,
+        element: &LocalThunk,
+    ) -> Option<LocalSequenceElementProjectIntoEncodeThunks> {
+        self.sequence_element_project_into
             .iter()
             .find(|binding| &binding.len == len && &binding.element == element)
             .map(|binding| binding.thunks)

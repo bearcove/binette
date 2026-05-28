@@ -283,6 +283,14 @@ pub(super) enum StencilEncodeHelper {
         element_output_len: usize,
         failure_index: usize,
     },
+    SequenceOwnedFixedElements {
+        input_offset: usize,
+        thunks: LocalSequenceElementProjectIntoEncodeThunks,
+        element_layout: LocalValueLayout,
+        element_ops: Vec<CopyOp>,
+        element_output_len: usize,
+        failure_index: usize,
+    },
     Enum {
         input_offset: usize,
         tag_thunks: LocalEnumTagThunks,

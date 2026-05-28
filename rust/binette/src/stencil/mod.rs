@@ -16,10 +16,10 @@ use crate::encode::{
 use crate::hash::primitive_for_type_id;
 use crate::local_access::{
     LocalEnumTagThunks, LocalOptionEncodeThunks, LocalOptionSequenceDecodeThunks,
-    LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks,
-    LocalSequenceFixedDecodeThunks, LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout,
-    LocalVariantConstructThunks, LocalVariantProjectIntoThunks, LocalVariantProjectThunks,
-    rust_facet_descriptor_for,
+    LocalSequenceDecodeThunks, LocalSequenceElementProjectIntoEncodeThunks,
+    LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks,
+    LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout, LocalVariantConstructThunks,
+    LocalVariantProjectIntoThunks, LocalVariantProjectThunks, rust_facet_descriptor_for,
 };
 use crate::plan::{
     EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, ReaderPlan, StructFieldPlan,
@@ -847,6 +847,7 @@ fn encode_helper_paths(
         .filter_map(|helper| match helper {
             StencilEncodeHelper::SequenceBytes { failure_index, .. }
             | StencilEncodeHelper::SequenceFixedElements { failure_index, .. }
+            | StencilEncodeHelper::SequenceOwnedFixedElements { failure_index, .. }
             | StencilEncodeHelper::Enum { failure_index, .. }
             | StencilEncodeHelper::OptionSequenceBytes { failure_index, .. } => {
                 helper_path(failures, *failure_index)

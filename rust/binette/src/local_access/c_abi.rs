@@ -6,10 +6,10 @@ use super::{
     LocalAccess, LocalBackend, LocalDescriptorImport, LocalDescriptorImportKind,
     LocalEnumTagThunks, LocalExternalMetadata, LocalExternalMetadataField,
     LocalExternalMetadataValue, LocalOptionRepresentation, LocalOptionSequenceDecodeThunks,
-    LocalScalarAccess, LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks,
-    LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks, LocalSequenceStorage, LocalThunk,
-    LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout, LocalVariantConstructThunks,
-    LocalVariantProjectIntoThunks, LocalVariantProjectThunks,
+    LocalScalarAccess, LocalSequenceDecodeThunks, LocalSequenceElementProjectIntoEncodeThunks,
+    LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks,
+    LocalSequenceStorage, LocalThunk, LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout,
+    LocalVariantConstructThunks, LocalVariantProjectIntoThunks, LocalVariantProjectThunks,
 };
 use crate::schema::{TypeId, TypeRef};
 
@@ -290,6 +290,15 @@ pub type BinetteLocalSequenceU8Thunk =
     Option<unsafe extern "C" fn(value: *const u8, index: usize, context: *mut c_void) -> u8>;
 pub type BinetteLocalSequenceElementPtrThunk =
     Option<unsafe extern "C" fn(value: *const u8, index: usize, context: *mut c_void) -> *const u8>;
+pub type BinetteLocalSequenceElementProjectIntoThunk = Option<
+    unsafe extern "C" fn(
+        value: *const u8,
+        index: usize,
+        out: *mut u8,
+        out_len: usize,
+        context: *mut c_void,
+    ) -> bool,
+>;
 pub type BinetteLocalSequenceWriteBytesThunk = Option<
     unsafe extern "C" fn(value: *mut u8, ptr: *const u8, len: usize, context: *mut c_void) -> bool,
 >;
@@ -323,6 +332,7 @@ pub struct BinetteLocalSequenceThunksAbi {
     pub len: BinetteLocalSequenceLenThunk,
     pub element_u8: BinetteLocalSequenceU8Thunk,
     pub element_ptr: BinetteLocalSequenceElementPtrThunk,
+    pub element_project_into: BinetteLocalSequenceElementProjectIntoThunk,
     pub write_bytes: BinetteLocalSequenceWriteBytesThunk,
     pub write_fixed_elements: BinetteLocalSequenceWriteFixedElementsThunk,
     pub context: *mut c_void,
@@ -883,6 +893,18 @@ impl AbiImporter {
                             context: storage.thunks.context as usize,
                         },
                     );
+                }
+                if let Some(element_project_into) = storage.thunks.element_project_into {
+                    self.thunks = std::mem::take(&mut self.thunks)
+                        .with_sequence_element_project_into(
+                            len_thunk.clone(),
+                            element_thunk.clone(),
+                            LocalSequenceElementProjectIntoEncodeThunks {
+                                len,
+                                element_project_into,
+                                context: storage.thunks.context as usize,
+                            },
+                        );
                 }
                 let write_bytes = storage.thunks.write_bytes;
                 let write_fixed_elements = storage.thunks.write_fixed_elements;

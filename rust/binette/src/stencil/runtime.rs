@@ -601,6 +601,7 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
     let status = match helper {
         StencilEncodeHelper::SequenceBytes { failure_index, .. }
         | StencilEncodeHelper::SequenceFixedElements { failure_index, .. }
+        | StencilEncodeHelper::SequenceOwnedFixedElements { failure_index, .. }
         | StencilEncodeHelper::Enum { failure_index, .. }
         | StencilEncodeHelper::OptionSequenceBytes { failure_index, .. } => {
             status_for_failure(*failure_index).unwrap_or(1)
@@ -666,6 +667,57 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
                         );
                     }
                 }
+            }
+        }
+        StencilEncodeHelper::SequenceOwnedFixedElements {
+            input_offset,
+            thunks,
+            element_layout,
+            element_ops,
+            element_output_len,
+            ..
+        } => {
+            if value.is_null() {
+                return status;
+            }
+            let value = value.wrapping_add(*input_offset);
+            let context = thunks.context as *mut std::ffi::c_void;
+            let len = unsafe { (thunks.len)(value, context) };
+            let Ok(len_u32) = u32::try_from(len) else {
+                return status;
+            };
+            let Some(elements_len) = element_output_len.checked_mul(len) else {
+                return status;
+            };
+            out.extend_from_slice(&len_u32.to_le_bytes());
+            out.reserve(elements_len);
+            for index in 0..len {
+                let Some(()) = (unsafe {
+                    with_aligned_scratch(*element_layout, |element| {
+                        if !(thunks.element_project_into)(
+                            value,
+                            index,
+                            element,
+                            element_layout.size,
+                            context,
+                        ) {
+                            return None;
+                        }
+                        let element_base = out.len();
+                        out.resize(element_base + element_output_len, 0);
+                        for op in element_ops {
+                            let source = element.add(op.input_offset);
+                            copy_nonoverlapping(
+                                source,
+                                out.as_mut_ptr().add(element_base + op.output_offset),
+                                op.width.bytes(),
+                            );
+                        }
+                        Some(())
+                    })
+                }) else {
+                    return status;
+                };
             }
         }
         StencilEncodeHelper::Enum {
@@ -830,6 +882,27 @@ unsafe fn with_owned_projected_payload<T>(
     thunks: LocalVariantProjectIntoThunks,
     f: impl FnOnce(*const u8) -> Option<T>,
 ) -> Option<T> {
+    unsafe {
+        with_aligned_scratch(layout, |scratch| {
+            let project_context = thunks.project_context as *mut std::ffi::c_void;
+            let projected = (thunks.project_into)(value, scratch, layout.size, project_context);
+            if !projected {
+                return None;
+            }
+            let result = f(scratch.cast_const());
+            if let Some(drop_projected) = thunks.drop_projected {
+                let drop_context = thunks.drop_context as *mut std::ffi::c_void;
+                drop_projected(scratch, drop_context);
+            }
+            result
+        })
+    }
+}
+
+unsafe fn with_aligned_scratch<T>(
+    layout: LocalValueLayout,
+    f: impl FnOnce(*mut u8) -> Option<T>,
+) -> Option<T> {
     let alloc_layout =
         std::alloc::Layout::from_size_align(layout.size.max(1), layout.align).ok()?;
     let scratch = if layout.size == 0 {
@@ -841,19 +914,7 @@ unsafe fn with_owned_projected_payload<T>(
         }
         ptr
     };
-    let project_context = thunks.project_context as *mut std::ffi::c_void;
-    let projected = unsafe { (thunks.project_into)(value, scratch, layout.size, project_context) };
-    if !projected {
-        if layout.size != 0 {
-            unsafe { std::alloc::dealloc(scratch, alloc_layout) };
-        }
-        return None;
-    }
-    let result = f(scratch.cast_const());
-    if let Some(drop_projected) = thunks.drop_projected {
-        let drop_context = thunks.drop_context as *mut std::ffi::c_void;
-        unsafe { drop_projected(scratch, drop_context) };
-    }
+    let result = f(scratch);
     if layout.size != 0 {
         unsafe { std::alloc::dealloc(scratch, alloc_layout) };
     }
