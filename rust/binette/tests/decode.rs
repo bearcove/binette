@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 use std::hash::{Hash, Hasher};
 
 use binette::{
@@ -1133,15 +1134,19 @@ fn hybrid_stencil_decodes_structs_with_mixed_element_list_fields() {
         Err(StencilError::Unsupported { .. })
     ));
 
-    assert!(matches!(
-        hybrid_stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry),
-        Err(StencilError::Unsupported { .. })
-    ));
+    let decoder =
+        hybrid_stencil_decoder_for::<reader::Message>(writer_plan.root(), &writer_registry)
+            .unwrap();
+    assert_eq!(decoder.fixed_expected_len(), None);
+    assert_eq!(decoder.report().mode, StencilMode::Hybrid);
+    assert_eq!(decoder.report().helper_paths, vec!["$.items"]);
 
     let interpreted =
         decode_from_slice::<reader::Message>(&bytes, writer_plan.root(), &writer_registry).unwrap();
+    let decoded = decoder.decode(&bytes).unwrap();
+    assert_eq!(decoded, interpreted);
     assert_eq!(
-        interpreted,
+        decoded,
         reader::Message {
             prefix: 0x1122,
             items: vec![
@@ -1152,6 +1157,46 @@ fn hybrid_stencil_decodes_structs_with_mixed_element_list_fields() {
             tail: 0x0102_0304_0506_0708,
         }
     );
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[test]
+fn hybrid_stencil_decodes_result_with_infallible_error_wrapper() {
+    #[derive(Debug, Clone, Facet, PartialEq)]
+    struct Payload {
+        title: String,
+        count: u32,
+    }
+
+    #[derive(Debug, Clone, Facet, PartialEq)]
+    #[repr(u8)]
+    enum LocalError<E> {
+        User(E),
+        InvalidPayload(String),
+        Cancelled,
+    }
+
+    type Response = Result<Payload, LocalError<Infallible>>;
+
+    let writer_plan = writer_plan_for::<Response>().unwrap();
+    let writer_registry = registry_for(writer_plan.schema_bundle());
+    let value = Ok(Payload {
+        title: "ok".to_owned(),
+        count: 42,
+    });
+    let bytes = encode_to_vec_with_plan(&value, &writer_plan).unwrap();
+
+    binette::local_access::rust_facet_descriptor_for::<Response>().unwrap();
+    let decoder =
+        hybrid_stencil_decoder_for::<Response>(writer_plan.root(), &writer_registry).unwrap();
+    assert_eq!(decoder.fixed_expected_len(), None);
+    assert_eq!(decoder.report().mode, StencilMode::Hybrid);
+
+    let interpreted =
+        decode_from_slice::<Response>(&bytes, writer_plan.root(), &writer_registry).unwrap();
+    let decoded = decoder.decode(&bytes).unwrap();
+    assert_eq!(decoded, interpreted);
+    assert_eq!(decoded, value);
 }
 
 // r[verify binette.aggregate.list]

@@ -762,6 +762,7 @@ impl LocalThunkBindings {
 mod rust_layout {
     use std::alloc::{Layout as AllocLayout, alloc_zeroed, dealloc};
     use std::collections::HashMap;
+    use std::ffi::c_void;
     use std::ptr::NonNull;
     use std::slice;
 
@@ -812,6 +813,16 @@ mod rust_layout {
     pub fn rust_facet_descriptor_for<T: Facet<'static>>()
     -> Result<LocalTypeDescriptor, LocalAccessError> {
         rust_facet_descriptor_for_shape(T::SHAPE)
+    }
+
+    pub fn rust_facet_thunk_bindings_for<T: Facet<'static>>() -> LocalThunkBindings {
+        rust_facet_thunk_bindings_for_shape(T::SHAPE)
+    }
+
+    pub fn rust_facet_thunk_bindings_for_shape(shape: &'static Shape) -> LocalThunkBindings {
+        let mut bindings = LocalThunkBindings::new();
+        collect_rust_facet_thunk_bindings(shape, &mut bindings);
+        bindings
     }
 
     struct RustFacetDescriptorBuilder<'schema> {
@@ -1006,6 +1017,9 @@ mod rust_layout {
                     })
                 }
                 SchemaKind::Enum { variants, .. } => {
+                    if let Def::Result(result) = shape.def {
+                        return self.build_result_kind(shape, type_ref, variants, result);
+                    }
                     let shape_enum = enum_type_for_shape(shape)?;
                     let direct_u8_tag = shape_enum.enum_repr == EnumRepr::U8;
                     let variants = shape_enum
@@ -1116,6 +1130,63 @@ mod rust_layout {
                     })
                 }
             }
+        }
+
+        fn build_result_kind(
+            &mut self,
+            shape: &'static Shape,
+            _type_ref: &TypeRef,
+            variants: &[Variant],
+            result: facet_core::ResultDef,
+        ) -> Result<LocalTypeKind, LocalAccessError> {
+            let variants = variants
+                .iter()
+                .map(|schema_variant| {
+                    let (index, payload_shape) = match schema_variant.name.as_str() {
+                        "Ok" => (0, result.t()),
+                        "Err" => (1, result.e()),
+                        _ => {
+                            return Err(LocalAccessError::Unsupported {
+                                type_name: shape.type_identifier,
+                                reason: "Result schema contains a non-Ok/Err variant",
+                            });
+                        }
+                    };
+                    let VariantPayload::Newtype { type_ref } = &schema_variant.payload else {
+                        return Err(LocalAccessError::Unsupported {
+                            type_name: shape.type_identifier,
+                            reason: "Result local descriptor expects newtype variants",
+                        });
+                    };
+                    let payload = self.build(payload_shape, type_ref)?;
+                    Ok(LocalVariantDescriptor {
+                        name: schema_variant.name.clone(),
+                        index,
+                        access: LocalAccess::Thunk(LocalThunk::new(
+                            LocalBackend::RustFacet,
+                            result_variant_access_thunk_name(shape, schema_variant.name.as_str()),
+                        )),
+                        project_into: None,
+                        drop_projected: None,
+                        construct: Some(LocalThunk::new(
+                            LocalBackend::RustFacet,
+                            result_variant_construct_thunk_name(
+                                shape,
+                                schema_variant.name.as_str(),
+                            ),
+                        )),
+                        payload_kind: LocalVariantPayloadKind::Newtype,
+                        payload: Some(Box::new(payload)),
+                    })
+                })
+                .collect::<Result<Vec<_>, LocalAccessError>>()?;
+            Ok(LocalTypeKind::Enum {
+                tag: LocalAccess::Thunk(LocalThunk::new(
+                    LocalBackend::RustFacet,
+                    result_tag_thunk_name(shape),
+                )),
+                variants,
+            })
         }
 
         fn variant_fields_descriptor<'a>(
@@ -1683,10 +1754,7 @@ mod rust_layout {
             StructKind::Struct | StructKind::TupleStruct | StructKind::Tuple => {
                 Ok(struct_type.fields)
             }
-            StructKind::Unit => Err(LocalAccessError::Unsupported {
-                type_name: shape.type_identifier,
-                reason: "unit struct local descriptor is not implemented yet",
-            }),
+            StructKind::Unit => Ok(&[]),
         }
     }
 
@@ -1720,11 +1788,152 @@ mod rust_layout {
                 })
         })
     }
+
+    struct RustResultConstructContext {
+        vtable: &'static facet_core::ResultVTable,
+        is_ok: bool,
+    }
+
+    unsafe extern "C" fn rust_result_construct(
+        value: *mut u8,
+        payload: *const u8,
+        _payload_len: usize,
+        context: *mut c_void,
+    ) -> bool {
+        let Some(context) = (unsafe { context.cast::<RustResultConstructContext>().as_ref() })
+        else {
+            return false;
+        };
+        let value = PtrUninit::new(value);
+        let payload = PtrMut::new(payload.cast_mut());
+        unsafe {
+            if context.is_ok {
+                (context.vtable.init_ok)(value, payload);
+            } else {
+                (context.vtable.init_err)(value, payload);
+            }
+        }
+        true
+    }
+
+    unsafe extern "C" fn rust_result_tag(value: *const u8, context: *mut c_void) -> u32 {
+        let Some(context) = (unsafe { context.cast::<RustResultConstructContext>().as_ref() })
+        else {
+            return u32::MAX;
+        };
+        let value = PtrConst::new(value);
+        if unsafe { (context.vtable.is_ok)(value) } {
+            0
+        } else {
+            1
+        }
+    }
+
+    unsafe extern "C" fn rust_result_project(value: *const u8, context: *mut c_void) -> *const u8 {
+        let Some(context) = (unsafe { context.cast::<RustResultConstructContext>().as_ref() })
+        else {
+            return std::ptr::null();
+        };
+        let value = PtrConst::new(value);
+        unsafe {
+            if context.is_ok {
+                (context.vtable.get_ok)(value)
+            } else {
+                (context.vtable.get_err)(value)
+            }
+        }
+    }
+
+    fn collect_rust_facet_thunk_bindings(shape: &'static Shape, bindings: &mut LocalThunkBindings) {
+        match shape.def {
+            Def::Result(result) => {
+                bind_result(shape, result, bindings);
+                collect_rust_facet_thunk_bindings(result.t(), bindings);
+                collect_rust_facet_thunk_bindings(result.e(), bindings);
+            }
+            Def::Array(array) => collect_rust_facet_thunk_bindings(array.t(), bindings),
+            Def::List(list) => collect_rust_facet_thunk_bindings(list.t(), bindings),
+            Def::Option(option) => collect_rust_facet_thunk_bindings(option.t(), bindings),
+            _ => {}
+        }
+    }
+
+    fn bind_result(
+        shape: &'static Shape,
+        result: facet_core::ResultDef,
+        bindings: &mut LocalThunkBindings,
+    ) {
+        let tag_context = Box::leak(Box::new(RustResultConstructContext {
+            vtable: result.vtable,
+            is_ok: true,
+        }));
+        let tag_thunks = LocalEnumTagThunks {
+            tag: rust_result_tag,
+            context: (tag_context as *mut RustResultConstructContext).cast::<c_void>() as usize,
+        };
+        *bindings = std::mem::take(bindings).with_enum_tag(
+            LocalThunk::new(LocalBackend::RustFacet, result_tag_thunk_name(shape)),
+            tag_thunks,
+        );
+        bind_result_variant(shape, result, "Ok", true, bindings);
+        bind_result_variant(shape, result, "Err", false, bindings);
+    }
+
+    fn bind_result_variant(
+        shape: &'static Shape,
+        result: facet_core::ResultDef,
+        variant: &str,
+        is_ok: bool,
+        bindings: &mut LocalThunkBindings,
+    ) {
+        let context = Box::leak(Box::new(RustResultConstructContext {
+            vtable: result.vtable,
+            is_ok,
+        }));
+        let thunks = LocalVariantConstructThunks {
+            construct: rust_result_construct,
+            context: (context as *mut RustResultConstructContext).cast::<c_void>() as usize,
+        };
+        let project_thunks = LocalVariantProjectThunks {
+            project: rust_result_project,
+            context: (context as *mut RustResultConstructContext).cast::<c_void>() as usize,
+        };
+        *bindings = std::mem::take(bindings).with_variant_project(
+            LocalThunk::new(
+                LocalBackend::RustFacet,
+                result_variant_access_thunk_name(shape, variant),
+            ),
+            project_thunks,
+        );
+        *bindings = std::mem::take(bindings).with_variant_construct(
+            LocalThunk::new(
+                LocalBackend::RustFacet,
+                result_variant_construct_thunk_name(shape, variant),
+            ),
+            thunks,
+        );
+    }
+
+    fn result_tag_thunk_name(shape: &'static Shape) -> String {
+        format!("Facet.Result.{}.tag", shape.type_identifier)
+    }
+
+    fn result_variant_access_thunk_name(shape: &'static Shape, variant: &str) -> String {
+        format!("Facet.Result.{}.{}", shape.type_identifier, variant)
+    }
+
+    fn result_variant_construct_thunk_name(shape: &'static Shape, variant: &str) -> String {
+        format!(
+            "Facet.Result.{}.{}.construct",
+            shape.type_identifier, variant
+        )
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use rust_layout::{
     LocalAccessError, rust_facet_descriptor_for, rust_facet_descriptor_for_shape,
+    rust_facet_thunk_bindings_for, rust_facet_thunk_bindings_for_shape,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use rust_layout::{rust_option_string_descriptor, rust_string_descriptor, rust_vec_descriptor};

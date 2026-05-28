@@ -800,6 +800,17 @@ impl WriterPlanExecutor<'_> {
             return self.encode_node(proxy_peek.as_peek(), node);
         }
 
+        if let Def::Pointer(pointer) = peek.shape().def
+            && pointer.constructible_from_pointee()
+            && peek.shape().scalar_type().is_none()
+        {
+            let pointer = peek.into_pointer()?;
+            let inner = pointer
+                .borrow_inner()
+                .ok_or_else(|| unsupported_peek(peek, "smart pointer pointee is not available"))?;
+            return self.encode_node(inner, node);
+        }
+
         match node {
             WriterNode::Ref { node_index } => {
                 let node = self

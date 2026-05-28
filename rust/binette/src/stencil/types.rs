@@ -105,6 +105,13 @@ pub(super) enum StencilHelper {
         element_stride: usize,
         failure_index: usize,
     },
+    SequenceElements {
+        output_offset: usize,
+        thunks: LocalSequenceFixedDecodeThunks,
+        element_decoder: Box<LocalStencilDecoder>,
+        element_stride: usize,
+        failure_index: usize,
+    },
     DirectSequenceBytes {
         output_offset: usize,
         layout: DirectSequenceDecodeLayout,
@@ -116,6 +123,12 @@ pub(super) enum StencilHelper {
         layout: DirectSequenceDecodeLayout,
         element_ops: Vec<StencilOp>,
         element_input_len: usize,
+        failure_index: usize,
+    },
+    DirectSequenceElements {
+        output_offset: usize,
+        layout: DirectSequenceDecodeLayout,
+        element_decoder: Box<LocalStencilDecoder>,
         failure_index: usize,
     },
     DirectOptionSequenceBytes {
@@ -141,6 +154,12 @@ pub(super) enum StencilHelper {
     Enum {
         output_offset: usize,
         cases: Vec<LocalEnumDecodeCase>,
+        failure_index: usize,
+    },
+    DirectEnum {
+        output_offset: usize,
+        tag_output_offset: usize,
+        cases: Vec<DirectEnumDecodeCase>,
         failure_index: usize,
     },
     Skip {
@@ -173,6 +192,12 @@ pub(super) struct LocalEnumDecodeCase {
     pub(super) wire_index: u32,
     pub(super) construct_thunks: LocalVariantConstructThunks,
     pub(super) payload: LocalEnumDecodePayload,
+}
+
+pub(super) struct DirectEnumDecodeCase {
+    pub(super) wire_index: u32,
+    pub(super) reader_discriminant: u8,
+    pub(super) payload_decoder: Option<Box<LocalStencilDecoder>>,
 }
 
 pub(super) enum LocalEnumDecodePayload {
@@ -324,6 +349,10 @@ pub(super) enum LocalEnumEncodePayload {
         project_thunks: LocalVariantProjectThunks,
         ops: Vec<CopyOp>,
         output_len: usize,
+    },
+    Nested {
+        project_thunks: LocalVariantProjectThunks,
+        encoder: Box<LocalStencilEncoder>,
     },
     OwnedFixed {
         project_into_thunks: LocalVariantProjectIntoThunks,

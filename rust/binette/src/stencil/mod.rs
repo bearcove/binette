@@ -20,6 +20,7 @@ use crate::local_access::{
     LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks,
     LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout, LocalVariantConstructThunks,
     LocalVariantProjectIntoThunks, LocalVariantProjectThunks, rust_facet_descriptor_for,
+    rust_facet_thunk_bindings_for,
 };
 use crate::plan::{
     EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, ReaderPlan, StructFieldPlan,
@@ -49,12 +50,12 @@ use self::runtime::{
     stencil_decode_helper, stencil_encode_helper, stencil_encode_reserve,
 };
 use self::types::{
-    ByteTaggedLength, CopyOp, CopyWidth, DirectOptionDecodeLayout, DirectSequenceDecodeLayout,
-    EncodeBytesKind, EncodeBytesLayout, EncodeEnumCase, EncodeEnumSelector, EncodeListLayout,
-    EncodeOptionLayout, EncodeStencilOp, EnumCase, FixedEncodeCompiler, FixedEncodeSegment,
-    HybridStencilOp, LengthCheck, LocalEnumDecodeCase, LocalEnumDecodePayload, LocalEnumEncodeCase,
-    LocalEnumEncodePayload, StencilEncodeHelper, StencilEncodeRuntime, StencilFailure,
-    StencilHelper, StencilOp, StencilRuntime, TaggedLength,
+    ByteTaggedLength, CopyOp, CopyWidth, DirectEnumDecodeCase, DirectOptionDecodeLayout,
+    DirectSequenceDecodeLayout, EncodeBytesKind, EncodeBytesLayout, EncodeEnumCase,
+    EncodeEnumSelector, EncodeListLayout, EncodeOptionLayout, EncodeStencilOp, EnumCase,
+    FixedEncodeCompiler, FixedEncodeSegment, HybridStencilOp, LengthCheck, LocalEnumDecodeCase,
+    LocalEnumDecodePayload, LocalEnumEncodeCase, LocalEnumEncodePayload, StencilEncodeHelper,
+    StencilEncodeRuntime, StencilFailure, StencilHelper, StencilOp, StencilRuntime, TaggedLength,
 };
 
 type FixedStencilFn = unsafe extern "C" fn(input: *const u8, len: usize, out: *mut u8) -> u32;
@@ -507,8 +508,8 @@ pub fn hybrid_stencil_decoder_from_plan<T: Facet<'static>>(
         path: "$".to_owned(),
         reason: "failed to build Rust local access descriptor for stencil compilation",
     })?;
-    let empty_thunks = LocalThunkBindings::new();
-    hybrid_local_stencil_decoder_from_plan(plan, writer_registry, &descriptor, &empty_thunks)
+    let thunks = rust_facet_thunk_bindings_for::<T>();
+    hybrid_local_stencil_decoder_from_plan(plan, writer_registry, &descriptor, &thunks)
         .map(StencilDecoder::from_local)
 }
 
@@ -552,8 +553,8 @@ pub fn hybrid_stencil_encoder_from_plan<T: Facet<'static>>(
         path: "$".to_owned(),
         reason: "failed to build Rust local access descriptor for stencil compilation",
     })?;
-    let empty_thunks = LocalThunkBindings::new();
-    hybrid_local_stencil_encoder_from_plan(plan, &descriptor, &empty_thunks)
+    let thunks = rust_facet_thunk_bindings_for::<T>();
+    hybrid_local_stencil_encoder_from_plan(plan, &descriptor, &thunks)
         .map(StencilEncoder::from_local)
 }
 
@@ -836,12 +837,15 @@ fn decode_helper_paths(helpers: &[StencilHelper], failures: &[StencilFailure]) -
         .filter_map(|helper| match helper {
             StencilHelper::SequenceBytes { failure_index, .. }
             | StencilHelper::SequenceFixedElements { failure_index, .. }
+            | StencilHelper::SequenceElements { failure_index, .. }
             | StencilHelper::DirectSequenceBytes { failure_index, .. }
             | StencilHelper::DirectSequenceFixedElements { failure_index, .. }
+            | StencilHelper::DirectSequenceElements { failure_index, .. }
             | StencilHelper::DirectOptionSequenceBytes { failure_index, .. }
             | StencilHelper::DirectOptionFixed { failure_index, .. }
             | StencilHelper::OptionSequenceBytes { failure_index, .. }
             | StencilHelper::Enum { failure_index, .. }
+            | StencilHelper::DirectEnum { failure_index, .. }
             | StencilHelper::Skip { failure_index, .. } => helper_path(failures, *failure_index),
         })
         .collect()

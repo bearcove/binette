@@ -791,7 +791,13 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
                 reason: "local hybrid decode has no backend thunk for this subtree",
             }),
             PlanNode::Enum { variants } => {
-                self.push_constructed_enum(reader, variants, output_offset, path)
+                match self.push_direct_enum(reader, variants, output_offset, path) {
+                    Ok(()) => Ok(()),
+                    Err(StencilError::Unsupported { .. }) => {
+                        self.push_constructed_enum(reader, variants, output_offset, path)
+                    }
+                    Err(err) => Err(err),
+                }
             }
         }
     }
@@ -971,48 +977,89 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
         if let Some((element_descriptor, layout)) =
             local_direct_sequence_decode_layout(reader, path)?
         {
-            let (element_ops, element_input_len) = fixed_local_decode_ops(
+            let failure_index = self.push_helper_failure(path)?;
+            let helper_index = self.helpers.len();
+            match fixed_local_decode_ops(
                 self.writer_registry,
                 self.plan_nodes,
                 element,
                 element_descriptor,
                 0,
                 &format!("{path}[]"),
-            )?;
-            let failure_index = self.push_helper_failure(path)?;
-            let helper_index = self.helpers.len();
-            self.helpers
-                .push(StencilHelper::DirectSequenceFixedElements {
-                    output_offset,
-                    layout,
-                    element_ops,
-                    element_input_len,
-                    failure_index,
-                });
+            ) {
+                Ok((element_ops, element_input_len)) => {
+                    self.helpers
+                        .push(StencilHelper::DirectSequenceFixedElements {
+                            output_offset,
+                            layout,
+                            element_ops,
+                            element_input_len,
+                            failure_index,
+                        });
+                }
+                Err(StencilError::Unsupported { .. }) => {
+                    let element_decoder = nested_local_payload_decoder(
+                        self.writer_registry,
+                        self.plan_nodes,
+                        element_descriptor,
+                        element,
+                        self.thunks,
+                        &format!("{path}[]"),
+                    )?;
+                    self.helpers.push(StencilHelper::DirectSequenceElements {
+                        output_offset,
+                        layout,
+                        element_decoder: Box::new(element_decoder),
+                        failure_index,
+                    });
+                }
+                Err(err) => return Err(err),
+            }
             self.ops.push(HybridStencilOp::Helper { helper_index });
             return Ok(());
         }
 
         let (element_descriptor, element_stride, thunks) =
             local_sequence_fixed_decode_thunks(reader, self.thunks, path)?;
-        let (element_ops, element_input_len) = fixed_local_decode_ops(
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        match fixed_local_decode_ops(
             self.writer_registry,
             self.plan_nodes,
             element,
             element_descriptor,
             0,
             &format!("{path}[]"),
-        )?;
-        let failure_index = self.push_helper_failure(path)?;
-        let helper_index = self.helpers.len();
-        self.helpers.push(StencilHelper::SequenceFixedElements {
-            output_offset,
-            thunks,
-            element_ops,
-            element_input_len,
-            element_stride,
-            failure_index,
-        });
+        ) {
+            Ok((element_ops, element_input_len)) => {
+                self.helpers.push(StencilHelper::SequenceFixedElements {
+                    output_offset,
+                    thunks,
+                    element_ops,
+                    element_input_len,
+                    element_stride,
+                    failure_index,
+                });
+            }
+            Err(StencilError::Unsupported { .. }) => {
+                let element_decoder = nested_local_payload_decoder(
+                    self.writer_registry,
+                    self.plan_nodes,
+                    element_descriptor,
+                    element,
+                    self.thunks,
+                    &format!("{path}[]"),
+                )?;
+                self.helpers.push(StencilHelper::SequenceElements {
+                    output_offset,
+                    thunks,
+                    element_decoder: Box::new(element_decoder),
+                    element_stride,
+                    failure_index,
+                });
+            }
+            Err(err) => return Err(err),
+        }
         self.ops.push(HybridStencilOp::Helper { helper_index });
         Ok(())
     }
@@ -1071,6 +1118,108 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
         });
         self.ops.push(HybridStencilOp::Helper { helper_index });
         Ok(())
+    }
+
+    fn push_direct_enum(
+        &mut self,
+        reader: &LocalTypeDescriptor,
+        variants: &[EnumVariantPlan],
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let (tag_output_offset, local_variants) = local_enum_direct_tag_variants(reader, path)?;
+        let mut cases = Vec::with_capacity(variants.len());
+        for variant in variants {
+            let EnumVariantPlan::Read {
+                writer_index,
+                reader_index,
+                name,
+                payload,
+            } = variant
+            else {
+                continue;
+            };
+            if enum_payload_contains_never(payload) {
+                continue;
+            }
+            let local_variant = local_reader_variant_descriptor(
+                local_variants,
+                *reader_index,
+                name,
+                path,
+                "reader enum variant index is out of range",
+            )?;
+            let reader_discriminant =
+                u8::try_from(local_variant.index).map_err(|_| StencilError::Unsupported {
+                    path: format!("{path}.{name}"),
+                    reason: "local enum variant index does not fit u8 tag",
+                })?;
+            let payload_decoder = self.compile_direct_enum_payload(
+                local_variant,
+                payload,
+                &format!("{path}.{name}"),
+            )?;
+            cases.push(DirectEnumDecodeCase {
+                wire_index: *writer_index,
+                reader_discriminant,
+                payload_decoder,
+            });
+        }
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilHelper::DirectEnum {
+            output_offset,
+            tag_output_offset,
+            cases,
+            failure_index,
+        });
+        self.ops.push(HybridStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
+    fn compile_direct_enum_payload(
+        &self,
+        local_variant: &crate::local_access::LocalVariantDescriptor,
+        payload: &EnumPayloadPlan,
+        path: &str,
+    ) -> Result<Option<Box<LocalStencilDecoder>>, StencilError> {
+        let (payload_node, payload_output_offset) = match payload {
+            EnumPayloadPlan::Unit => return Ok(None),
+            EnumPayloadPlan::Newtype(element) => (
+                *element.clone(),
+                local_direct_offset(&local_variant.access, path)?,
+            ),
+            EnumPayloadPlan::Tuple(elements) => (
+                PlanNode::Tuple {
+                    elements: elements.clone(),
+                },
+                0,
+            ),
+            EnumPayloadPlan::Struct(fields) => (
+                PlanNode::Struct {
+                    fields: fields.clone(),
+                },
+                0,
+            ),
+        };
+        let payload_descriptor =
+            local_variant
+                .payload
+                .as_deref()
+                .ok_or_else(|| StencilError::Unsupported {
+                    path: path.to_owned(),
+                    reason: "direct enum payload is missing local descriptor",
+                })?;
+        let decoder = nested_local_payload_decoder_at_offset(
+            self.writer_registry,
+            self.plan_nodes,
+            payload_descriptor,
+            &payload_node,
+            self.thunks,
+            payload_output_offset,
+            path,
+        )?;
+        Ok(Some(Box::new(decoder)))
     }
 
     fn compile_constructed_enum_payload(
@@ -1413,8 +1562,21 @@ impl LocalEncodeStencilCompiler<'_> {
                 }
             }
             WriterNode::External => Ok(()),
+            WriterNode::Result {
+                ok_wire_index,
+                ok,
+                err_wire_index,
+                err,
+            } => {
+                self.flush_direct_segment(pending);
+                self.push_projected_result(
+                    descriptor,
+                    (*ok_wire_index, ok.as_ref(), *err_wire_index, err.as_ref()),
+                    input_offset,
+                    path,
+                )
+            }
             WriterNode::Ref { .. }
-            | WriterNode::Result { .. }
             | WriterNode::Set { .. }
             | WriterNode::Map { .. }
             | WriterNode::Primitive(_)
@@ -1946,6 +2108,67 @@ impl LocalEncodeStencilCompiler<'_> {
         Ok(())
     }
 
+    fn push_projected_result(
+        &mut self,
+        descriptor: &LocalTypeDescriptor,
+        arms: (u32, &WriterNode, u32, &WriterNode),
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let (ok_wire_index, ok, err_wire_index, err) = arms;
+        let (tag_thunks, local_variants) = local_enum_tag_thunks(descriptor, self.thunks, path)?;
+        let ok_variant = local_variants
+            .iter()
+            .find(|variant| variant.name == "Ok")
+            .ok_or_else(|| StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "Result local descriptor is missing Ok variant",
+            })?;
+        let err_variant = local_variants
+            .iter()
+            .find(|variant| variant.name == "Err")
+            .ok_or_else(|| StencilError::Unsupported {
+                path: path.to_owned(),
+                reason: "Result local descriptor is missing Err variant",
+            })?;
+        let cases = vec![
+            LocalEnumEncodeCase {
+                local_index: ok_variant.index,
+                wire_index: ok_wire_index,
+                payload: self.compile_projected_enum_payload(
+                    ok_variant,
+                    &WriterVariantPayloadPlan::Newtype(WriterTupleElementPlan {
+                        local_index: 0,
+                        node: ok.clone(),
+                    }),
+                    &format!("{path}.Ok"),
+                )?,
+            },
+            LocalEnumEncodeCase {
+                local_index: err_variant.index,
+                wire_index: err_wire_index,
+                payload: self.compile_projected_enum_payload(
+                    err_variant,
+                    &WriterVariantPayloadPlan::Newtype(WriterTupleElementPlan {
+                        local_index: 0,
+                        node: err.clone(),
+                    }),
+                    &format!("{path}.Err"),
+                )?,
+            },
+        ];
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilEncodeHelper::Enum {
+            input_offset,
+            tag_thunks,
+            cases,
+            failure_index,
+        });
+        self.ops.push(EncodeStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
     fn compile_projected_enum_payload(
         &self,
         local_variant: &crate::local_access::LocalVariantDescriptor,
@@ -1999,8 +2222,30 @@ impl LocalEncodeStencilCompiler<'_> {
                         path,
                     );
                 }
-                let segment =
-                    fixed_descriptor_encode_segment(payload_descriptor, &element.node, 0, 0, path)?;
+                let segment = match fixed_descriptor_encode_segment(
+                    payload_descriptor,
+                    &element.node,
+                    0,
+                    0,
+                    path,
+                ) {
+                    Ok(segment) => segment,
+                    Err(StencilError::Unsupported { .. }) => {
+                        let project_thunks =
+                            local_variant_project_thunks(&local_variant.access, self.thunks, path)?;
+                        let encoder = nested_local_element_encoder(
+                            payload_descriptor,
+                            &element.node,
+                            self.thunks,
+                            path,
+                        )?;
+                        return Ok(LocalEnumEncodePayload::Nested {
+                            project_thunks,
+                            encoder: Box::new(encoder),
+                        });
+                    }
+                    Err(err) => return Err(err),
+                };
                 let project_thunks =
                     local_variant_project_thunks(&local_variant.access, self.thunks, path)?;
                 Ok(LocalEnumEncodePayload::Fixed {
@@ -3326,6 +3571,26 @@ fn nested_local_payload_decoder(
     thunks: &LocalThunkBindings,
     path: &str,
 ) -> Result<LocalStencilDecoder, StencilError> {
+    nested_local_payload_decoder_at_offset(
+        writer_registry,
+        plan_nodes,
+        reader_descriptor,
+        node,
+        thunks,
+        0,
+        path,
+    )
+}
+
+fn nested_local_payload_decoder_at_offset(
+    writer_registry: &SchemaRegistry,
+    plan_nodes: &[PlanNode],
+    reader_descriptor: &LocalTypeDescriptor,
+    node: &PlanNode,
+    thunks: &LocalThunkBindings,
+    output_offset: usize,
+    path: &str,
+) -> Result<LocalStencilDecoder, StencilError> {
     let mut compiler = LocalHybridDecodeStencilCompiler {
         writer_registry,
         plan_nodes,
@@ -3334,7 +3599,7 @@ fn nested_local_payload_decoder(
         failures: Vec::new(),
         thunks,
     };
-    compiler.compile_node(reader_descriptor, node, 0, path)?;
+    compiler.compile_node(reader_descriptor, node, output_offset, path)?;
 
     let code = generate_hybrid_code(&compiler.ops)?;
     let report = decode_report(&code, &compiler.ops, &compiler.helpers, &compiler.failures);

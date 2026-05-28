@@ -112,6 +112,53 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
             }
             end
         }
+        StencilHelper::SequenceElements {
+            output_offset,
+            thunks,
+            element_decoder,
+            element_stride,
+            ..
+        } => {
+            if tail.len() < 4 {
+                return hybrid_error_for_helper(helper);
+            }
+            let count = u32::from_le_bytes(tail[..4].try_into().unwrap()) as usize;
+            let Some(output_len) = element_stride.checked_mul(count) else {
+                return hybrid_error_for_helper(helper);
+            };
+            let mut elements = vec![0u8; output_len];
+            let mut input_cursor = 4usize;
+            for index in 0..count {
+                let output_base = index * element_stride;
+                let Some(output_element) =
+                    elements.get_mut(output_base..output_base + element_stride)
+                else {
+                    return hybrid_error_for_helper(helper);
+                };
+                let Some(input_element) = tail.get(input_cursor..) else {
+                    return hybrid_error_for_helper(helper);
+                };
+                let consumed = match unsafe {
+                    element_decoder
+                        .decode_raw_prefix_into(input_element, output_element.as_mut_ptr())
+                } {
+                    Ok(consumed) => consumed,
+                    Err(_) => return hybrid_error_for_helper(helper),
+                };
+                let Some(next_cursor) = input_cursor.checked_add(consumed) else {
+                    return hybrid_error_for_helper(helper);
+                };
+                input_cursor = next_cursor;
+            }
+            let output = unsafe { out.add(*output_offset) };
+            let context = thunks.context as *mut std::ffi::c_void;
+            if !unsafe {
+                (thunks.write_elements)(output, elements.as_ptr(), count, *element_stride, context)
+            } {
+                return hybrid_error_for_helper(helper);
+            }
+            input_cursor
+        }
         StencilHelper::DirectSequenceBytes {
             output_offset,
             layout,
@@ -183,6 +230,49 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
                 return hybrid_error_for_helper(helper);
             }
             end
+        }
+        StencilHelper::DirectSequenceElements {
+            output_offset,
+            layout,
+            element_decoder,
+            ..
+        } => {
+            if tail.len() < 4 {
+                return hybrid_error_for_helper(helper);
+            }
+            let count = u32::from_le_bytes(tail[..4].try_into().unwrap()) as usize;
+            let Some(output_len) = layout.element_stride.checked_mul(count) else {
+                return hybrid_error_for_helper(helper);
+            };
+            let mut elements = vec![0u8; output_len];
+            let mut input_cursor = 4usize;
+            for index in 0..count {
+                let output_base = index * layout.element_stride;
+                let Some(output_element) =
+                    elements.get_mut(output_base..output_base + layout.element_stride)
+                else {
+                    return hybrid_error_for_helper(helper);
+                };
+                let Some(input_element) = tail.get(input_cursor..) else {
+                    return hybrid_error_for_helper(helper);
+                };
+                let consumed = match unsafe {
+                    element_decoder
+                        .decode_raw_prefix_into(input_element, output_element.as_mut_ptr())
+                } {
+                    Ok(consumed) => consumed,
+                    Err(_) => return hybrid_error_for_helper(helper),
+                };
+                let Some(next_cursor) = input_cursor.checked_add(consumed) else {
+                    return hybrid_error_for_helper(helper);
+                };
+                input_cursor = next_cursor;
+            }
+            let output = unsafe { out.add(*output_offset) };
+            if !unsafe { write_direct_sequence(output, *layout, &elements, count) } {
+                return hybrid_error_for_helper(helper);
+            }
+            input_cursor
         }
         StencilHelper::DirectOptionSequenceBytes {
             output_offset,
@@ -358,6 +448,35 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
                 }
             }
         }
+        StencilHelper::DirectEnum {
+            output_offset,
+            tag_output_offset,
+            cases,
+            ..
+        } => {
+            if tail.len() < 4 {
+                return hybrid_error_for_helper(helper);
+            }
+            let wire_index = u32::from_le_bytes(tail[..4].try_into().unwrap());
+            let Some(case) = cases.iter().find(|case| case.wire_index == wire_index) else {
+                return hybrid_error_for_helper(helper);
+            };
+            let output = unsafe { out.add(*output_offset) };
+            unsafe { std::ptr::write(output.add(*tag_output_offset), case.reader_discriminant) };
+            let payload_consumed = match &case.payload_decoder {
+                Some(decoder) => {
+                    match unsafe { decoder.decode_raw_prefix_into(&tail[4..], output) } {
+                        Ok(consumed) => consumed,
+                        Err(_) => return hybrid_error_for_helper(helper),
+                    }
+                }
+                None => 0,
+            };
+            let Some(end) = 4usize.checked_add(payload_consumed) else {
+                return hybrid_error_for_helper(helper);
+            };
+            end
+        }
         StencilHelper::Skip { writer_type, .. } => {
             let mut reader = CompactReader::new(tail);
             if reader
@@ -379,12 +498,15 @@ fn hybrid_error_for_helper(helper: &StencilHelper) -> usize {
     match helper {
         StencilHelper::SequenceBytes { failure_index, .. }
         | StencilHelper::SequenceFixedElements { failure_index, .. }
+        | StencilHelper::SequenceElements { failure_index, .. }
         | StencilHelper::DirectSequenceBytes { failure_index, .. }
         | StencilHelper::DirectSequenceFixedElements { failure_index, .. }
+        | StencilHelper::DirectSequenceElements { failure_index, .. }
         | StencilHelper::DirectOptionSequenceBytes { failure_index, .. }
         | StencilHelper::DirectOptionFixed { failure_index, .. }
         | StencilHelper::OptionSequenceBytes { failure_index, .. }
         | StencilHelper::Enum { failure_index, .. }
+        | StencilHelper::DirectEnum { failure_index, .. }
         | StencilHelper::Skip { failure_index, .. } => hybrid_error_for_failure(*failure_index),
     }
 }
@@ -823,6 +945,20 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
                             );
                         }
                     }
+                }
+                LocalEnumEncodePayload::Nested {
+                    project_thunks,
+                    encoder,
+                } => {
+                    let context = project_thunks.context as *mut std::ffi::c_void;
+                    let payload = unsafe { (project_thunks.project)(value, context) };
+                    if payload.is_null() {
+                        return status;
+                    }
+                    let Ok(payload_bytes) = (unsafe { encoder.encode_raw_to_vec(payload) }) else {
+                        return status;
+                    };
+                    out.extend_from_slice(&payload_bytes);
                 }
                 LocalEnumEncodePayload::OwnedFixed {
                     project_into_thunks,
