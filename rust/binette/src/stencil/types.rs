@@ -91,7 +91,6 @@ pub(super) enum HybridStencilOp {
     },
 }
 
-#[derive(Debug, Clone)]
 pub(super) enum StencilHelper {
     SequenceBytes {
         output_offset: usize,
@@ -170,20 +169,22 @@ pub(super) struct DirectOptionDecodeLayout {
     pub(super) option_size: usize,
 }
 
-#[derive(Debug, Clone)]
 pub(super) struct LocalEnumDecodeCase {
     pub(super) wire_index: u32,
     pub(super) construct_thunks: LocalVariantConstructThunks,
     pub(super) payload: LocalEnumDecodePayload,
 }
 
-#[derive(Debug, Clone)]
 pub(super) enum LocalEnumDecodePayload {
     Unit,
     Fixed {
         ops: Vec<StencilOp>,
         input_len: usize,
-        local_size: usize,
+        payload_layout: LocalValueLayout,
+    },
+    Nested {
+        decoder: Box<LocalStencilDecoder>,
+        payload_layout: LocalValueLayout,
     },
     SequenceBytes,
 }
@@ -311,14 +312,12 @@ pub(super) enum StencilEncodeHelper {
     },
 }
 
-#[derive(Debug, Clone)]
 pub(super) struct LocalEnumEncodeCase {
     pub(super) local_index: u32,
     pub(super) wire_index: u32,
     pub(super) payload: LocalEnumEncodePayload,
 }
 
-#[derive(Debug, Clone)]
 pub(super) enum LocalEnumEncodePayload {
     Unit,
     Fixed {
@@ -331,6 +330,11 @@ pub(super) enum LocalEnumEncodePayload {
         payload_layout: LocalValueLayout,
         ops: Vec<CopyOp>,
         output_len: usize,
+    },
+    OwnedNested {
+        project_into_thunks: LocalVariantProjectIntoThunks,
+        payload_layout: LocalValueLayout,
+        encoder: Box<LocalStencilEncoder>,
     },
     SequenceBytes {
         project_thunks: LocalVariantProjectThunks,

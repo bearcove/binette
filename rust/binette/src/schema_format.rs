@@ -247,22 +247,15 @@ fn schema_kind_to_value(kind: &SchemaKind) -> Result<Value, SchemaFormatError> {
                 ),
             ]),
         ),
-        SchemaKind::Tuple { elements } => {
-            if elements.is_empty() {
-                return Err(SchemaFormatError::EmptyList {
-                    context: "schema kind tuple",
-                });
-            }
-            enum_value(
-                "tuple",
-                Value::List(
-                    elements
-                        .iter()
-                        .map(type_ref_to_value)
-                        .collect::<Result<Vec<_>, _>>()?,
-                ),
-            )
-        }
+        SchemaKind::Tuple { elements } => enum_value(
+            "tuple",
+            Value::List(
+                elements
+                    .iter()
+                    .map(type_ref_to_value)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+        ),
         SchemaKind::List { element } => element_schema_kind("list", element),
         SchemaKind::Set { element } => element_schema_kind("set", element),
         SchemaKind::Map { key, value } => enum_value(
@@ -342,11 +335,6 @@ fn schema_kind_from_value(value: &Value) -> Result<SchemaKind, SchemaFormatError
                 .iter()
                 .map(type_ref_from_value)
                 .collect::<Result<Vec<_>, _>>()?;
-            if elements.is_empty() {
-                return Err(SchemaFormatError::EmptyList {
-                    context: "schema kind tuple",
-                });
-            }
             Ok(SchemaKind::Tuple { elements })
         }
         "list" => element_schema_kind_from_value(&enum_value.payload, "schema kind list")

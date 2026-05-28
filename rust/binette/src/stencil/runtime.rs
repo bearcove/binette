@@ -278,7 +278,7 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
                 LocalEnumDecodePayload::Fixed {
                     ops,
                     input_len,
-                    local_size,
+                    payload_layout,
                 } => {
                     let Some(end) = 4usize.checked_add(*input_len) else {
                         return hybrid_error_for_helper(helper);
@@ -286,20 +286,51 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
                     let Some(input_payload) = tail.get(4..end) else {
                         return hybrid_error_for_helper(helper);
                     };
-                    let mut payload = vec![0u8; *local_size];
-                    if !run_fixed_decode_ops(ops, input_payload, &mut payload) {
+                    let constructed = unsafe {
+                        with_aligned_scratch(*payload_layout, |payload| {
+                            let payload_bytes =
+                                slice::from_raw_parts_mut(payload, payload_layout.size);
+                            if !run_fixed_decode_ops(ops, input_payload, payload_bytes) {
+                                return None;
+                            }
+                            (case.construct_thunks.construct)(
+                                output,
+                                payload.cast_const(),
+                                payload_layout.size,
+                                context,
+                            )
+                            .then_some(())
+                        })
+                    };
+                    if constructed.is_none() {
                         return hybrid_error_for_helper(helper);
                     }
-                    if !unsafe {
-                        (case.construct_thunks.construct)(
-                            output,
-                            payload.as_ptr(),
-                            payload.len(),
-                            context,
-                        )
-                    } {
+                    end
+                }
+                LocalEnumDecodePayload::Nested {
+                    decoder,
+                    payload_layout,
+                } => {
+                    let input_payload = &tail[4..];
+                    let Some(consumed) = (unsafe {
+                        with_aligned_scratch(*payload_layout, |payload| {
+                            let consumed = decoder
+                                .decode_raw_prefix_into(input_payload, payload)
+                                .ok()?;
+                            (case.construct_thunks.construct)(
+                                output,
+                                payload.cast_const(),
+                                payload_layout.size,
+                                context,
+                            )
+                            .then_some(consumed)
+                        })
+                    }) else {
                         return hybrid_error_for_helper(helper);
-                    }
+                    };
+                    let Some(end) = 4usize.checked_add(consumed) else {
+                        return hybrid_error_for_helper(helper);
+                    };
                     end
                 }
                 LocalEnumDecodePayload::SequenceBytes => {
@@ -821,6 +852,23 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
                     }) else {
                         return status;
                     };
+                }
+                LocalEnumEncodePayload::OwnedNested {
+                    project_into_thunks,
+                    payload_layout,
+                    encoder,
+                } => {
+                    let Some(payload_bytes) = (unsafe {
+                        with_owned_projected_payload(
+                            value,
+                            *payload_layout,
+                            *project_into_thunks,
+                            |payload| encoder.encode_raw_to_vec(payload).ok(),
+                        )
+                    }) else {
+                        return status;
+                    };
+                    out.extend_from_slice(&payload_bytes);
                 }
                 LocalEnumEncodePayload::SequenceBytes {
                     project_thunks,

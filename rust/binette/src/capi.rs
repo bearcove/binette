@@ -94,6 +94,12 @@ pub extern "C" fn binette_byte_buffer_free(buffer: BinetteByteBuffer) {
 
 // r[impl binette.local-access.boundary]
 #[unsafe(no_mangle)]
+pub extern "C" fn binette_primitive_unit_type_id() -> u64 {
+    primitive_type_id(Primitive::Unit).0
+}
+
+// r[impl binette.local-access.boundary]
+#[unsafe(no_mangle)]
 pub extern "C" fn binette_primitive_string_type_id() -> u64 {
     primitive_type_id(Primitive::String).0
 }

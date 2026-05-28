@@ -2468,6 +2468,75 @@ mod tests {
         ));
     }
 
+    // r[verify binette.local-access.descriptor+2]
+    #[test]
+    fn synthetic_schema_bundle_accepts_sequence_of_unit_enum_descriptor() {
+        let color_schema = TypeRef::concrete(TypeId(0x1B57_CC77_42FA_BEB0));
+        let color = LocalDescriptorImport::swift_probe(
+            color_schema,
+            LocalValueLayout::new(1, 1, 1),
+            LocalDescriptorImportKind::Enum {
+                tag: LocalAccess::Thunk(LocalThunk::new(LocalBackend::SwiftProbe, "Color.tag")),
+                variants: vec![
+                    LocalVariantImport {
+                        name: "Red".to_owned(),
+                        index: 0,
+                        access: LocalAccess::Thunk(LocalThunk::new(
+                            LocalBackend::SwiftProbe,
+                            "Color.red",
+                        )),
+                        project_into: None,
+                        drop_projected: None,
+                        construct: None,
+                        payload: None,
+                    },
+                    LocalVariantImport {
+                        name: "Green".to_owned(),
+                        index: 1,
+                        access: LocalAccess::Thunk(LocalThunk::new(
+                            LocalBackend::SwiftProbe,
+                            "Color.green",
+                        )),
+                        project_into: None,
+                        drop_projected: None,
+                        construct: None,
+                        payload: None,
+                    },
+                ],
+            },
+        );
+        let mut descriptor = LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
+            TypeRef::concrete(TypeId(0xCC0D_CE2D_2934_25BF)),
+            LocalValueLayout::new(24, 8, 24),
+            LocalDescriptorImportKind::Sequence {
+                element: Box::new(color),
+                storage: LocalSequenceStorage::Thunk {
+                    len: LocalThunk::new(LocalBackend::SwiftProbe, "Array.len"),
+                    element: LocalThunk::new(LocalBackend::SwiftProbe, "Array.element"),
+                    write: None,
+                },
+            },
+        ))
+        .unwrap();
+
+        let bundle = synthetic_schema_bundle_for_local_descriptor(&mut descriptor).unwrap();
+        crate::schema_format::encode_schema_bundle_to_vec(&bundle).unwrap();
+    }
+
+    // r[verify binette.local-access.descriptor+2]
+    #[test]
+    fn synthetic_schema_bundle_accepts_empty_tuple_descriptor() {
+        let mut descriptor = LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
+            TypeRef::concrete(TypeId(0x5AE7_E5BB_CAAD_E4A0)),
+            LocalValueLayout::new(0, 1, 1),
+            LocalDescriptorImportKind::Tuple { fields: Vec::new() },
+        ))
+        .unwrap();
+
+        let bundle = synthetic_schema_bundle_for_local_descriptor(&mut descriptor).unwrap();
+        crate::schema_format::encode_schema_bundle_to_vec(&bundle).unwrap();
+    }
+
     // r[verify binette.local-access.swift-probes+2]
     // r[verify binette.local-access.descriptor+2]
     #[test]

@@ -349,6 +349,8 @@ void binette_local_descriptor_free(struct BinetteLocalDescriptorHandle *handle);
 
 void binette_byte_buffer_free(struct BinetteByteBuffer buffer);
 
+uint64_t binette_primitive_unit_type_id(void);
+
 uint64_t binette_primitive_string_type_id(void);
 
 uint64_t binette_primitive_bool_type_id(void);

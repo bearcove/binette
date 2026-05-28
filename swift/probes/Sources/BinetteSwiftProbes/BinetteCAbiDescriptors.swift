@@ -367,17 +367,40 @@ public func binetteDirectOptionalRepresentation<T>(
     let someABytes = bytes(of: someA)
     let someBBytes = bytes(of: someB)
     let sampleBytes = bytes(of: sampleA)
-    let tagOffset = noneBytes.indices.first {
+    if let tagOffset = noneBytes.indices.first(where: {
         noneBytes[$0] != someABytes[$0] && someABytes[$0] == someBBytes[$0]
-    }!
-    let someOffset = contiguousSubsequenceOffset(sampleBytes, in: someABytes)!
+    }), let someOffset = contiguousSubsequenceOffset(sampleBytes, in: someABytes) {
+        return BinetteLocalOptionRepresentationAbi(
+            tag: UInt32(BINETTE_LOCAL_OPTION_DIRECT_TAG),
+            tag_offset: tagOffset,
+            tag_width: MemoryLayout<UInt8>.size,
+            none_value: Int(noneBytes[tagOffset]),
+            some_value: Int(someABytes[tagOffset]),
+            some_offset: someOffset,
+            none_bytes: nil,
+            none_bytes_len: 0,
+            thunks: BinetteLocalOptionThunksAbi(
+                is_some: nil,
+                some: nil,
+                write_none: nil,
+                write_some_bytes: nil,
+                context: nil
+            )
+        )
+    }
+
+    guard let tagOffset = noneBytes.indices.first(where: {
+        noneBytes[$0] != someABytes[$0] && noneBytes[$0] != someBBytes[$0] && someABytes[$0] != someBBytes[$0]
+    }), let someOffset = contiguousSubsequenceOffset(sampleBytes, in: someABytes) else {
+        preconditionFailure("unsupported direct Optional<\(T.self)> layout")
+    }
 
     return BinetteLocalOptionRepresentationAbi(
-        tag: UInt32(BINETTE_LOCAL_OPTION_DIRECT_TAG),
+        tag: UInt32(BINETTE_LOCAL_OPTION_NICHE),
         tag_offset: tagOffset,
         tag_width: MemoryLayout<UInt8>.size,
         none_value: Int(noneBytes[tagOffset]),
-        some_value: Int(someABytes[tagOffset]),
+        some_value: 0,
         some_offset: someOffset,
         none_bytes: nil,
         none_bytes_len: 0,

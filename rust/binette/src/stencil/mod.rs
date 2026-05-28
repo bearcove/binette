@@ -387,6 +387,21 @@ impl LocalStencilDecoder {
     /// [`LocalTypeDescriptor`] used to build this decoder. The storage must be
     /// valid to write for the duration of the call.
     pub unsafe fn decode_raw_into(&self, input: &[u8], out: *mut u8) -> Result<(), StencilError> {
+        let consumed = unsafe { self.decode_raw_prefix_into(input, out) }?;
+        if consumed != input.len() {
+            return Err(StencilError::InputLength {
+                expected: consumed,
+                actual: input.len(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) unsafe fn decode_raw_prefix_into(
+        &self,
+        input: &[u8],
+        out: *mut u8,
+    ) -> Result<usize, StencilError> {
         match &self.entry {
             LocalDecodeStencilEntry::Fixed { func, length_check } => {
                 length_check.validate(input)?;
@@ -394,7 +409,7 @@ impl LocalStencilDecoder {
                 // matching the descriptor used to compile this decoder.
                 let status = unsafe { func(input.as_ptr(), input.len(), out) };
                 if status == STENCIL_OK {
-                    Ok(())
+                    Ok(input.len())
                 } else {
                     Err(failure_for_status(&self.failures, status, input))
                 }
@@ -406,13 +421,7 @@ impl LocalStencilDecoder {
                 if let Some(status) = hybrid_error_status(result) {
                     return Err(failure_for_status(&self.failures, status, input));
                 }
-                if result != input.len() {
-                    return Err(StencilError::InputLength {
-                        expected: result,
-                        actual: input.len(),
-                    });
-                }
-                Ok(())
+                Ok(result)
             }
         }
     }
