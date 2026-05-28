@@ -2,6 +2,7 @@ use super::{
     LocalAccess, LocalBackend, LocalExternalMetadata, LocalFieldDescriptor,
     LocalOptionRepresentation, LocalScalarAccess, LocalSchemaRef, LocalSequenceStorage, LocalThunk,
     LocalTypeDescriptor, LocalTypeKind, LocalValueLayout, LocalVariantDescriptor,
+    LocalVariantPayloadKind,
 };
 use facet::Facet;
 
@@ -58,6 +59,7 @@ pub struct LocalVariantImport {
     pub project_into: Option<LocalThunk>,
     pub drop_projected: Option<LocalThunk>,
     pub construct: Option<LocalThunk>,
+    pub payload_kind: LocalVariantPayloadKind,
     pub payload: Option<LocalDescriptorImport>,
 }
 
@@ -382,6 +384,11 @@ impl LocalVariantExport {
             project_into: None,
             drop_projected: None,
             construct: self.construct.map(|name| LocalThunk::new(backend, name)),
+            payload_kind: if self.payload.is_some() {
+                LocalVariantPayloadKind::Newtype
+            } else {
+                LocalVariantPayloadKind::Unit
+            },
             payload: self
                 .payload
                 .map(|payload| payload.into_import(&path, resolve_schema))
@@ -608,6 +615,7 @@ impl LocalVariantImport {
             project_into: self.project_into,
             drop_projected: self.drop_projected,
             construct: self.construct,
+            payload_kind: self.payload_kind,
             payload: self
                 .payload
                 .map(|payload| payload.into_descriptor(&path).map(Box::new))

@@ -1036,6 +1036,9 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
             else {
                 continue;
             };
+            if enum_payload_contains_never(payload) {
+                continue;
+            }
             let local_variant = local_reader_variant_descriptor(
                 local_variants,
                 *reader_index,
@@ -1278,6 +1281,42 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
             path: path.to_owned(),
         });
         Ok(failure_index)
+    }
+}
+
+fn enum_payload_contains_never(payload: &EnumPayloadPlan) -> bool {
+    match payload {
+        EnumPayloadPlan::Unit => false,
+        EnumPayloadPlan::Newtype(node) => plan_node_contains_never(node),
+        EnumPayloadPlan::Tuple(elements) => elements.iter().any(plan_node_contains_never),
+        EnumPayloadPlan::Struct(fields) => fields.iter().any(|field| match field {
+            StructFieldPlan::Read { plan, .. } => plan_node_contains_never(plan),
+            StructFieldPlan::Skip { .. } | StructFieldPlan::Default { .. } => false,
+        }),
+    }
+}
+
+fn plan_node_contains_never(node: &PlanNode) -> bool {
+    match node {
+        PlanNode::Ref { .. } => false,
+        PlanNode::Primitive { primitive } => *primitive == Primitive::Never,
+        PlanNode::Struct { fields } => fields.iter().any(|field| match field {
+            StructFieldPlan::Read { plan, .. } => plan_node_contains_never(plan),
+            StructFieldPlan::Skip { .. } | StructFieldPlan::Default { .. } => false,
+        }),
+        PlanNode::Tuple { elements } => elements.iter().any(plan_node_contains_never),
+        PlanNode::List { element }
+        | PlanNode::Set { element }
+        | PlanNode::Array { element, .. }
+        | PlanNode::Option { element } => plan_node_contains_never(element),
+        PlanNode::Map { key, value } => {
+            plan_node_contains_never(key) || plan_node_contains_never(value)
+        }
+        PlanNode::Enum { variants } => variants.iter().any(|variant| match variant {
+            EnumVariantPlan::Read { payload, .. } => enum_payload_contains_never(payload),
+            EnumVariantPlan::Reject { .. } => false,
+        }),
+        PlanNode::Dynamic | PlanNode::External { .. } => false,
     }
 }
 

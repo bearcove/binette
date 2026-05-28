@@ -181,8 +181,14 @@ typedef struct BinetteLocalVariantAbi {
   struct BinetteLocalVariantProjectIntoAbi project_into;
   struct BinetteLocalVariantDropAbi drop_projected;
   struct BinetteLocalVariantConstructAbi construct;
+  uint32_t payload_kind;
   const struct BinetteLocalDescriptorAbi *payload;
 } BinetteLocalVariantAbi;
+
+#define BINETTE_LOCAL_VARIANT_PAYLOAD_UNIT 0
+#define BINETTE_LOCAL_VARIANT_PAYLOAD_NEWTYPE 1
+#define BINETTE_LOCAL_VARIANT_PAYLOAD_TUPLE 2
+#define BINETTE_LOCAL_VARIANT_PAYLOAD_STRUCT 3
 
 typedef struct BinetteLocalEnumAbi {
   struct BinetteLocalEnumTagAccessAbi tag;

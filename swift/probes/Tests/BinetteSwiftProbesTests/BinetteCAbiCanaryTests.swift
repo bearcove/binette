@@ -218,6 +218,7 @@ private func importMessageDescriptor() throws -> OpaquePointer {
                     call: messageConstructHi,
                     context: nil
                 ),
+                payload_kind: UInt32(BINETTE_LOCAL_VARIANT_PAYLOAD_NEWTYPE),
                 payload: stringDescriptor
             ),
             BinetteLocalVariantAbi(
@@ -236,6 +237,7 @@ private func importMessageDescriptor() throws -> OpaquePointer {
                     call: messageConstructBye,
                     context: nil
                 ),
+                payload_kind: UInt32(BINETTE_LOCAL_VARIANT_PAYLOAD_NEWTYPE),
                 payload: u32Descriptor
             ),
         ]

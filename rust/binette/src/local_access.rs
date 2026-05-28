@@ -21,7 +21,9 @@ pub use c_abi::{
     BINETTE_LOCAL_OPTION_THUNK, BINETTE_LOCAL_SCALAR_BYTES, BINETTE_LOCAL_SCALAR_PLAIN,
     BINETTE_LOCAL_SCALAR_STRING, BINETTE_LOCAL_SCHEMA_REF_POSITION, BINETTE_LOCAL_SCHEMA_REF_TYPE,
     BINETTE_LOCAL_SEQUENCE_DIRECT_CONTIGUOUS, BINETTE_LOCAL_SEQUENCE_INLINE_FIXED,
-    BINETTE_LOCAL_SEQUENCE_THUNK, BinetteLocalAccessTag, BinetteLocalBackendAbi,
+    BINETTE_LOCAL_SEQUENCE_THUNK, BINETTE_LOCAL_VARIANT_PAYLOAD_NEWTYPE,
+    BINETTE_LOCAL_VARIANT_PAYLOAD_STRUCT, BINETTE_LOCAL_VARIANT_PAYLOAD_TUPLE,
+    BINETTE_LOCAL_VARIANT_PAYLOAD_UNIT, BinetteLocalAccessTag, BinetteLocalBackendAbi,
     BinetteLocalDescriptorAbi, BinetteLocalEnumAbi, BinetteLocalEnumTagAccessAbi,
     BinetteLocalEnumTagThunk, BinetteLocalEnumTagThunkAbi, BinetteLocalExternalAbi,
     BinetteLocalExternalMetadataAbi, BinetteLocalExternalMetadataFieldAbi,
@@ -39,10 +41,10 @@ pub use c_abi::{
     BinetteLocalSequenceWriteBytesThunk, BinetteLocalSequenceWriteFixedElementsThunk,
     BinetteLocalStrAbi, BinetteLocalStructAbi, BinetteLocalVariantAbi,
     BinetteLocalVariantConstructAbi, BinetteLocalVariantConstructThunk, BinetteLocalVariantDropAbi,
-    BinetteLocalVariantDropProjectedThunk, BinetteLocalVariantProjectAccessAbi,
-    BinetteLocalVariantProjectIntoAbi, BinetteLocalVariantProjectIntoThunk,
-    BinetteLocalVariantProjectThunk, BinetteLocalVariantProjectThunkAbi, LocalDescriptorAbiError,
-    LocalDescriptorAbiImport,
+    BinetteLocalVariantDropProjectedThunk, BinetteLocalVariantPayloadKindTag,
+    BinetteLocalVariantProjectAccessAbi, BinetteLocalVariantProjectIntoAbi,
+    BinetteLocalVariantProjectIntoThunk, BinetteLocalVariantProjectThunk,
+    BinetteLocalVariantProjectThunkAbi, LocalDescriptorAbiError, LocalDescriptorAbiImport,
 };
 pub use import::{
     LocalAccessExport, LocalDescriptorExport, LocalDescriptorExportError, LocalDescriptorImport,
@@ -176,7 +178,16 @@ pub struct LocalVariantDescriptor {
     pub project_into: Option<LocalThunk>,
     pub drop_projected: Option<LocalThunk>,
     pub construct: Option<LocalThunk>,
+    pub payload_kind: LocalVariantPayloadKind,
     pub payload: Option<Box<LocalTypeDescriptor>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalVariantPayloadKind {
+    Unit,
+    Newtype,
+    Tuple,
+    Struct,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1072,6 +1083,11 @@ mod rust_layout {
                                 project_into: None,
                                 drop_projected: None,
                                 construct: None,
+                                payload_kind: if payload.is_some() {
+                                    LocalVariantPayloadKind::Newtype
+                                } else {
+                                    LocalVariantPayloadKind::Unit
+                                },
                                 payload,
                             })
                         })
@@ -1766,9 +1782,20 @@ fn canonicalize_descriptor_schema(
             let variants = variants
                 .iter_mut()
                 .map(|variant| {
-                    let payload = match &mut variant.payload {
-                        Some(payload) => canonicalize_variant_payload_descriptor(payload, schemas)?,
-                        None => VariantPayload::Unit,
+                    let payload = match (&variant.payload_kind, &mut variant.payload) {
+                        (LocalVariantPayloadKind::Unit, None) => VariantPayload::Unit,
+                        (LocalVariantPayloadKind::Newtype, Some(payload)) => {
+                            VariantPayload::Newtype {
+                                type_ref: canonicalize_descriptor_schema(payload, schemas)?,
+                            }
+                        }
+                        (LocalVariantPayloadKind::Tuple, Some(payload)) => {
+                            canonicalize_tuple_variant_payload_descriptor(payload, schemas)?
+                        }
+                        (LocalVariantPayloadKind::Struct, Some(payload)) => {
+                            canonicalize_struct_variant_payload_descriptor(payload, schemas)?
+                        }
+                        _ => return Err(LocalSchemaBundleError::InvalidSchemaRef),
                     };
                     Ok(Variant {
                         name: variant.name.clone(),
@@ -1809,35 +1836,38 @@ fn canonicalize_descriptor_schema(
     Ok(type_ref)
 }
 
-fn canonicalize_variant_payload_descriptor(
+fn canonicalize_tuple_variant_payload_descriptor(
     payload: &mut LocalTypeDescriptor,
     schemas: &mut Vec<Schema>,
 ) -> Result<VariantPayload, LocalSchemaBundleError> {
-    match &mut payload.kind {
-        LocalTypeKind::Struct { fields } => {
-            let fields = fields
-                .iter_mut()
-                .map(|field| {
-                    Ok(Field {
-                        name: field.name.clone(),
-                        type_ref: canonicalize_descriptor_schema(&mut field.descriptor, schemas)?,
-                        required: true,
-                    })
-                })
-                .collect::<Result<Vec<_>, LocalSchemaBundleError>>()?;
-            Ok(VariantPayload::Struct { fields })
-        }
-        LocalTypeKind::Tuple { fields } => {
-            let elements = fields
-                .iter_mut()
-                .map(|field| canonicalize_descriptor_schema(&mut field.descriptor, schemas))
-                .collect::<Result<Vec<_>, LocalSchemaBundleError>>()?;
-            Ok(VariantPayload::Tuple { elements })
-        }
-        _ => Ok(VariantPayload::Newtype {
-            type_ref: canonicalize_descriptor_schema(payload, schemas)?,
-        }),
-    }
+    let LocalTypeKind::Tuple { fields } = &mut payload.kind else {
+        return Err(LocalSchemaBundleError::InvalidSchemaRef);
+    };
+    let elements = fields
+        .iter_mut()
+        .map(|field| canonicalize_descriptor_schema(&mut field.descriptor, schemas))
+        .collect::<Result<Vec<_>, LocalSchemaBundleError>>()?;
+    Ok(VariantPayload::Tuple { elements })
+}
+
+fn canonicalize_struct_variant_payload_descriptor(
+    payload: &mut LocalTypeDescriptor,
+    schemas: &mut Vec<Schema>,
+) -> Result<VariantPayload, LocalSchemaBundleError> {
+    let LocalTypeKind::Struct { fields } = &mut payload.kind else {
+        return Err(LocalSchemaBundleError::InvalidSchemaRef);
+    };
+    let fields = fields
+        .iter_mut()
+        .map(|field| {
+            Ok(Field {
+                name: field.name.clone(),
+                type_ref: canonicalize_descriptor_schema(&mut field.descriptor, schemas)?,
+                required: true,
+            })
+        })
+        .collect::<Result<Vec<_>, LocalSchemaBundleError>>()?;
+    Ok(VariantPayload::Struct { fields })
 }
 
 fn canonicalize_external_metadata(
@@ -2380,6 +2410,7 @@ mod tests {
                             LocalBackend::SwiftProbe,
                             "ProbeEnum.init.empty",
                         )),
+                        payload_kind: LocalVariantPayloadKind::Unit,
                         payload: None,
                     },
                     LocalVariantImport {
@@ -2395,6 +2426,7 @@ mod tests {
                             LocalBackend::SwiftProbe,
                             "ProbeEnum.init.titled.utf8",
                         )),
+                        payload_kind: LocalVariantPayloadKind::Newtype,
                         payload: Some(string_descriptor),
                     },
                     LocalVariantImport {
@@ -2410,6 +2442,7 @@ mod tests {
                             LocalBackend::SwiftProbe,
                             "ProbeEnum.init.nested",
                         )),
+                        payload_kind: LocalVariantPayloadKind::Newtype,
                         payload: Some(leaf_descriptor),
                     },
                 ],
@@ -2488,6 +2521,7 @@ mod tests {
                         project_into: None,
                         drop_projected: None,
                         construct: None,
+                        payload_kind: LocalVariantPayloadKind::Unit,
                         payload: None,
                     },
                     LocalVariantImport {
@@ -2500,6 +2534,7 @@ mod tests {
                         project_into: None,
                         drop_projected: None,
                         construct: None,
+                        payload_kind: LocalVariantPayloadKind::Unit,
                         payload: None,
                     },
                 ],

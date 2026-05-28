@@ -1937,6 +1937,7 @@ fn swift_probe_event_import(owner: &TypeRef) -> LocalDescriptorImport {
                     project_into: None,
                     drop_projected: None,
                     construct: Some(swift_event_construct_empty_thunk()),
+                    payload_kind: crate::local_access::LocalVariantPayloadKind::Unit,
                     payload: None,
                 },
                 crate::local_access::LocalVariantImport {
@@ -1946,6 +1947,7 @@ fn swift_probe_event_import(owner: &TypeRef) -> LocalDescriptorImport {
                     project_into: None,
                     drop_projected: None,
                     construct: Some(swift_event_construct_titled_thunk()),
+                    payload_kind: crate::local_access::LocalVariantPayloadKind::Newtype,
                     payload: Some(swift_thunk_string_import()),
                 },
                 crate::local_access::LocalVariantImport {
@@ -1955,6 +1957,7 @@ fn swift_probe_event_import(owner: &TypeRef) -> LocalDescriptorImport {
                     project_into: None,
                     drop_projected: None,
                     construct: Some(swift_event_construct_nested_thunk()),
+                    payload_kind: crate::local_access::LocalVariantPayloadKind::Newtype,
                     payload: Some(swift_leaf_import(owner)),
                 },
                 crate::local_access::LocalVariantImport {
@@ -1964,6 +1967,7 @@ fn swift_probe_event_import(owner: &TypeRef) -> LocalDescriptorImport {
                     project_into: Some(swift_event_project_record_into_thunk()),
                     drop_projected: Some(swift_event_drop_record_projected_thunk()),
                     construct: Some(swift_event_construct_record_thunk()),
+                    payload_kind: crate::local_access::LocalVariantPayloadKind::Newtype,
                     payload: Some(swift_text_import(owner)),
                 },
                 crate::local_access::LocalVariantImport {
@@ -1973,6 +1977,7 @@ fn swift_probe_event_import(owner: &TypeRef) -> LocalDescriptorImport {
                     project_into: Some(swift_event_project_maybe_record_into_thunk()),
                     drop_projected: Some(swift_event_drop_maybe_record_projected_thunk()),
                     construct: Some(swift_event_construct_maybe_record_thunk()),
+                    payload_kind: crate::local_access::LocalVariantPayloadKind::Newtype,
                     payload: Some(swift_maybe_text_import(owner)),
                 },
             ],

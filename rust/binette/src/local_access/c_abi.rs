@@ -9,7 +9,8 @@ use super::{
     LocalScalarAccess, LocalSequenceDecodeThunks, LocalSequenceElementProjectIntoEncodeThunks,
     LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks,
     LocalSequenceStorage, LocalThunk, LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout,
-    LocalVariantConstructThunks, LocalVariantProjectIntoThunks, LocalVariantProjectThunks,
+    LocalVariantConstructThunks, LocalVariantPayloadKind, LocalVariantProjectIntoThunks,
+    LocalVariantProjectThunks,
 };
 use crate::schema::{TypeId, TypeRef};
 
@@ -85,6 +86,12 @@ pub const BINETTE_LOCAL_KIND_OPTION: BinetteLocalKindTag = 5;
 pub const BINETTE_LOCAL_KIND_EXTERNAL_ATTACHMENT: BinetteLocalKindTag = 6;
 pub const BINETTE_LOCAL_KIND_OPAQUE: BinetteLocalKindTag = 7;
 pub const BINETTE_LOCAL_KIND_TUPLE: BinetteLocalKindTag = 8;
+
+pub type BinetteLocalVariantPayloadKindTag = u32;
+pub const BINETTE_LOCAL_VARIANT_PAYLOAD_UNIT: BinetteLocalVariantPayloadKindTag = 0;
+pub const BINETTE_LOCAL_VARIANT_PAYLOAD_NEWTYPE: BinetteLocalVariantPayloadKindTag = 1;
+pub const BINETTE_LOCAL_VARIANT_PAYLOAD_TUPLE: BinetteLocalVariantPayloadKindTag = 2;
+pub const BINETTE_LOCAL_VARIANT_PAYLOAD_STRUCT: BinetteLocalVariantPayloadKindTag = 3;
 
 pub type BinetteLocalExternalMetadataTag = u32;
 pub const BINETTE_LOCAL_EXTERNAL_METADATA_UNIT: BinetteLocalExternalMetadataTag = 1;
@@ -191,6 +198,7 @@ pub struct BinetteLocalVariantAbi {
     pub project_into: BinetteLocalVariantProjectIntoAbi,
     pub drop_projected: BinetteLocalVariantDropAbi,
     pub construct: BinetteLocalVariantConstructAbi,
+    pub payload_kind: BinetteLocalVariantPayloadKindTag,
     pub payload: *const BinetteLocalDescriptorAbi,
 }
 
@@ -593,6 +601,11 @@ impl AbiImporter {
             );
             let construct =
                 self.import_variant_construct(variant.construct, backend, &variant_path);
+            let payload_kind = import_variant_payload_kind(
+                variant.payload_kind,
+                variant.payload.is_null(),
+                &variant_path,
+            )?;
             let payload = if variant.payload.is_null() {
                 None
             } else {
@@ -605,6 +618,7 @@ impl AbiImporter {
                 project_into,
                 drop_projected,
                 construct,
+                payload_kind,
                 payload,
             });
         }
@@ -1091,6 +1105,30 @@ fn import_backend(
         tag => Err(LocalDescriptorAbiError::InvalidTag {
             path: path.to_owned(),
             field: "backend",
+            tag,
+        }),
+    }
+}
+
+fn import_variant_payload_kind(
+    tag: BinetteLocalVariantPayloadKindTag,
+    payload_is_null: bool,
+    path: &str,
+) -> Result<LocalVariantPayloadKind, LocalDescriptorAbiError> {
+    match tag {
+        BINETTE_LOCAL_VARIANT_PAYLOAD_UNIT if payload_is_null => Ok(LocalVariantPayloadKind::Unit),
+        BINETTE_LOCAL_VARIANT_PAYLOAD_NEWTYPE if !payload_is_null => {
+            Ok(LocalVariantPayloadKind::Newtype)
+        }
+        BINETTE_LOCAL_VARIANT_PAYLOAD_TUPLE if !payload_is_null => {
+            Ok(LocalVariantPayloadKind::Tuple)
+        }
+        BINETTE_LOCAL_VARIANT_PAYLOAD_STRUCT if !payload_is_null => {
+            Ok(LocalVariantPayloadKind::Struct)
+        }
+        _ => Err(LocalDescriptorAbiError::InvalidTag {
+            path: path.to_owned(),
+            field: "variant.payload_kind",
             tag,
         }),
     }
