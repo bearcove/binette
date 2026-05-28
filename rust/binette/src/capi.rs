@@ -124,6 +124,12 @@ pub extern "C" fn binette_primitive_u32_type_id() -> u64 {
 
 // r[impl binette.local-access.boundary]
 #[unsafe(no_mangle)]
+pub extern "C" fn binette_primitive_u64_type_id() -> u64 {
+    primitive_type_id(Primitive::U64).0
+}
+
+// r[impl binette.local-access.boundary]
+#[unsafe(no_mangle)]
 pub extern "C" fn binette_primitive_i32_type_id() -> u64 {
     primitive_type_id(Primitive::I32).0
 }
@@ -132,6 +138,12 @@ pub extern "C" fn binette_primitive_i32_type_id() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn binette_primitive_i64_type_id() -> u64 {
     primitive_type_id(Primitive::I64).0
+}
+
+// r[impl binette.local-access.boundary]
+#[unsafe(no_mangle)]
+pub extern "C" fn binette_primitive_f64_type_id() -> u64 {
+    primitive_type_id(Primitive::F64).0
 }
 
 // r[impl binette.local-access.boundary]

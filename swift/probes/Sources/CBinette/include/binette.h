@@ -349,9 +349,13 @@ uint64_t binette_primitive_u16_type_id(void);
 
 uint64_t binette_primitive_u32_type_id(void);
 
+uint64_t binette_primitive_u64_type_id(void);
+
 uint64_t binette_primitive_i32_type_id(void);
 
 uint64_t binette_primitive_i64_type_id(void);
+
+uint64_t binette_primitive_f64_type_id(void);
 
 uint64_t binette_primitive_bytes_type_id(void);
 
