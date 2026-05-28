@@ -67,6 +67,8 @@ typedef bool (*BinetteLocalSequenceElementProjectIntoThunk)(const uint8_t *value
                                                             size_t out_len,
                                                             void *context);
 
+typedef void (*BinetteLocalSequenceElementDropProjectedThunk)(uint8_t *value, void *context);
+
 typedef bool (*BinetteLocalSequenceWriteBytesThunk)(uint8_t *value,
                                                     const uint8_t *ptr,
                                                     size_t len,
@@ -83,6 +85,7 @@ typedef struct BinetteLocalSequenceThunksAbi {
   BinetteLocalSequenceU8Thunk element_u8;
   BinetteLocalSequenceElementPtrThunk element_ptr;
   BinetteLocalSequenceElementProjectIntoThunk element_project_into;
+  BinetteLocalSequenceElementDropProjectedThunk element_drop_projected;
   BinetteLocalSequenceWriteBytesThunk write_bytes;
   BinetteLocalSequenceWriteFixedElementsThunk write_fixed_elements;
   void *context;

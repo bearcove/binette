@@ -848,6 +848,7 @@ fn encode_helper_paths(
             StencilEncodeHelper::SequenceBytes { failure_index, .. }
             | StencilEncodeHelper::SequenceFixedElements { failure_index, .. }
             | StencilEncodeHelper::SequenceOwnedFixedElements { failure_index, .. }
+            | StencilEncodeHelper::SequenceProjectedElements { failure_index, .. }
             | StencilEncodeHelper::Enum { failure_index, .. }
             | StencilEncodeHelper::OptionSequenceBytes { failure_index, .. } => {
                 helper_path(failures, *failure_index)

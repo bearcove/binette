@@ -269,7 +269,6 @@ pub(super) struct EncodeEnumCase {
     pub(super) ops: Vec<EncodeStencilOp>,
 }
 
-#[derive(Debug, Clone)]
 pub(super) enum StencilEncodeHelper {
     SequenceBytes {
         input_offset: usize,
@@ -289,6 +288,13 @@ pub(super) enum StencilEncodeHelper {
         element_layout: LocalValueLayout,
         element_ops: Vec<CopyOp>,
         element_output_len: usize,
+        failure_index: usize,
+    },
+    SequenceProjectedElements {
+        input_offset: usize,
+        thunks: LocalSequenceElementProjectIntoEncodeThunks,
+        element_layout: LocalValueLayout,
+        element_encoder: Box<LocalStencilEncoder>,
         failure_index: usize,
     },
     Enum {

@@ -602,6 +602,7 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
         StencilEncodeHelper::SequenceBytes { failure_index, .. }
         | StencilEncodeHelper::SequenceFixedElements { failure_index, .. }
         | StencilEncodeHelper::SequenceOwnedFixedElements { failure_index, .. }
+        | StencilEncodeHelper::SequenceProjectedElements { failure_index, .. }
         | StencilEncodeHelper::Enum { failure_index, .. }
         | StencilEncodeHelper::OptionSequenceBytes { failure_index, .. } => {
             status_for_failure(*failure_index).unwrap_or(1)
@@ -693,31 +694,62 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
             out.reserve(elements_len);
             for index in 0..len {
                 let Some(()) = (unsafe {
-                    with_aligned_scratch(*element_layout, |element| {
-                        if !(thunks.element_project_into)(
-                            value,
-                            index,
-                            element,
-                            element_layout.size,
-                            context,
-                        ) {
-                            return None;
-                        }
-                        let element_base = out.len();
-                        out.resize(element_base + element_output_len, 0);
-                        for op in element_ops {
-                            let source = element.add(op.input_offset);
-                            copy_nonoverlapping(
-                                source,
-                                out.as_mut_ptr().add(element_base + op.output_offset),
-                                op.width.bytes(),
-                            );
-                        }
-                        Some(())
-                    })
+                    with_projected_sequence_element(
+                        value,
+                        index,
+                        *element_layout,
+                        *thunks,
+                        context,
+                        |element| {
+                            let element_base = out.len();
+                            out.resize(element_base + element_output_len, 0);
+                            for op in element_ops {
+                                let source = element.add(op.input_offset);
+                                copy_nonoverlapping(
+                                    source,
+                                    out.as_mut_ptr().add(element_base + op.output_offset),
+                                    op.width.bytes(),
+                                );
+                            }
+                            Some(())
+                        },
+                    )
                 }) else {
                     return status;
                 };
+            }
+        }
+        StencilEncodeHelper::SequenceProjectedElements {
+            input_offset,
+            thunks,
+            element_layout,
+            element_encoder,
+            ..
+        } => {
+            if value.is_null() {
+                return status;
+            }
+            let value = value.wrapping_add(*input_offset);
+            let context = thunks.context as *mut std::ffi::c_void;
+            let len = unsafe { (thunks.len)(value, context) };
+            let Ok(len_u32) = u32::try_from(len) else {
+                return status;
+            };
+            out.extend_from_slice(&len_u32.to_le_bytes());
+            for index in 0..len {
+                let Some(element_bytes) = (unsafe {
+                    with_projected_sequence_element(
+                        value,
+                        index,
+                        *element_layout,
+                        *thunks,
+                        context,
+                        |element| element_encoder.encode_raw_to_vec(element.cast_const()).ok(),
+                    )
+                }) else {
+                    return status;
+                };
+                out.extend_from_slice(&element_bytes);
             }
         }
         StencilEncodeHelper::Enum {
@@ -893,6 +925,28 @@ unsafe fn with_owned_projected_payload<T>(
             if let Some(drop_projected) = thunks.drop_projected {
                 let drop_context = thunks.drop_context as *mut std::ffi::c_void;
                 drop_projected(scratch, drop_context);
+            }
+            result
+        })
+    }
+}
+
+unsafe fn with_projected_sequence_element<T>(
+    value: *const u8,
+    index: usize,
+    layout: LocalValueLayout,
+    thunks: LocalSequenceElementProjectIntoEncodeThunks,
+    context: *mut std::ffi::c_void,
+    f: impl FnOnce(*mut u8) -> Option<T>,
+) -> Option<T> {
+    unsafe {
+        with_aligned_scratch(layout, |scratch| {
+            if !(thunks.element_project_into)(value, index, scratch, layout.size, context) {
+                return None;
+            }
+            let result = f(scratch);
+            if let Some(drop_projected) = thunks.element_drop_projected {
+                drop_projected(scratch, context);
             }
             result
         })

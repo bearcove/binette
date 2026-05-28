@@ -299,6 +299,8 @@ pub type BinetteLocalSequenceElementProjectIntoThunk = Option<
         context: *mut c_void,
     ) -> bool,
 >;
+pub type BinetteLocalSequenceElementDropProjectedThunk =
+    Option<unsafe extern "C" fn(value: *mut u8, context: *mut c_void)>;
 pub type BinetteLocalSequenceWriteBytesThunk = Option<
     unsafe extern "C" fn(value: *mut u8, ptr: *const u8, len: usize, context: *mut c_void) -> bool,
 >;
@@ -333,6 +335,7 @@ pub struct BinetteLocalSequenceThunksAbi {
     pub element_u8: BinetteLocalSequenceU8Thunk,
     pub element_ptr: BinetteLocalSequenceElementPtrThunk,
     pub element_project_into: BinetteLocalSequenceElementProjectIntoThunk,
+    pub element_drop_projected: BinetteLocalSequenceElementDropProjectedThunk,
     pub write_bytes: BinetteLocalSequenceWriteBytesThunk,
     pub write_fixed_elements: BinetteLocalSequenceWriteFixedElementsThunk,
     pub context: *mut c_void,
@@ -902,6 +905,7 @@ impl AbiImporter {
                             LocalSequenceElementProjectIntoEncodeThunks {
                                 len,
                                 element_project_into,
+                                element_drop_projected: storage.thunks.element_drop_projected,
                                 context: storage.thunks.context as usize,
                             },
                         );

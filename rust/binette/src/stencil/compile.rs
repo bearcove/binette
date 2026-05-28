@@ -1555,38 +1555,65 @@ impl LocalEncodeStencilCompiler<'_> {
     ) -> Result<(), StencilError> {
         let (element_descriptor, element_ptr_thunks, element_project_into_thunks) =
             local_sequence_element_encode_thunks(descriptor, self.thunks, path)?;
-        let segment = fixed_descriptor_encode_segment(
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+
+        match fixed_descriptor_encode_segment(
             element_descriptor,
             element,
             0,
             0,
             &format!("{path}[]"),
-        )?;
-        let failure_index = self.push_helper_failure(path)?;
-        let helper_index = self.helpers.len();
-        if let Some(thunks) = element_project_into_thunks {
-            self.helpers
-                .push(StencilEncodeHelper::SequenceOwnedFixedElements {
-                    input_offset,
-                    thunks,
-                    element_layout: element_descriptor.layout,
-                    element_ops: segment.ops,
-                    element_output_len: segment.output_len,
-                    failure_index,
-                });
-        } else {
-            let thunks = element_ptr_thunks.ok_or_else(|| StencilError::Unsupported {
-                path: path.to_owned(),
-                reason: "local sequence element encode thunks are not bound",
-            })?;
-            self.helpers
-                .push(StencilEncodeHelper::SequenceFixedElements {
-                    input_offset,
-                    thunks,
-                    element_ops: segment.ops,
-                    element_output_len: segment.output_len,
-                    failure_index,
-                });
+        ) {
+            Ok(segment) => {
+                if let Some(thunks) = element_project_into_thunks {
+                    self.helpers
+                        .push(StencilEncodeHelper::SequenceOwnedFixedElements {
+                            input_offset,
+                            thunks,
+                            element_layout: element_descriptor.layout,
+                            element_ops: segment.ops,
+                            element_output_len: segment.output_len,
+                            failure_index,
+                        });
+                } else {
+                    let thunks = element_ptr_thunks.ok_or_else(|| StencilError::Unsupported {
+                        path: path.to_owned(),
+                        reason: "local sequence element encode thunks are not bound",
+                    })?;
+                    self.helpers
+                        .push(StencilEncodeHelper::SequenceFixedElements {
+                            input_offset,
+                            thunks,
+                            element_ops: segment.ops,
+                            element_output_len: segment.output_len,
+                            failure_index,
+                        });
+                }
+            }
+            Err(StencilError::Unsupported { .. }) => {
+                let thunks = element_project_into_thunks.ok_or_else(|| {
+                    StencilError::Unsupported {
+                        path: path.to_owned(),
+                        reason: "variable-width local sequence elements require project-into thunks",
+                    }
+                })?;
+                let element_encoder = nested_local_element_encoder(
+                    element_descriptor,
+                    element,
+                    self.thunks,
+                    &format!("{path}[]"),
+                )?;
+                self.helpers
+                    .push(StencilEncodeHelper::SequenceProjectedElements {
+                        input_offset,
+                        thunks,
+                        element_layout: element_descriptor.layout,
+                        element_encoder: Box::new(element_encoder),
+                        failure_index,
+                    });
+            }
+            Err(err) => return Err(err),
         }
         self.ops.push(EncodeStencilOp::Helper { helper_index });
         Ok(())
@@ -2265,6 +2292,39 @@ fn fixed_descriptor_encode_segment(
     Ok(FixedEncodeSegment {
         ops: compiler.ops,
         output_len,
+    })
+}
+
+fn nested_local_element_encoder(
+    descriptor: &LocalTypeDescriptor,
+    node: &WriterNode,
+    thunks: &LocalThunkBindings,
+    path: &str,
+) -> Result<LocalStencilEncoder, StencilError> {
+    let mut compiler = LocalEncodeStencilCompiler {
+        ops: Vec::new(),
+        helpers: Vec::new(),
+        failures: Vec::new(),
+        thunks,
+    };
+    let mut pending = FixedEncodeSegment {
+        ops: Vec::new(),
+        output_len: 0,
+    };
+    compiler.compile_node(descriptor, node, 0, path, &mut pending)?;
+    compiler.flush_direct_segment(&mut pending);
+    let code = generate_encode_code(&compiler.ops)?;
+    let report = encode_report(&code, &compiler.ops, &compiler.helpers, &compiler.failures);
+    let func = code.as_encode_fn();
+    Ok(LocalStencilEncoder {
+        code,
+        entry: LocalEncodeStencilEntry::Helper {
+            func,
+            runtime: Box::new(StencilEncodeRuntime {
+                helpers: compiler.helpers,
+            }),
+        },
+        report,
     })
 }
 

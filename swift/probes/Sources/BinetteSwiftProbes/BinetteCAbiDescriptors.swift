@@ -316,6 +316,7 @@ public func binetteThunkSequenceStorage(
     elementU8: BinetteLocalSequenceU8Thunk? = nil,
     elementPtr: BinetteLocalSequenceElementPtrThunk? = nil,
     elementProjectInto: BinetteLocalSequenceElementProjectIntoThunk? = nil,
+    elementDropProjected: BinetteLocalSequenceElementDropProjectedThunk? = nil,
     writeBytes: BinetteLocalSequenceWriteBytesThunk? = nil,
     writeFixedElements: BinetteLocalSequenceWriteFixedElementsThunk? = nil
 ) -> BinetteLocalSequenceStorageAbi {
@@ -333,6 +334,7 @@ public func binetteThunkSequenceStorage(
             element_u8: elementU8,
             element_ptr: elementPtr,
             element_project_into: elementProjectInto,
+            element_drop_projected: elementDropProjected,
             write_bytes: writeBytes,
             write_fixed_elements: writeFixedElements,
             context: nil
@@ -350,23 +352,33 @@ public func binetteTypeSchema(_ typeID: UInt64) -> BinetteLocalSchemaRefAbi {
 }
 
 public func binetteDirectOptionalU16Representation() -> BinetteLocalOptionRepresentationAbi {
-    let none: UInt16? = nil
-    let zero: UInt16? = 0
-    let some: UInt16? = 0xCAFE
+    binetteDirectOptionalRepresentation(UInt16.self, sampleA: 0, sampleB: 0xCAFE)
+}
+
+public func binetteDirectOptionalRepresentation<T>(
+    _: T.Type,
+    sampleA: T,
+    sampleB: T
+) -> BinetteLocalOptionRepresentationAbi {
+    let none: T? = nil
+    let someA: T? = sampleA
+    let someB: T? = sampleB
     let noneBytes = bytes(of: none)
-    let zeroBytes = bytes(of: zero)
-    let someBytes = bytes(of: some)
+    let someABytes = bytes(of: someA)
+    let someBBytes = bytes(of: someB)
+    let sampleBytes = bytes(of: sampleA)
     let tagOffset = noneBytes.indices.first {
-        noneBytes[$0] != someBytes[$0] && zeroBytes[$0] == someBytes[$0]
+        noneBytes[$0] != someABytes[$0] && someABytes[$0] == someBBytes[$0]
     }!
+    let someOffset = contiguousSubsequenceOffset(sampleBytes, in: someABytes)!
 
     return BinetteLocalOptionRepresentationAbi(
         tag: UInt32(BINETTE_LOCAL_OPTION_DIRECT_TAG),
         tag_offset: tagOffset,
         tag_width: MemoryLayout<UInt8>.size,
         none_value: Int(noneBytes[tagOffset]),
-        some_value: Int(someBytes[tagOffset]),
-        some_offset: 0,
+        some_value: Int(someABytes[tagOffset]),
+        some_offset: someOffset,
         none_bytes: nil,
         none_bytes_len: 0,
         thunks: BinetteLocalOptionThunksAbi(
@@ -377,6 +389,16 @@ public func binetteDirectOptionalU16Representation() -> BinetteLocalOptionRepres
             context: nil
         )
     )
+}
+
+private func contiguousSubsequenceOffset(_ needle: [UInt8], in haystack: [UInt8]) -> Int? {
+    guard !needle.isEmpty, needle.count <= haystack.count else { return nil }
+    for offset in 0...(haystack.count - needle.count) {
+        if Array(haystack[offset..<(offset + needle.count)]) == needle {
+            return offset
+        }
+    }
+    return nil
 }
 
 public func binetteThunkOptionalStringRepresentation() -> BinetteLocalOptionRepresentationAbi {
@@ -574,6 +596,7 @@ private func emptySequenceStorage() -> BinetteLocalSequenceStorageAbi {
             element_u8: nil,
             element_ptr: nil,
             element_project_into: nil,
+            element_drop_projected: nil,
             write_bytes: nil,
             write_fixed_elements: nil,
             context: nil
@@ -596,6 +619,7 @@ private func stringStorage() -> BinetteLocalSequenceStorageAbi {
             element_u8: binetteSwiftStringElement,
             element_ptr: nil,
             element_project_into: nil,
+            element_drop_projected: nil,
             write_bytes: binetteSwiftStringWrite,
             write_fixed_elements: nil,
             context: nil
@@ -618,6 +642,7 @@ private func byteArrayStorage() -> BinetteLocalSequenceStorageAbi {
             element_u8: binetteSwiftByteArrayElement,
             element_ptr: nil,
             element_project_into: nil,
+            element_drop_projected: nil,
             write_bytes: binetteSwiftByteArrayWrite,
             write_fixed_elements: nil,
             context: nil

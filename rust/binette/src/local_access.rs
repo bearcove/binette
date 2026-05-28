@@ -32,16 +32,17 @@ pub use c_abi::{
     BinetteLocalOptionRepresentationTag, BinetteLocalOptionSomeThunk, BinetteLocalOptionThunksAbi,
     BinetteLocalOptionWriteNoneThunk, BinetteLocalOptionWriteSomeBytesThunk, BinetteLocalScalarAbi,
     BinetteLocalScalarTag, BinetteLocalSchemaRefAbi, BinetteLocalSchemaRefTag,
-    BinetteLocalSequenceAbi, BinetteLocalSequenceElementProjectIntoThunk,
-    BinetteLocalSequenceElementPtrThunk, BinetteLocalSequenceLenThunk,
-    BinetteLocalSequenceStorageAbi, BinetteLocalSequenceStorageTag, BinetteLocalSequenceThunksAbi,
-    BinetteLocalSequenceU8Thunk, BinetteLocalSequenceWriteBytesThunk,
-    BinetteLocalSequenceWriteFixedElementsThunk, BinetteLocalStrAbi, BinetteLocalStructAbi,
-    BinetteLocalVariantAbi, BinetteLocalVariantConstructAbi, BinetteLocalVariantConstructThunk,
-    BinetteLocalVariantDropAbi, BinetteLocalVariantDropProjectedThunk,
-    BinetteLocalVariantProjectAccessAbi, BinetteLocalVariantProjectIntoAbi,
-    BinetteLocalVariantProjectIntoThunk, BinetteLocalVariantProjectThunk,
-    BinetteLocalVariantProjectThunkAbi, LocalDescriptorAbiError, LocalDescriptorAbiImport,
+    BinetteLocalSequenceAbi, BinetteLocalSequenceElementDropProjectedThunk,
+    BinetteLocalSequenceElementProjectIntoThunk, BinetteLocalSequenceElementPtrThunk,
+    BinetteLocalSequenceLenThunk, BinetteLocalSequenceStorageAbi, BinetteLocalSequenceStorageTag,
+    BinetteLocalSequenceThunksAbi, BinetteLocalSequenceU8Thunk,
+    BinetteLocalSequenceWriteBytesThunk, BinetteLocalSequenceWriteFixedElementsThunk,
+    BinetteLocalStrAbi, BinetteLocalStructAbi, BinetteLocalVariantAbi,
+    BinetteLocalVariantConstructAbi, BinetteLocalVariantConstructThunk, BinetteLocalVariantDropAbi,
+    BinetteLocalVariantDropProjectedThunk, BinetteLocalVariantProjectAccessAbi,
+    BinetteLocalVariantProjectIntoAbi, BinetteLocalVariantProjectIntoThunk,
+    BinetteLocalVariantProjectThunk, BinetteLocalVariantProjectThunkAbi, LocalDescriptorAbiError,
+    LocalDescriptorAbiImport,
 };
 pub use import::{
     LocalAccessExport, LocalDescriptorExport, LocalDescriptorExportError, LocalDescriptorImport,
@@ -203,6 +204,8 @@ pub type LocalSequenceElementProjectIntoThunk = unsafe extern "C" fn(
     out_len: usize,
     context: *mut c_void,
 ) -> bool;
+pub type LocalSequenceElementDropProjectedThunk =
+    unsafe extern "C" fn(value: *mut u8, context: *mut c_void);
 pub type LocalSequenceWriteBytesThunk =
     unsafe extern "C" fn(value: *mut u8, ptr: *const u8, len: usize, context: *mut c_void) -> bool;
 pub type LocalSequenceWriteFixedElementsThunk = unsafe extern "C" fn(
@@ -256,6 +259,7 @@ pub struct LocalSequenceElementPtrEncodeThunks {
 pub struct LocalSequenceElementProjectIntoEncodeThunks {
     pub len: LocalSequenceLenThunk,
     pub element_project_into: LocalSequenceElementProjectIntoThunk,
+    pub element_drop_projected: Option<LocalSequenceElementDropProjectedThunk>,
     pub context: usize,
 }
 
