@@ -2215,6 +2215,9 @@ fn canonicalize_descriptor_schema(
             )?
         }
         LocalTypeKind::Tuple { fields } => {
+            if fields.is_empty() {
+                return Ok(TypeRef::concrete(primitive_type_id(Primitive::Unit)));
+            }
             let elements = fields
                 .iter_mut()
                 .map(|field| canonicalize_descriptor_schema(&mut field.descriptor, schemas))
@@ -2999,7 +3002,8 @@ mod tests {
         .unwrap();
 
         let bundle = synthetic_schema_bundle_for_local_descriptor(&mut descriptor).unwrap();
-        crate::schema_format::encode_schema_bundle_to_vec(&bundle).unwrap();
+        let bytes = crate::schema_format::encode_schema_bundle_to_vec(&bundle).unwrap();
+        crate::schema_format::decode_schema_bundle_from_slice(&bytes).unwrap();
     }
 
     // r[verify binette.local-access.descriptor+2]
@@ -3013,7 +3017,8 @@ mod tests {
         .unwrap();
 
         let bundle = synthetic_schema_bundle_for_local_descriptor(&mut descriptor).unwrap();
-        crate::schema_format::encode_schema_bundle_to_vec(&bundle).unwrap();
+        let bytes = crate::schema_format::encode_schema_bundle_to_vec(&bundle).unwrap();
+        crate::schema_format::decode_schema_bundle_from_slice(&bytes).unwrap();
     }
 
     // r[verify binette.local-access.swift-probes+2]
