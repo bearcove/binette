@@ -327,6 +327,61 @@ public func binetteDirectOptionalU16Representation() -> BinetteLocalOptionRepres
     )
 }
 
+public func binetteThunkOptionalStringRepresentation() -> BinetteLocalOptionRepresentationAbi {
+    BinetteLocalOptionRepresentationAbi(
+        tag: UInt32(BINETTE_LOCAL_OPTION_THUNK),
+        tag_offset: 0,
+        tag_width: 0,
+        none_value: 0,
+        some_value: 0,
+        some_offset: 0,
+        none_bytes: nil,
+        none_bytes_len: 0,
+        thunks: BinetteLocalOptionThunksAbi(
+            is_some: binetteSwiftOptionalStringIsSome,
+            some: binetteSwiftOptionalStringSome,
+            write_none: binetteSwiftOptionalStringWriteNone,
+            write_some_bytes: binetteSwiftOptionalStringWriteSomeBytes,
+            context: nil
+        )
+    )
+}
+
+public func binetteSwiftOptionalStringIsSome(
+    _ value: UnsafePointer<UInt8>?,
+    _ context: UnsafeMutableRawPointer?
+) -> Bool {
+    UnsafeRawPointer(value!).assumingMemoryBound(to: String?.self).pointee != nil
+}
+
+public func binetteSwiftOptionalStringSome(
+    _ value: UnsafePointer<UInt8>?,
+    _ context: UnsafeMutableRawPointer?
+) -> UnsafePointer<UInt8>? {
+    guard binetteSwiftOptionalStringIsSome(value, context) else { return nil }
+    return UnsafeRawPointer(value!).assumingMemoryBound(to: UInt8.self)
+}
+
+public func binetteSwiftOptionalStringWriteNone(
+    _ value: UnsafeMutablePointer<UInt8>?,
+    _ context: UnsafeMutableRawPointer?
+) -> Bool {
+    UnsafeMutableRawPointer(value!).assumingMemoryBound(to: String?.self).initialize(to: nil)
+    return true
+}
+
+public func binetteSwiftOptionalStringWriteSomeBytes(
+    _ value: UnsafeMutablePointer<UInt8>?,
+    _ ptr: UnsafePointer<UInt8>?,
+    _ len: Int,
+    _ context: UnsafeMutableRawPointer?
+) -> Bool {
+    let bytes = UnsafeBufferPointer(start: ptr, count: len)
+    guard let text = String(bytes: bytes, encoding: .utf8) else { return false }
+    UnsafeMutableRawPointer(value!).assumingMemoryBound(to: String?.self).initialize(to: text)
+    return true
+}
+
 public func binetteSwiftStringLen(
     _ value: UnsafePointer<UInt8>?,
     _ context: UnsafeMutableRawPointer?

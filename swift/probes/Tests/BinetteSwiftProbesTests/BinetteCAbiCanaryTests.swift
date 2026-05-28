@@ -12,6 +12,7 @@ private struct VoxLikeChannel: Equatable {}
 
 private struct VoxLikeRequest: Equatable {
     var title: String
+    var note: String?
     var payload: [UInt8]
     var retry: UInt16?
     var stream: VoxLikeChannel
@@ -73,12 +74,14 @@ final class BinetteCAbiCanaryTests: XCTestCase {
         for value in [
             VoxLikeRequest(
                 title: "hello from vox-ish swift",
+                note: "optional string branch",
                 payload: [0, 1, 2, 3, 255],
                 retry: 0xCAFE,
                 stream: VoxLikeChannel()
             ),
             VoxLikeRequest(
                 title: "none branch",
+                note: nil,
                 payload: [],
                 retry: nil,
                 stream: VoxLikeChannel()
@@ -201,6 +204,12 @@ private func importVoxLikeRequestDescriptor() throws -> OpaquePointer {
     let arena = BinetteCAbiDescriptorArena()
     let stringDescriptor = arena.string()
     let bytesDescriptor = arena.bytes()
+    let optionalStringDescriptor = arena.option(
+        typeID: 0xB1_0000_0000_0003,
+        layout: binetteLayout(of: String?.self),
+        some: stringDescriptor,
+        representation: binetteThunkOptionalStringRepresentation()
+    )
     let u16Descriptor = arena.plain(typeID: binette_primitive_u16_type_id(), UInt16.self)
     let optionalU16Descriptor = arena.option(
         typeID: 0xB1_0000_0000_0002,
@@ -231,6 +240,11 @@ private func importVoxLikeRequestDescriptor() throws -> OpaquePointer {
                 name: binetteLocalStr("title"),
                 offset: MemoryLayout<VoxLikeRequest>.offset(of: \VoxLikeRequest.title)!,
                 descriptor: stringDescriptor
+            ),
+            BinetteLocalFieldAbi(
+                name: binetteLocalStr("note"),
+                offset: MemoryLayout<VoxLikeRequest>.offset(of: \VoxLikeRequest.note)!,
+                descriptor: optionalStringDescriptor
             ),
             BinetteLocalFieldAbi(
                 name: binetteLocalStr("payload"),
