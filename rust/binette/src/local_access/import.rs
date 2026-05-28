@@ -1,7 +1,7 @@
 use super::{
-    LocalAccess, LocalBackend, LocalFieldDescriptor, LocalOptionRepresentation, LocalScalarAccess,
-    LocalSchemaRef, LocalSequenceStorage, LocalThunk, LocalTypeDescriptor, LocalTypeKind,
-    LocalValueLayout, LocalVariantDescriptor,
+    LocalAccess, LocalBackend, LocalExternalMetadata, LocalFieldDescriptor,
+    LocalOptionRepresentation, LocalScalarAccess, LocalSchemaRef, LocalSequenceStorage, LocalThunk,
+    LocalTypeDescriptor, LocalTypeKind, LocalValueLayout, LocalVariantDescriptor,
 };
 use facet::Facet;
 
@@ -36,6 +36,7 @@ pub enum LocalDescriptorImportKind {
     },
     ExternalAttachment {
         kind: String,
+        metadata: LocalExternalMetadata,
     },
     Opaque {
         reason: String,
@@ -330,6 +331,7 @@ impl LocalKindExport {
             }),
             "external-attachment" => Ok(LocalDescriptorImportKind::ExternalAttachment {
                 kind: required(self.reason, path, "reason")?,
+                metadata: LocalExternalMetadata::Unit,
             }),
             "opaque" => Ok(LocalDescriptorImportKind::Opaque {
                 reason: required(self.reason, path, "reason")?,
@@ -558,7 +560,9 @@ impl LocalDescriptorImportKind {
                     representation,
                 })
             }
-            Self::ExternalAttachment { kind } => Ok(LocalTypeKind::ExternalAttachment { kind }),
+            Self::ExternalAttachment { kind, metadata } => {
+                Ok(LocalTypeKind::ExternalAttachment { kind, metadata })
+            }
             Self::Opaque { reason } => Ok(LocalTypeKind::Opaque { reason }),
         }
     }

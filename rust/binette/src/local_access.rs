@@ -5,23 +5,29 @@ use crate::hash::{primitive_for_type_id, primitive_type_id, schema_type_id};
 use crate::schema::{
     Field, Primitive, Schema, SchemaBundle, SchemaKind, TypeId, TypeRef, Variant, VariantPayload,
 };
+use crate::schema_format::type_ref_to_value;
 use crate::value::Value;
 
 mod c_abi;
 mod import;
 pub use c_abi::{
     BINETTE_LOCAL_ACCESS_DIRECT, BINETTE_LOCAL_ACCESS_THUNK, BINETTE_LOCAL_BACKEND_RUST_FACET,
-    BINETTE_LOCAL_BACKEND_SWIFT, BINETTE_LOCAL_KIND_ENUM, BINETTE_LOCAL_KIND_EXTERNAL_ATTACHMENT,
-    BINETTE_LOCAL_KIND_OPAQUE, BINETTE_LOCAL_KIND_OPTION, BINETTE_LOCAL_KIND_SCALAR,
-    BINETTE_LOCAL_KIND_SEQUENCE, BINETTE_LOCAL_KIND_STRUCT, BINETTE_LOCAL_KIND_TUPLE,
-    BINETTE_LOCAL_OPTION_DIRECT_TAG, BINETTE_LOCAL_OPTION_NICHE, BINETTE_LOCAL_OPTION_THUNK,
-    BINETTE_LOCAL_SCALAR_BYTES, BINETTE_LOCAL_SCALAR_PLAIN, BINETTE_LOCAL_SCALAR_STRING,
-    BINETTE_LOCAL_SCHEMA_REF_POSITION, BINETTE_LOCAL_SCHEMA_REF_TYPE,
+    BINETTE_LOCAL_BACKEND_SWIFT, BINETTE_LOCAL_EXTERNAL_METADATA_STRING,
+    BINETTE_LOCAL_EXTERNAL_METADATA_STRUCT, BINETTE_LOCAL_EXTERNAL_METADATA_TYPE_REF,
+    BINETTE_LOCAL_EXTERNAL_METADATA_UNIT, BINETTE_LOCAL_KIND_ENUM,
+    BINETTE_LOCAL_KIND_EXTERNAL_ATTACHMENT, BINETTE_LOCAL_KIND_OPAQUE, BINETTE_LOCAL_KIND_OPTION,
+    BINETTE_LOCAL_KIND_SCALAR, BINETTE_LOCAL_KIND_SEQUENCE, BINETTE_LOCAL_KIND_STRUCT,
+    BINETTE_LOCAL_KIND_TUPLE, BINETTE_LOCAL_OPTION_DIRECT_TAG, BINETTE_LOCAL_OPTION_NICHE,
+    BINETTE_LOCAL_OPTION_THUNK, BINETTE_LOCAL_SCALAR_BYTES, BINETTE_LOCAL_SCALAR_PLAIN,
+    BINETTE_LOCAL_SCALAR_STRING, BINETTE_LOCAL_SCHEMA_REF_POSITION, BINETTE_LOCAL_SCHEMA_REF_TYPE,
     BINETTE_LOCAL_SEQUENCE_DIRECT_CONTIGUOUS, BINETTE_LOCAL_SEQUENCE_INLINE_FIXED,
     BINETTE_LOCAL_SEQUENCE_THUNK, BinetteLocalAccessTag, BinetteLocalBackendAbi,
     BinetteLocalDescriptorAbi, BinetteLocalEnumAbi, BinetteLocalEnumTagAccessAbi,
-    BinetteLocalEnumTagThunk, BinetteLocalEnumTagThunkAbi, BinetteLocalFieldAbi,
-    BinetteLocalKindAbi, BinetteLocalKindTag, BinetteLocalLayoutAbi, BinetteLocalOptionAbi,
+    BinetteLocalEnumTagThunk, BinetteLocalEnumTagThunkAbi, BinetteLocalExternalAbi,
+    BinetteLocalExternalMetadataAbi, BinetteLocalExternalMetadataFieldAbi,
+    BinetteLocalExternalMetadataTag, BinetteLocalExternalMetadataValueAbi,
+    BinetteLocalExternalMetadataValueTag, BinetteLocalFieldAbi, BinetteLocalKindAbi,
+    BinetteLocalKindTag, BinetteLocalLayoutAbi, BinetteLocalOptionAbi,
     BinetteLocalOptionIsSomeThunk, BinetteLocalOptionRepresentationAbi,
     BinetteLocalOptionRepresentationTag, BinetteLocalOptionSomeThunk, BinetteLocalOptionThunksAbi,
     BinetteLocalOptionWriteNoneThunk, BinetteLocalOptionWriteSomeBytesThunk, BinetteLocalScalarAbi,
@@ -121,10 +127,29 @@ pub enum LocalTypeKind {
     },
     ExternalAttachment {
         kind: String,
+        metadata: LocalExternalMetadata,
     },
     Opaque {
         reason: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalExternalMetadata {
+    Unit,
+    Struct(Vec<LocalExternalMetadataField>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalExternalMetadataField {
+    pub name: String,
+    pub value: LocalExternalMetadataValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalExternalMetadataValue {
+    String(String),
+    TypeRef(Box<LocalTypeDescriptor>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1010,9 +1035,10 @@ mod rust_layout {
                         variants,
                     })
                 }
-                SchemaKind::External { kind, .. } => {
-                    Ok(LocalTypeKind::ExternalAttachment { kind: kind.clone() })
-                }
+                SchemaKind::External { kind, .. } => Ok(LocalTypeKind::ExternalAttachment {
+                    kind: kind.clone(),
+                    metadata: LocalExternalMetadata::Unit,
+                }),
                 SchemaKind::Dynamic | SchemaKind::Set { .. } | SchemaKind::Map { .. } => {
                     Ok(LocalTypeKind::Opaque {
                         reason:
@@ -1716,17 +1742,53 @@ fn canonicalize_descriptor_schema(
             let element = canonicalize_descriptor_schema(some, schemas)?;
             push_synthetic_schema(schemas, SchemaKind::Option { element })?
         }
-        LocalTypeKind::ExternalAttachment { kind } => push_synthetic_schema(
-            schemas,
-            SchemaKind::External {
-                kind: kind.clone(),
-                metadata: Value::Unit,
-            },
-        )?,
+        LocalTypeKind::ExternalAttachment { kind, metadata } => {
+            let metadata = canonicalize_external_metadata(metadata, schemas)?;
+            push_synthetic_schema(
+                schemas,
+                SchemaKind::External {
+                    kind: kind.clone(),
+                    metadata,
+                },
+            )?
+        }
         LocalTypeKind::Opaque { .. } => return Err(LocalSchemaBundleError::Opaque),
     };
     descriptor.schema = LocalSchemaRef::Type(type_ref.clone());
     Ok(type_ref)
+}
+
+fn canonicalize_external_metadata(
+    metadata: &mut LocalExternalMetadata,
+    schemas: &mut Vec<Schema>,
+) -> Result<Value, LocalSchemaBundleError> {
+    match metadata {
+        LocalExternalMetadata::Unit => Ok(Value::Unit),
+        LocalExternalMetadata::Struct(fields) => Ok(Value::Struct(
+            fields
+                .iter_mut()
+                .map(|field| {
+                    Ok(crate::value::FieldValue {
+                        name: field.name.clone(),
+                        value: canonicalize_external_metadata_value(&mut field.value, schemas)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, LocalSchemaBundleError>>()?,
+        )),
+    }
+}
+
+fn canonicalize_external_metadata_value(
+    value: &mut LocalExternalMetadataValue,
+    schemas: &mut Vec<Schema>,
+) -> Result<Value, LocalSchemaBundleError> {
+    match value {
+        LocalExternalMetadataValue::String(value) => Ok(Value::String(value.clone())),
+        LocalExternalMetadataValue::TypeRef(descriptor) => {
+            let type_ref = canonicalize_descriptor_schema(descriptor, schemas)?;
+            type_ref_to_value(&type_ref).map_err(|_| LocalSchemaBundleError::TypeId)
+        }
+    }
 }
 
 fn descriptor_type_ref(
@@ -2017,6 +2079,65 @@ mod tests {
         assert_eq!(
             elements[1],
             TypeRef::concrete(primitive_type_id(Primitive::String))
+        );
+    }
+
+    // r[verify binette.local-access.descriptor+2]
+    // r[verify binette.value-model.external-form]
+    #[test]
+    fn external_attachment_descriptor_metadata_synthesizes_schema_value() {
+        let mut descriptor = LocalTypeDescriptor::rust_facet(
+            TypeRef::concrete(TypeId(0xB1_0000_0000_0001)),
+            LocalValueLayout::new(0, 1, 1),
+            LocalTypeKind::ExternalAttachment {
+                kind: "vox.channel".to_owned(),
+                metadata: LocalExternalMetadata::Struct(vec![
+                    LocalExternalMetadataField {
+                        name: "direction".to_owned(),
+                        value: LocalExternalMetadataValue::String("tx".to_owned()),
+                    },
+                    LocalExternalMetadataField {
+                        name: "element".to_owned(),
+                        value: LocalExternalMetadataValue::TypeRef(Box::new(
+                            LocalTypeDescriptor::rust_facet(
+                                TypeRef::concrete(primitive_type_id(Primitive::U32)),
+                                LocalValueLayout::of::<u32>(),
+                                LocalTypeKind::Scalar(LocalScalarAccess::Plain),
+                            ),
+                        )),
+                    },
+                ]),
+            },
+        );
+
+        let bundle = synthetic_schema_bundle_for_local_descriptor(&mut descriptor)
+            .expect("external descriptor metadata should synthesize");
+        let root_id = match bundle.root {
+            TypeRef::Concrete { type_id, args } => {
+                assert!(args.is_empty());
+                type_id
+            }
+            TypeRef::Var { .. } => panic!("expected concrete root"),
+        };
+        let root_schema = bundle
+            .schemas
+            .iter()
+            .find(|schema| schema.id == root_id)
+            .expect("root external schema should be present");
+        let SchemaKind::External { kind, metadata } = &root_schema.kind else {
+            panic!("expected external schema, got {root_schema:?}");
+        };
+        assert_eq!(kind, "vox.channel");
+        let Value::Struct(fields) = metadata else {
+            panic!("expected external metadata struct, got {metadata:?}");
+        };
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "direction");
+        assert_eq!(fields[0].value, Value::String("tx".to_owned()));
+        assert_eq!(fields[1].name, "element");
+        assert_eq!(
+            crate::schema_format::type_ref_from_value(&fields[1].value).unwrap(),
+            TypeRef::concrete(primitive_type_id(Primitive::U32))
         );
     }
 

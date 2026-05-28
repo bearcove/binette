@@ -7,6 +7,9 @@ public final class BinetteCAbiDescriptorArena {
     private var descriptors: [UnsafeMutablePointer<BinetteLocalDescriptorAbi>] = []
     private var fieldArrays: [(UnsafeMutablePointer<BinetteLocalFieldAbi>, Int)] = []
     private var variantArrays: [(UnsafeMutablePointer<BinetteLocalVariantAbi>, Int)] = []
+    private var externalMetadataFieldArrays: [(
+        UnsafeMutablePointer<BinetteLocalExternalMetadataFieldAbi>, Int
+    )] = []
 
     public init() {}
 
@@ -22,6 +25,10 @@ public final class BinetteCAbiDescriptorArena {
         for (variants, count) in variantArrays {
             variants.deinitialize(count: count)
             variants.deallocate()
+        }
+        for (fields, count) in externalMetadataFieldArrays {
+            fields.deinitialize(count: count)
+            fields.deallocate()
         }
     }
 
@@ -91,9 +98,26 @@ public final class BinetteCAbiDescriptorArena {
         kind attachmentKind: StaticString,
         layout: BinetteLocalLayoutAbi
     ) -> UnsafePointer<BinetteLocalDescriptorAbi> {
+        externalAttachment(
+            typeID: typeID,
+            kind: attachmentKind,
+            layout: layout,
+            metadataFields: []
+        )
+    }
+
+    public func externalAttachment(
+        typeID: UInt64,
+        kind attachmentKind: StaticString,
+        layout: BinetteLocalLayoutAbi,
+        metadataFields: [BinetteLocalExternalMetadataFieldAbi]
+    ) -> UnsafePointer<BinetteLocalDescriptorAbi> {
         var kind = emptyKind()
         kind.tag = UInt32(BINETTE_LOCAL_KIND_EXTERNAL_ATTACHMENT)
-        kind.text = binetteLocalStr(attachmentKind)
+        kind.external = BinetteLocalExternalAbi(
+            kind: binetteLocalStr(attachmentKind),
+            metadata: storeExternalMetadata(fields: metadataFields)
+        )
         return store(
             BinetteLocalDescriptorAbi(
                 schema: binetteTypeSchema(typeID),
@@ -101,6 +125,36 @@ public final class BinetteCAbiDescriptorArena {
                 layout: layout,
                 kind: kind
             )
+        )
+    }
+
+    public func externalMetadataField(
+        _ name: StaticString,
+        _ value: BinetteLocalExternalMetadataValueAbi
+    ) -> BinetteLocalExternalMetadataFieldAbi {
+        BinetteLocalExternalMetadataFieldAbi(
+            name: binetteLocalStr(name),
+            value: value
+        )
+    }
+
+    public func externalMetadataString(
+        _ value: StaticString
+    ) -> BinetteLocalExternalMetadataValueAbi {
+        BinetteLocalExternalMetadataValueAbi(
+            tag: UInt32(BINETTE_LOCAL_EXTERNAL_METADATA_STRING),
+            text: binetteLocalStr(value),
+            descriptor: nil
+        )
+    }
+
+    public func externalMetadataTypeRef(
+        _ descriptor: UnsafePointer<BinetteLocalDescriptorAbi>
+    ) -> BinetteLocalExternalMetadataValueAbi {
+        BinetteLocalExternalMetadataValueAbi(
+            tag: UInt32(BINETTE_LOCAL_EXTERNAL_METADATA_TYPE_REF),
+            text: BinetteLocalStrAbi(ptr: nil, len: 0),
+            descriptor: descriptor
         )
     }
 
@@ -197,6 +251,28 @@ public final class BinetteCAbiDescriptorArena {
         pointer.initialize(from: variants, count: variants.count)
         variantArrays.append((pointer, variants.count))
         return pointer
+    }
+
+    private func storeExternalMetadata(
+        fields: [BinetteLocalExternalMetadataFieldAbi]
+    ) -> BinetteLocalExternalMetadataAbi {
+        guard !fields.isEmpty else {
+            return BinetteLocalExternalMetadataAbi(
+                tag: UInt32(BINETTE_LOCAL_EXTERNAL_METADATA_UNIT),
+                fields: nil,
+                field_count: 0
+            )
+        }
+        let pointer = UnsafeMutablePointer<BinetteLocalExternalMetadataFieldAbi>.allocate(
+            capacity: fields.count
+        )
+        pointer.initialize(from: fields, count: fields.count)
+        externalMetadataFieldArrays.append((pointer, fields.count))
+        return BinetteLocalExternalMetadataAbi(
+            tag: UInt32(BINETTE_LOCAL_EXTERNAL_METADATA_STRUCT),
+            fields: UnsafePointer(pointer),
+            field_count: fields.count
+        )
     }
 }
 
@@ -362,6 +438,14 @@ private func emptyKind() -> BinetteLocalKindAbi {
                     write_some_bytes: nil,
                     context: nil
                 )
+            )
+        ),
+        external: BinetteLocalExternalAbi(
+            kind: BinetteLocalStrAbi(ptr: nil, len: 0),
+            metadata: BinetteLocalExternalMetadataAbi(
+                tag: UInt32(BINETTE_LOCAL_EXTERNAL_METADATA_UNIT),
+                fields: nil,
+                field_count: 0
             )
         ),
         text: BinetteLocalStrAbi(ptr: nil, len: 0)

@@ -223,6 +223,32 @@ typedef struct BinetteLocalOptionAbi {
   struct BinetteLocalOptionRepresentationAbi representation;
 } BinetteLocalOptionAbi;
 
+typedef uint32_t BinetteLocalExternalMetadataTag;
+
+typedef uint32_t BinetteLocalExternalMetadataValueTag;
+
+typedef struct BinetteLocalExternalMetadataValueAbi {
+  BinetteLocalExternalMetadataValueTag tag;
+  struct BinetteLocalStrAbi text;
+  const struct BinetteLocalDescriptorAbi *descriptor;
+} BinetteLocalExternalMetadataValueAbi;
+
+typedef struct BinetteLocalExternalMetadataFieldAbi {
+  struct BinetteLocalStrAbi name;
+  struct BinetteLocalExternalMetadataValueAbi value;
+} BinetteLocalExternalMetadataFieldAbi;
+
+typedef struct BinetteLocalExternalMetadataAbi {
+  BinetteLocalExternalMetadataTag tag;
+  const struct BinetteLocalExternalMetadataFieldAbi *fields;
+  size_t field_count;
+} BinetteLocalExternalMetadataAbi;
+
+typedef struct BinetteLocalExternalAbi {
+  struct BinetteLocalStrAbi kind;
+  struct BinetteLocalExternalMetadataAbi metadata;
+} BinetteLocalExternalAbi;
+
 typedef struct BinetteLocalKindAbi {
   BinetteLocalKindTag tag;
   struct BinetteLocalScalarAbi scalar;
@@ -231,6 +257,7 @@ typedef struct BinetteLocalKindAbi {
   struct BinetteLocalEnumAbi enumeration;
   struct BinetteLocalSequenceAbi sequence;
   struct BinetteLocalOptionAbi option;
+  struct BinetteLocalExternalAbi external;
   struct BinetteLocalStrAbi text;
 } BinetteLocalKindAbi;
 
@@ -270,6 +297,14 @@ typedef struct BinetteByteBuffer {
 #define BINETTE_LOCAL_KIND_OPAQUE 7
 
 #define BINETTE_LOCAL_KIND_TUPLE 8
+
+#define BINETTE_LOCAL_EXTERNAL_METADATA_UNIT 1
+
+#define BINETTE_LOCAL_EXTERNAL_METADATA_STRUCT 2
+
+#define BINETTE_LOCAL_EXTERNAL_METADATA_STRING 1
+
+#define BINETTE_LOCAL_EXTERNAL_METADATA_TYPE_REF 2
 
 #define BINETTE_LOCAL_SCALAR_PLAIN 1
 

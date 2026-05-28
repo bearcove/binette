@@ -2,17 +2,19 @@ use facet::Facet;
 
 use binette::local_access::{
     BINETTE_LOCAL_ACCESS_DIRECT, BINETTE_LOCAL_ACCESS_THUNK, BINETTE_LOCAL_BACKEND_SWIFT,
-    BINETTE_LOCAL_KIND_ENUM, BINETTE_LOCAL_KIND_SCALAR, BINETTE_LOCAL_OPTION_DIRECT_TAG,
-    BINETTE_LOCAL_SCALAR_PLAIN, BINETTE_LOCAL_SCALAR_STRING, BINETTE_LOCAL_SCHEMA_REF_TYPE,
-    BINETTE_LOCAL_SEQUENCE_INLINE_FIXED, BINETTE_LOCAL_SEQUENCE_THUNK, BinetteLocalDescriptorAbi,
-    BinetteLocalEnumAbi, BinetteLocalEnumTagAccessAbi, BinetteLocalEnumTagThunkAbi,
-    BinetteLocalKindAbi, BinetteLocalLayoutAbi, BinetteLocalOptionAbi,
-    BinetteLocalOptionRepresentationAbi, BinetteLocalOptionThunksAbi, BinetteLocalScalarAbi,
-    BinetteLocalSchemaRefAbi, BinetteLocalSequenceAbi, BinetteLocalSequenceStorageAbi,
-    BinetteLocalSequenceThunksAbi, BinetteLocalStrAbi, BinetteLocalStructAbi,
-    BinetteLocalVariantAbi, BinetteLocalVariantConstructAbi, BinetteLocalVariantDropAbi,
-    BinetteLocalVariantProjectAccessAbi, BinetteLocalVariantProjectIntoAbi,
-    BinetteLocalVariantProjectThunkAbi, LocalTypeDescriptor, LocalValueLayout,
+    BINETTE_LOCAL_EXTERNAL_METADATA_UNIT, BINETTE_LOCAL_KIND_ENUM, BINETTE_LOCAL_KIND_SCALAR,
+    BINETTE_LOCAL_OPTION_DIRECT_TAG, BINETTE_LOCAL_SCALAR_PLAIN, BINETTE_LOCAL_SCALAR_STRING,
+    BINETTE_LOCAL_SCHEMA_REF_TYPE, BINETTE_LOCAL_SEQUENCE_INLINE_FIXED,
+    BINETTE_LOCAL_SEQUENCE_THUNK, BinetteLocalDescriptorAbi, BinetteLocalEnumAbi,
+    BinetteLocalEnumTagAccessAbi, BinetteLocalEnumTagThunkAbi, BinetteLocalExternalAbi,
+    BinetteLocalExternalMetadataAbi, BinetteLocalKindAbi, BinetteLocalLayoutAbi,
+    BinetteLocalOptionAbi, BinetteLocalOptionRepresentationAbi, BinetteLocalOptionThunksAbi,
+    BinetteLocalScalarAbi, BinetteLocalSchemaRefAbi, BinetteLocalSequenceAbi,
+    BinetteLocalSequenceStorageAbi, BinetteLocalSequenceThunksAbi, BinetteLocalStrAbi,
+    BinetteLocalStructAbi, BinetteLocalVariantAbi, BinetteLocalVariantConstructAbi,
+    BinetteLocalVariantDropAbi, BinetteLocalVariantProjectAccessAbi,
+    BinetteLocalVariantProjectIntoAbi, BinetteLocalVariantProjectThunkAbi, LocalTypeDescriptor,
+    LocalValueLayout,
 };
 use binette::{
     Primitive, SchemaRegistry, StencilError, StencilMode, TypeRef, encode_to_vec_with_plan,
@@ -398,6 +400,14 @@ fn empty_c_abi_kind() -> BinetteLocalKindAbi {
             storage: c_abi_sequence_storage_empty(),
         },
         option: c_abi_option_empty(),
+        external: BinetteLocalExternalAbi {
+            kind: BinetteLocalStrAbi::empty(),
+            metadata: BinetteLocalExternalMetadataAbi {
+                tag: BINETTE_LOCAL_EXTERNAL_METADATA_UNIT,
+                fields: std::ptr::null(),
+                field_count: 0,
+            },
+        },
         text: BinetteLocalStrAbi::empty(),
     }
 }

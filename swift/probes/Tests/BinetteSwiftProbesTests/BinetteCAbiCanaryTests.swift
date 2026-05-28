@@ -211,7 +211,17 @@ private func importVoxLikeRequestDescriptor() throws -> OpaquePointer {
     let channelDescriptor = arena.externalAttachment(
         typeID: 0xB1_0000_0000_0001,
         kind: "vox.channel",
-        layout: binetteLayout(of: VoxLikeChannel.self)
+        layout: binetteLayout(of: VoxLikeChannel.self),
+        metadataFields: [
+            arena.externalMetadataField(
+                "direction",
+                arena.externalMetadataString("tx")
+            ),
+            arena.externalMetadataField(
+                "element",
+                arena.externalMetadataTypeRef(u16Descriptor)
+            ),
+        ]
     )
     let descriptor = arena.structure(
         typeID: 0xB1_0000_0000_1000,

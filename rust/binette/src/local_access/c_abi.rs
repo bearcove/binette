@@ -4,7 +4,8 @@ use std::str;
 
 use super::{
     LocalAccess, LocalBackend, LocalDescriptorImport, LocalDescriptorImportKind,
-    LocalEnumTagThunks, LocalOptionRepresentation, LocalOptionSequenceDecodeThunks,
+    LocalEnumTagThunks, LocalExternalMetadata, LocalExternalMetadataField,
+    LocalExternalMetadataValue, LocalOptionRepresentation, LocalOptionSequenceDecodeThunks,
     LocalScalarAccess, LocalSequenceDecodeThunks, LocalSequenceElementPtrEncodeThunks,
     LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks, LocalSequenceStorage, LocalThunk,
     LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout, LocalVariantConstructThunks,
@@ -85,6 +86,14 @@ pub const BINETTE_LOCAL_KIND_EXTERNAL_ATTACHMENT: BinetteLocalKindTag = 6;
 pub const BINETTE_LOCAL_KIND_OPAQUE: BinetteLocalKindTag = 7;
 pub const BINETTE_LOCAL_KIND_TUPLE: BinetteLocalKindTag = 8;
 
+pub type BinetteLocalExternalMetadataTag = u32;
+pub const BINETTE_LOCAL_EXTERNAL_METADATA_UNIT: BinetteLocalExternalMetadataTag = 1;
+pub const BINETTE_LOCAL_EXTERNAL_METADATA_STRUCT: BinetteLocalExternalMetadataTag = 2;
+
+pub type BinetteLocalExternalMetadataValueTag = u32;
+pub const BINETTE_LOCAL_EXTERNAL_METADATA_STRING: BinetteLocalExternalMetadataValueTag = 1;
+pub const BINETTE_LOCAL_EXTERNAL_METADATA_TYPE_REF: BinetteLocalExternalMetadataValueTag = 2;
+
 pub type BinetteLocalScalarTag = u32;
 pub const BINETTE_LOCAL_SCALAR_PLAIN: BinetteLocalScalarTag = 1;
 pub const BINETTE_LOCAL_SCALAR_STRING: BinetteLocalScalarTag = 2;
@@ -109,7 +118,38 @@ pub struct BinetteLocalKindAbi {
     pub enumeration: BinetteLocalEnumAbi,
     pub sequence: BinetteLocalSequenceAbi,
     pub option: BinetteLocalOptionAbi,
+    pub external: BinetteLocalExternalAbi,
     pub text: BinetteLocalStrAbi,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct BinetteLocalExternalAbi {
+    pub kind: BinetteLocalStrAbi,
+    pub metadata: BinetteLocalExternalMetadataAbi,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct BinetteLocalExternalMetadataAbi {
+    pub tag: BinetteLocalExternalMetadataTag,
+    pub fields: *const BinetteLocalExternalMetadataFieldAbi,
+    pub field_count: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct BinetteLocalExternalMetadataFieldAbi {
+    pub name: BinetteLocalStrAbi,
+    pub value: BinetteLocalExternalMetadataValueAbi,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct BinetteLocalExternalMetadataValueAbi {
+    pub tag: BinetteLocalExternalMetadataValueTag,
+    pub text: BinetteLocalStrAbi,
+    pub descriptor: *const BinetteLocalDescriptorAbi,
 }
 
 #[repr(C)]
@@ -424,11 +464,9 @@ impl AbiImporter {
                 self.import_sequence(kind.sequence, backend, path)
             },
             BINETTE_LOCAL_KIND_OPTION => unsafe { self.import_option(kind.option, backend, path) },
-            BINETTE_LOCAL_KIND_EXTERNAL_ATTACHMENT => {
-                Ok(LocalDescriptorImportKind::ExternalAttachment {
-                    kind: unsafe { read_str(kind.text, path, "kind") }?,
-                })
-            }
+            BINETTE_LOCAL_KIND_EXTERNAL_ATTACHMENT => unsafe {
+                self.import_external(kind.external, path)
+            },
             BINETTE_LOCAL_KIND_OPAQUE => Ok(LocalDescriptorImportKind::Opaque {
                 reason: unsafe { read_str(kind.text, path, "reason") }?,
             }),
@@ -591,6 +629,81 @@ impl AbiImporter {
             some: Box::new(some),
             representation,
         })
+    }
+
+    unsafe fn import_external(
+        &mut self,
+        external: BinetteLocalExternalAbi,
+        path: &str,
+    ) -> Result<LocalDescriptorImportKind, LocalDescriptorAbiError> {
+        let kind = unsafe { read_str(external.kind, path, "external.kind") }?;
+        let metadata = unsafe { self.import_external_metadata(external.metadata, path) }?;
+        Ok(LocalDescriptorImportKind::ExternalAttachment { kind, metadata })
+    }
+
+    unsafe fn import_external_metadata(
+        &mut self,
+        metadata: BinetteLocalExternalMetadataAbi,
+        path: &str,
+    ) -> Result<LocalExternalMetadata, LocalDescriptorAbiError> {
+        match metadata.tag {
+            BINETTE_LOCAL_EXTERNAL_METADATA_UNIT => Ok(LocalExternalMetadata::Unit),
+            BINETTE_LOCAL_EXTERNAL_METADATA_STRUCT => {
+                let fields = unsafe {
+                    read_slice(
+                        metadata.fields,
+                        metadata.field_count,
+                        path,
+                        "external.metadata.fields",
+                    )
+                }?;
+                let mut imported = Vec::with_capacity(fields.len());
+                for field in fields {
+                    let name =
+                        unsafe { read_str(field.name, path, "external.metadata.field.name") }?;
+                    let field_path = format!("{path}.metadata.{name}");
+                    imported.push(LocalExternalMetadataField {
+                        name,
+                        value: unsafe {
+                            self.import_external_metadata_value(field.value, &field_path)
+                        }?,
+                    });
+                }
+                Ok(LocalExternalMetadata::Struct(imported))
+            }
+            tag => Err(LocalDescriptorAbiError::InvalidTag {
+                path: path.to_owned(),
+                field: "external.metadata.tag",
+                tag,
+            }),
+        }
+    }
+
+    unsafe fn import_external_metadata_value(
+        &mut self,
+        value: BinetteLocalExternalMetadataValueAbi,
+        path: &str,
+    ) -> Result<LocalExternalMetadataValue, LocalDescriptorAbiError> {
+        match value.tag {
+            BINETTE_LOCAL_EXTERNAL_METADATA_STRING => {
+                Ok(LocalExternalMetadataValue::String(unsafe {
+                    read_str(value.text, path, "external.metadata.value.text")
+                }?))
+            }
+            BINETTE_LOCAL_EXTERNAL_METADATA_TYPE_REF => {
+                let descriptor = unsafe {
+                    self.import_descriptor_ptr(value.descriptor, &format!("{path}.type"))
+                }?;
+                Ok(LocalExternalMetadataValue::TypeRef(Box::new(
+                    LocalTypeDescriptor::from_import(descriptor)?,
+                )))
+            }
+            tag => Err(LocalDescriptorAbiError::InvalidTag {
+                path: path.to_owned(),
+                field: "external.metadata.value.tag",
+                tag,
+            }),
+        }
     }
 
     fn import_enum_tag(
