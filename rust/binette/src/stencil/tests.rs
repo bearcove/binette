@@ -97,6 +97,7 @@ enum SwiftProbeEvent {
     Titled(String),
     Nested(SwiftLeaf),
     Record(SwiftText),
+    MaybeRecord(SwiftMaybeText),
 }
 
 #[derive(Debug, PartialEq, Facet)]
@@ -1286,6 +1287,15 @@ fn hybrid_local_encode_stencil_uses_bound_backend_thunks_for_enum_subtree() {
             }),
             code: 0x99AA,
         },
+        SwiftEventEnvelope {
+            id: 0x5152_5354_5556_5758,
+            event: SwiftProbeEvent::MaybeRecord(SwiftMaybeText {
+                id: 0x6162_6364_6566_6768,
+                maybe: Some("optional aggregate payload".to_owned()),
+                code: 0xBBCC,
+            }),
+            code: 0xDDEE,
+        },
     ];
     let plan = writer_plan_for::<SwiftEventEnvelope>().unwrap();
     let descriptor = swift_event_envelope_descriptor(plan.root());
@@ -1341,6 +1351,15 @@ fn hybrid_local_decode_stencil_uses_bound_backend_thunks_for_enum_subtree() {
                 code: 0x7788,
             }),
             code: 0x99AA,
+        },
+        SwiftEventEnvelope {
+            id: 0x5152_5354_5556_5758,
+            event: SwiftProbeEvent::MaybeRecord(SwiftMaybeText {
+                id: 0x6162_6364_6566_6768,
+                maybe: Some("optional aggregate payload".to_owned()),
+                code: 0xBBCC,
+            }),
+            code: 0xDDEE,
         },
     ];
     let writer_plan = writer_plan_for::<SwiftEventEnvelope>().unwrap();
@@ -1699,7 +1718,11 @@ fn rename_event_descriptor_variant(descriptor: &mut LocalTypeDescriptor, from: &
 }
 
 fn swift_maybe_text_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
-    LocalTypeDescriptor::from_import(LocalDescriptorImport::swift_probe(
+    LocalTypeDescriptor::from_import(swift_maybe_text_import(root)).unwrap()
+}
+
+fn swift_maybe_text_import(root: &TypeRef) -> LocalDescriptorImport {
+    LocalDescriptorImport::swift_probe(
         root.clone(),
         LocalValueLayout::of::<SwiftMaybeText>(),
         LocalDescriptorImportKind::Struct {
@@ -1727,8 +1750,7 @@ fn swift_maybe_text_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
                 },
             ],
         },
-    ))
-    .unwrap()
+    )
 }
 
 fn swift_numbers_descriptor(root: &TypeRef) -> LocalTypeDescriptor {
@@ -1944,6 +1966,15 @@ fn swift_probe_event_import(owner: &TypeRef) -> LocalDescriptorImport {
                     construct: Some(swift_event_construct_record_thunk()),
                     payload: Some(swift_text_import(owner)),
                 },
+                crate::local_access::LocalVariantImport {
+                    name: "MaybeRecord".to_owned(),
+                    index: 4,
+                    access: LocalAccess::Thunk(swift_event_project_maybe_record_thunk()),
+                    project_into: Some(swift_event_project_maybe_record_into_thunk()),
+                    drop_projected: Some(swift_event_drop_maybe_record_projected_thunk()),
+                    construct: Some(swift_event_construct_maybe_record_thunk()),
+                    payload: Some(swift_maybe_text_import(owner)),
+                },
             ],
         },
     }
@@ -2142,12 +2173,29 @@ fn swift_string_thunk_bindings() -> LocalThunkBindings {
                 context: 0,
             },
         )
+        .with_variant_project(
+            swift_event_project_maybe_record_thunk(),
+            LocalVariantProjectThunks {
+                project: test_swift_event_project_maybe_record,
+                context: 0,
+            },
+        )
         .with_variant_project_into(
             swift_event_project_record_into_thunk(),
             Some(swift_event_drop_record_projected_thunk()),
             LocalVariantProjectIntoThunks {
                 project_into: test_swift_event_project_record_into,
                 drop_projected: Some(test_swift_event_drop_record_projected),
+                project_context: 0,
+                drop_context: 0,
+            },
+        )
+        .with_variant_project_into(
+            swift_event_project_maybe_record_into_thunk(),
+            Some(swift_event_drop_maybe_record_projected_thunk()),
+            LocalVariantProjectIntoThunks {
+                project_into: test_swift_event_project_maybe_record_into,
+                drop_projected: Some(test_swift_event_drop_maybe_record_projected),
                 project_context: 0,
                 drop_context: 0,
             },
@@ -2177,6 +2225,13 @@ fn swift_string_thunk_bindings() -> LocalThunkBindings {
             swift_event_construct_record_thunk(),
             LocalVariantConstructThunks {
                 construct: test_swift_event_construct_record,
+                context: 0,
+            },
+        )
+        .with_variant_construct(
+            swift_event_construct_maybe_record_thunk(),
+            LocalVariantConstructThunks {
+                construct: test_swift_event_construct_maybe_record,
                 context: 0,
             },
         )
@@ -2259,12 +2314,30 @@ fn swift_event_project_record_thunk() -> LocalThunk {
     LocalThunk::new(LocalBackend::SwiftProbe, "ProbeEnum.project.record")
 }
 
+fn swift_event_project_maybe_record_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "ProbeEnum.project.maybeRecord")
+}
+
 fn swift_event_project_record_into_thunk() -> LocalThunk {
     LocalThunk::new(LocalBackend::SwiftProbe, "ProbeEnum.project.record.into")
 }
 
+fn swift_event_project_maybe_record_into_thunk() -> LocalThunk {
+    LocalThunk::new(
+        LocalBackend::SwiftProbe,
+        "ProbeEnum.project.maybeRecord.into",
+    )
+}
+
 fn swift_event_drop_record_projected_thunk() -> LocalThunk {
     LocalThunk::new(LocalBackend::SwiftProbe, "ProbeEnum.drop.record.projected")
+}
+
+fn swift_event_drop_maybe_record_projected_thunk() -> LocalThunk {
+    LocalThunk::new(
+        LocalBackend::SwiftProbe,
+        "ProbeEnum.drop.maybeRecord.projected",
+    )
 }
 
 fn swift_event_construct_empty_thunk() -> LocalThunk {
@@ -2281,6 +2354,10 @@ fn swift_event_construct_nested_thunk() -> LocalThunk {
 
 fn swift_event_construct_record_thunk() -> LocalThunk {
     LocalThunk::new(LocalBackend::SwiftProbe, "ProbeEnum.init.record")
+}
+
+fn swift_event_construct_maybe_record_thunk() -> LocalThunk {
+    LocalThunk::new(LocalBackend::SwiftProbe, "ProbeEnum.init.maybeRecord")
 }
 
 fn swift_option_is_some_thunk() -> LocalThunk {
@@ -2424,6 +2501,7 @@ unsafe extern "C" fn test_swift_event_tag(
         SwiftProbeEvent::Titled(_) => 1,
         SwiftProbeEvent::Nested(_) => 2,
         SwiftProbeEvent::Record(_) => 3,
+        SwiftProbeEvent::MaybeRecord(_) => 4,
     }
 }
 
@@ -2443,6 +2521,16 @@ unsafe extern "C" fn test_swift_event_project_record(
 ) -> *const u8 {
     match unsafe { &*value.cast::<SwiftProbeEvent>() } {
         SwiftProbeEvent::Record(record) => record as *const SwiftText as *const u8,
+        _ => std::ptr::null(),
+    }
+}
+
+unsafe extern "C" fn test_swift_event_project_maybe_record(
+    value: *const u8,
+    _context: *mut std::ffi::c_void,
+) -> *const u8 {
+    match unsafe { &*value.cast::<SwiftProbeEvent>() } {
+        SwiftProbeEvent::MaybeRecord(record) => record as *const SwiftMaybeText as *const u8,
         _ => std::ptr::null(),
     }
 }
@@ -2469,11 +2557,41 @@ unsafe extern "C" fn test_swift_event_project_record_into(
     true
 }
 
+unsafe extern "C" fn test_swift_event_project_maybe_record_into(
+    value: *const u8,
+    out: *mut u8,
+    out_len: usize,
+    _context: *mut std::ffi::c_void,
+) -> bool {
+    if out_len != std::mem::size_of::<SwiftMaybeText>() {
+        return false;
+    }
+    let SwiftProbeEvent::MaybeRecord(record) = (unsafe { &*value.cast::<SwiftProbeEvent>() })
+    else {
+        return false;
+    };
+    unsafe {
+        out.cast::<SwiftMaybeText>().write(SwiftMaybeText {
+            id: record.id,
+            maybe: record.maybe.clone(),
+            code: record.code,
+        })
+    };
+    true
+}
+
 unsafe extern "C" fn test_swift_event_drop_record_projected(
     value: *mut u8,
     _context: *mut std::ffi::c_void,
 ) {
     unsafe { value.cast::<SwiftText>().drop_in_place() };
+}
+
+unsafe extern "C" fn test_swift_event_drop_maybe_record_projected(
+    value: *mut u8,
+    _context: *mut std::ffi::c_void,
+) {
+    unsafe { value.cast::<SwiftMaybeText>().drop_in_place() };
 }
 
 unsafe extern "C" fn test_swift_event_project_nested(
@@ -2561,6 +2679,24 @@ unsafe extern "C" fn test_swift_event_construct_record(
         value
             .cast::<SwiftProbeEvent>()
             .write(SwiftProbeEvent::Record(record))
+    };
+    true
+}
+
+unsafe extern "C" fn test_swift_event_construct_maybe_record(
+    value: *mut u8,
+    payload: *const u8,
+    payload_len: usize,
+    _context: *mut std::ffi::c_void,
+) -> bool {
+    if payload_len != std::mem::size_of::<SwiftMaybeText>() {
+        return false;
+    }
+    let record = unsafe { payload.cast::<SwiftMaybeText>().read() };
+    unsafe {
+        value
+            .cast::<SwiftProbeEvent>()
+            .write(SwiftProbeEvent::MaybeRecord(record))
     };
     true
 }

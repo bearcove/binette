@@ -144,6 +144,49 @@ final class BinetteCAbiCanaryTests: XCTestCase {
         }
         out.deallocate()
     }
+
+    // r[verify binette.local-access.boundary]
+    // r[verify binette.local-access.descriptor+2]
+    // r[verify binette.local-access.swift-probes+2]
+    func testSwiftRootStringDescriptorCrossesRustCAbi() throws {
+        let arena = BinetteCAbiDescriptorArena()
+        let handle = try importDescriptor(arena.string())
+        defer { binette_local_descriptor_free(handle) }
+        let schemaBundle = try syntheticSchemaBundle(handle: handle)
+        defer { binette_byte_buffer_free(schemaBundle) }
+
+        var value = "root string"
+        var encoded = BinetteByteBuffer()
+        let encodeStatus = withUnsafePointer(to: &value) { pointer in
+            binette_local_encode_with_schema_bundle(
+                handle,
+                UnsafePointer(schemaBundle.ptr),
+                schemaBundle.len,
+                UnsafeRawPointer(pointer).assumingMemoryBound(to: UInt8.self),
+                &encoded
+            )
+        }
+        XCTAssertEqual(encodeStatus, BINETTE_STATUS_OK)
+        defer { binette_byte_buffer_free(encoded) }
+
+        let out = UnsafeMutablePointer<String>.allocate(capacity: 1)
+        let decodeStatus = binette_local_decode_with_schema_bundles(
+            handle,
+            UnsafePointer(schemaBundle.ptr),
+            schemaBundle.len,
+            UnsafePointer(schemaBundle.ptr),
+            schemaBundle.len,
+            UnsafePointer(encoded.ptr),
+            encoded.len,
+            UnsafeMutableRawPointer(out).assumingMemoryBound(to: UInt8.self)
+        )
+        XCTAssertEqual(decodeStatus, BINETTE_STATUS_OK)
+        if decodeStatus == BINETTE_STATUS_OK {
+            let decoded = out.move()
+            XCTAssertEqual(decoded, value)
+        }
+        out.deallocate()
+    }
 }
 
 private func importMessageDescriptor() throws -> OpaquePointer {
