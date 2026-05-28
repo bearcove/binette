@@ -2,8 +2,8 @@ use std::{borrow::Cow, collections::HashMap};
 
 #[cfg(not(target_arch = "wasm32"))]
 use facet_core::{
-    Facet, OpaqueDeserialize, ScalarType, Shape, StructKind, Type, UserType, alloc_for_layout,
-    dealloc_for_layout,
+    Facet, OpaqueDeserialize, PtrUninit, ScalarType, Shape, StructKind, Type, UserType,
+    alloc_for_layout, dealloc_for_layout,
 };
 use facet_reflect::{AllocError, Partial, ReflectError, ShapeMismatchError};
 use thiserror::Error;
@@ -91,6 +91,25 @@ pub fn decode_from_slice_with_plan<T: Facet<'static>>(
         });
     }
     Ok(partial.build()?.materialize::<T>()?)
+}
+
+pub(crate) unsafe fn decode_prefix_into_shape(
+    input: &[u8],
+    shape: &'static Shape,
+    root: &PlanNode,
+    plan_nodes: &[PlanNode],
+    writer_registry: &SchemaRegistry,
+    out: *mut u8,
+) -> Result<usize, DecodeError> {
+    let mut executor = DecodeExecutor {
+        reader: CompactReader::new(input),
+        writer_registry,
+        plan_nodes,
+    };
+    let partial = unsafe { Partial::from_raw_with_shape(PtrUninit::new(out), shape)? };
+    let partial = executor.decode_node(partial, root)?;
+    partial.finish_in_place()?;
+    Ok(executor.reader.position())
 }
 
 struct DecodeExecutor<'input, 'registry> {

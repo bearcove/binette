@@ -129,6 +129,10 @@ pub enum LocalTypeKind {
         some: Box<LocalTypeDescriptor>,
         representation: LocalOptionRepresentation,
     },
+    SubtreeDecode {
+        decode: LocalThunk,
+        encode: LocalThunk,
+    },
     ExternalAttachment {
         kind: String,
         metadata: LocalExternalMetadata,
@@ -251,6 +255,24 @@ pub type LocalVariantConstructThunk = unsafe extern "C" fn(
     payload_len: usize,
     context: *mut c_void,
 ) -> bool;
+pub type LocalSubtreeDecodeThunk = unsafe extern "C" fn(
+    input: *const u8,
+    len: usize,
+    out: *mut u8,
+    root: *const crate::plan::PlanNode,
+    nodes: *const crate::plan::PlanNode,
+    node_count: usize,
+    writer_registry: *const crate::registry::SchemaRegistry,
+    context: *mut c_void,
+) -> usize;
+pub type LocalSubtreeEncodeThunk = unsafe extern "C" fn(
+    value: *const u8,
+    out: *mut Vec<u8>,
+    root: *const c_void,
+    nodes: *const c_void,
+    node_count: usize,
+    context: *mut c_void,
+) -> bool;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LocalSequenceEncodeThunks {
@@ -326,6 +348,18 @@ pub struct LocalVariantConstructThunks {
     pub context: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct LocalSubtreeDecodeThunks {
+    pub decode: LocalSubtreeDecodeThunk,
+    pub context: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LocalSubtreeEncodeThunks {
+    pub encode: LocalSubtreeEncodeThunk,
+    pub context: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct LocalSequenceThunkBinding {
     pub len: LocalThunk,
@@ -398,6 +432,18 @@ pub struct LocalVariantConstructThunkBinding {
     pub thunks: LocalVariantConstructThunks,
 }
 
+#[derive(Debug, Clone)]
+pub struct LocalSubtreeDecodeThunkBinding {
+    pub decode: LocalThunk,
+    pub thunks: LocalSubtreeDecodeThunks,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalSubtreeEncodeThunkBinding {
+    pub encode: LocalThunk,
+    pub thunks: LocalSubtreeEncodeThunks,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct LocalThunkBindings {
     sequence_u8: Vec<LocalSequenceThunkBinding>,
@@ -411,6 +457,8 @@ pub struct LocalThunkBindings {
     variant_project: Vec<LocalVariantProjectThunkBinding>,
     variant_project_into: Vec<LocalVariantProjectIntoThunkBinding>,
     variant_construct: Vec<LocalVariantConstructThunkBinding>,
+    subtree_decode: Vec<LocalSubtreeDecodeThunkBinding>,
+    subtree_encode: Vec<LocalSubtreeEncodeThunkBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -648,6 +696,26 @@ impl LocalThunkBindings {
         self
     }
 
+    pub fn with_subtree_decode(
+        mut self,
+        decode: LocalThunk,
+        thunks: LocalSubtreeDecodeThunks,
+    ) -> Self {
+        self.subtree_decode
+            .push(LocalSubtreeDecodeThunkBinding { decode, thunks });
+        self
+    }
+
+    pub fn with_subtree_encode(
+        mut self,
+        encode: LocalThunk,
+        thunks: LocalSubtreeEncodeThunks,
+    ) -> Self {
+        self.subtree_encode
+            .push(LocalSubtreeEncodeThunkBinding { encode, thunks });
+        self
+    }
+
     pub fn sequence_u8(
         &self,
         len: &LocalThunk,
@@ -756,12 +824,26 @@ impl LocalThunkBindings {
             .find(|binding| &binding.construct == construct)
             .map(|binding| binding.thunks)
     }
+
+    pub fn subtree_decode(&self, decode: &LocalThunk) -> Option<LocalSubtreeDecodeThunks> {
+        self.subtree_decode
+            .iter()
+            .find(|binding| &binding.decode == decode)
+            .map(|binding| binding.thunks)
+    }
+
+    pub fn subtree_encode(&self, encode: &LocalThunk) -> Option<LocalSubtreeEncodeThunks> {
+        self.subtree_encode
+            .iter()
+            .find(|binding| &binding.encode == encode)
+            .map(|binding| binding.thunks)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 mod rust_layout {
     use std::alloc::{Layout as AllocLayout, alloc_zeroed, dealloc};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::ffi::c_void;
     use std::ptr::NonNull;
     use std::slice;
@@ -821,7 +903,8 @@ mod rust_layout {
 
     pub fn rust_facet_thunk_bindings_for_shape(shape: &'static Shape) -> LocalThunkBindings {
         let mut bindings = LocalThunkBindings::new();
-        collect_rust_facet_thunk_bindings(shape, &mut bindings);
+        let mut seen = HashSet::new();
+        collect_rust_facet_thunk_bindings(shape, &mut bindings, &mut seen);
         bindings
     }
 
@@ -843,6 +926,26 @@ mod rust_layout {
 
             if let TypeRef::Concrete { type_id, args } = &resolved {
                 if self.stack.contains(type_id) {
+                    if let Def::Pointer(pointer) = shape.def
+                        && pointer.constructible_from_pointee()
+                        && pointer.pointee().is_some()
+                        && shape.scalar_type().is_none()
+                    {
+                        return Ok(LocalTypeDescriptor::rust_facet(
+                            resolved,
+                            layout,
+                            LocalTypeKind::SubtreeDecode {
+                                decode: LocalThunk::new(
+                                    LocalBackend::RustFacet,
+                                    rust_facet_subtree_decode_thunk_name(shape),
+                                ),
+                                encode: LocalThunk::new(
+                                    LocalBackend::RustFacet,
+                                    rust_facet_subtree_encode_thunk_name(shape),
+                                ),
+                            },
+                        ));
+                    }
                     return Ok(LocalTypeDescriptor::rust_facet(
                         resolved,
                         layout,
@@ -1844,18 +1947,141 @@ mod rust_layout {
         }
     }
 
-    fn collect_rust_facet_thunk_bindings(shape: &'static Shape, bindings: &mut LocalThunkBindings) {
+    struct RustFacetSubtreeDecodeContext {
+        shape: &'static Shape,
+    }
+
+    unsafe extern "C" fn rust_facet_subtree_decode(
+        input: *const u8,
+        len: usize,
+        out: *mut u8,
+        root: *const crate::plan::PlanNode,
+        nodes: *const crate::plan::PlanNode,
+        node_count: usize,
+        writer_registry: *const crate::registry::SchemaRegistry,
+        context: *mut c_void,
+    ) -> usize {
+        let Some(context) = (unsafe { context.cast::<RustFacetSubtreeDecodeContext>().as_ref() })
+        else {
+            return usize::MAX;
+        };
+        let Some(root) = (unsafe { root.as_ref() }) else {
+            return usize::MAX;
+        };
+        let Some(writer_registry) = (unsafe { writer_registry.as_ref() }) else {
+            return usize::MAX;
+        };
+        let input = unsafe { slice::from_raw_parts(input, len) };
+        let nodes = unsafe { slice::from_raw_parts(nodes, node_count) };
+        unsafe {
+            crate::decode::decode_prefix_into_shape(
+                input,
+                context.shape,
+                root,
+                nodes,
+                writer_registry,
+                out,
+            )
+        }
+        .unwrap_or(usize::MAX)
+    }
+
+    unsafe extern "C" fn rust_facet_subtree_encode(
+        value: *const u8,
+        out: *mut Vec<u8>,
+        root: *const c_void,
+        nodes: *const c_void,
+        node_count: usize,
+        context: *mut c_void,
+    ) -> bool {
+        let Some(context) = (unsafe { context.cast::<RustFacetSubtreeDecodeContext>().as_ref() })
+        else {
+            return false;
+        };
+        let root = root.cast::<crate::encode::WriterNode>();
+        let nodes = nodes.cast::<crate::encode::WriterNode>();
+        let Some(root) = (unsafe { root.as_ref() }) else {
+            return false;
+        };
+        let Some(out) = (unsafe { out.as_mut() }) else {
+            return false;
+        };
+        let nodes = unsafe { slice::from_raw_parts(nodes, node_count) };
+        unsafe { crate::encode::encode_raw_shape_with_node(out, value, context.shape, root, nodes) }
+            .is_ok()
+    }
+
+    fn collect_rust_facet_thunk_bindings(
+        shape: &'static Shape,
+        bindings: &mut LocalThunkBindings,
+        seen: &mut HashSet<*const Shape>,
+    ) {
+        if !seen.insert(shape as *const Shape) {
+            return;
+        }
         match shape.def {
             Def::Result(result) => {
                 bind_result(shape, result, bindings);
-                collect_rust_facet_thunk_bindings(result.t(), bindings);
-                collect_rust_facet_thunk_bindings(result.e(), bindings);
+                collect_rust_facet_thunk_bindings(result.t(), bindings, seen);
+                collect_rust_facet_thunk_bindings(result.e(), bindings, seen);
             }
-            Def::Array(array) => collect_rust_facet_thunk_bindings(array.t(), bindings),
-            Def::List(list) => collect_rust_facet_thunk_bindings(list.t(), bindings),
-            Def::Option(option) => collect_rust_facet_thunk_bindings(option.t(), bindings),
+            Def::Pointer(pointer)
+                if pointer.constructible_from_pointee()
+                    && pointer.pointee().is_some()
+                    && shape.scalar_type().is_none() =>
+            {
+                bind_rust_facet_subtree_decode(shape, bindings);
+                if let Some(pointee) = pointer.pointee() {
+                    collect_rust_facet_thunk_bindings(pointee, bindings, seen);
+                }
+            }
+            Def::Array(array) => collect_rust_facet_thunk_bindings(array.t(), bindings, seen),
+            Def::List(list) => collect_rust_facet_thunk_bindings(list.t(), bindings, seen),
+            Def::Option(option) => collect_rust_facet_thunk_bindings(option.t(), bindings, seen),
             _ => {}
         }
+
+        match shape.ty {
+            Type::User(UserType::Struct(struct_type)) => {
+                for field in struct_type.fields {
+                    collect_rust_facet_thunk_bindings(field.shape.get(), bindings, seen);
+                }
+            }
+            Type::User(UserType::Enum(enum_type)) => {
+                for variant in enum_type.variants {
+                    for field in variant.data.fields {
+                        collect_rust_facet_thunk_bindings(field.shape.get(), bindings, seen);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn bind_rust_facet_subtree_decode(shape: &'static Shape, bindings: &mut LocalThunkBindings) {
+        let context = Box::leak(Box::new(RustFacetSubtreeDecodeContext { shape }));
+        let thunks = LocalSubtreeDecodeThunks {
+            decode: rust_facet_subtree_decode,
+            context: (context as *mut RustFacetSubtreeDecodeContext).cast::<c_void>() as usize,
+        };
+        *bindings = std::mem::take(bindings).with_subtree_decode(
+            LocalThunk::new(
+                LocalBackend::RustFacet,
+                rust_facet_subtree_decode_thunk_name(shape),
+            ),
+            thunks,
+        );
+        let encode_thunks = LocalSubtreeEncodeThunks {
+            encode: rust_facet_subtree_encode,
+            context: (context as *mut RustFacetSubtreeDecodeContext).cast::<c_void>() as usize,
+        };
+        *bindings = std::mem::take(bindings).with_subtree_encode(
+            LocalThunk::new(
+                LocalBackend::RustFacet,
+                rust_facet_subtree_encode_thunk_name(shape),
+            ),
+            encode_thunks,
+        );
     }
 
     fn bind_result(
@@ -1927,6 +2153,14 @@ mod rust_layout {
             "Facet.Result.{}.{}.construct",
             shape.type_identifier, variant
         )
+    }
+
+    fn rust_facet_subtree_decode_thunk_name(shape: &'static Shape) -> String {
+        format!("Facet.Decode.{}", shape.type_identifier)
+    }
+
+    fn rust_facet_subtree_encode_thunk_name(shape: &'static Shape) -> String {
+        format!("Facet.Encode.{}", shape.type_identifier)
     }
 }
 
@@ -2029,6 +2263,7 @@ fn canonicalize_descriptor_schema(
             let element = canonicalize_descriptor_schema(some, schemas)?;
             push_synthetic_schema(schemas, SchemaKind::Option { element })?
         }
+        LocalTypeKind::SubtreeDecode { .. } => descriptor_type_ref(descriptor)?,
         LocalTypeKind::ExternalAttachment { kind, metadata } => {
             let metadata = canonicalize_external_metadata(metadata, schemas)?;
             push_synthetic_schema(

@@ -162,6 +162,12 @@ pub(super) enum StencilHelper {
         cases: Vec<DirectEnumDecodeCase>,
         failure_index: usize,
     },
+    SubtreeDecode {
+        output_offset: usize,
+        thunks: LocalSubtreeDecodeThunks,
+        root: PlanNode,
+        failure_index: usize,
+    },
     Skip {
         writer_type: TypeRef,
         failure_index: usize,
@@ -216,6 +222,7 @@ pub(super) enum LocalEnumDecodePayload {
 
 pub(super) struct StencilRuntime {
     pub(super) writer_registry: SchemaRegistry,
+    pub(super) plan_nodes: Vec<PlanNode>,
     pub(super) helpers: Vec<StencilHelper>,
 }
 
@@ -335,6 +342,12 @@ pub(super) enum StencilEncodeHelper {
         sequence_thunks: LocalSequenceEncodeThunks,
         failure_index: usize,
     },
+    SubtreeEncode {
+        input_offset: usize,
+        thunks: LocalSubtreeEncodeThunks,
+        root: WriterNode,
+        failure_index: usize,
+    },
 }
 
 pub(super) struct LocalEnumEncodeCase {
@@ -377,6 +390,7 @@ pub(super) enum LocalEnumEncodePayload {
 }
 
 pub(super) struct StencilEncodeRuntime {
+    pub(super) nodes: Vec<WriterNode>,
     pub(super) helpers: Vec<StencilEncodeHelper>,
 }
 

@@ -477,6 +477,31 @@ pub(super) unsafe extern "C" fn stencil_decode_helper(
             };
             end
         }
+        StencilHelper::SubtreeDecode {
+            output_offset,
+            thunks,
+            root,
+            ..
+        } => {
+            let output = unsafe { out.add(*output_offset) };
+            let context = thunks.context as *mut std::ffi::c_void;
+            let consumed = unsafe {
+                (thunks.decode)(
+                    tail.as_ptr(),
+                    tail.len(),
+                    output,
+                    root as *const _,
+                    runtime.plan_nodes.as_ptr(),
+                    runtime.plan_nodes.len(),
+                    &runtime.writer_registry as *const _,
+                    context,
+                )
+            };
+            if consumed == usize::MAX || consumed > tail.len() {
+                return hybrid_error_for_helper(helper);
+            }
+            consumed
+        }
         StencilHelper::Skip { writer_type, .. } => {
             let mut reader = CompactReader::new(tail);
             if reader
@@ -507,6 +532,7 @@ fn hybrid_error_for_helper(helper: &StencilHelper) -> usize {
         | StencilHelper::OptionSequenceBytes { failure_index, .. }
         | StencilHelper::Enum { failure_index, .. }
         | StencilHelper::DirectEnum { failure_index, .. }
+        | StencilHelper::SubtreeDecode { failure_index, .. }
         | StencilHelper::Skip { failure_index, .. } => hybrid_error_for_failure(*failure_index),
     }
 }
@@ -757,7 +783,8 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
         | StencilEncodeHelper::SequenceOwnedFixedElements { failure_index, .. }
         | StencilEncodeHelper::SequenceProjectedElements { failure_index, .. }
         | StencilEncodeHelper::Enum { failure_index, .. }
-        | StencilEncodeHelper::OptionSequenceBytes { failure_index, .. } => {
+        | StencilEncodeHelper::OptionSequenceBytes { failure_index, .. }
+        | StencilEncodeHelper::SubtreeEncode { failure_index, .. } => {
             status_for_failure(*failure_index).unwrap_or(1)
         }
     };
@@ -1085,6 +1112,30 @@ pub(super) unsafe extern "C" fn stencil_encode_helper(
             out.reserve(len);
             for index in 0..len {
                 out.push(unsafe { (sequence_thunks.element_u8)(some, index, sequence_context) });
+            }
+        }
+        StencilEncodeHelper::SubtreeEncode {
+            input_offset,
+            thunks,
+            root,
+            ..
+        } => {
+            if value.is_null() {
+                return status;
+            }
+            let value = value.wrapping_add(*input_offset);
+            let context = thunks.context as *mut std::ffi::c_void;
+            if !unsafe {
+                (thunks.encode)(
+                    value,
+                    out,
+                    std::ptr::from_ref(root).cast::<std::ffi::c_void>(),
+                    runtime.nodes.as_ptr().cast::<std::ffi::c_void>(),
+                    runtime.nodes.len(),
+                    context,
+                )
+            } {
+                return status;
             }
         }
     }

@@ -745,6 +745,10 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
             Err(err) => return Err(err),
         }
 
+        if let LocalTypeKind::SubtreeDecode { decode, .. } = &reader.kind {
+            return self.push_subtree_decode(decode, node, output_offset, path);
+        }
+
         match node {
             PlanNode::Ref { node_index } => {
                 let node =
@@ -1340,6 +1344,32 @@ impl LocalHybridDecodeStencilCompiler<'_, '_> {
         Ok(())
     }
 
+    fn push_subtree_decode(
+        &mut self,
+        decode: &crate::local_access::LocalThunk,
+        node: &PlanNode,
+        output_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let thunks =
+            self.thunks
+                .subtree_decode(decode)
+                .ok_or_else(|| StencilError::Unsupported {
+                    path: path.to_owned(),
+                    reason: "local subtree decode thunk is not bound",
+                })?;
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilHelper::SubtreeDecode {
+            output_offset,
+            thunks,
+            root: node.clone(),
+            failure_index,
+        });
+        self.ops.push(HybridStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
     fn push_option_sequence_bytes(
         &mut self,
         reader: &LocalTypeDescriptor,
@@ -1532,6 +1562,11 @@ impl LocalEncodeStencilCompiler<'_> {
             }
             Err(StencilError::Unsupported { .. }) => {}
             Err(err) => return Err(err),
+        }
+
+        if let LocalTypeKind::SubtreeDecode { encode, .. } = &descriptor.kind {
+            self.flush_direct_segment(pending);
+            return self.push_subtree_encode(encode, node, input_offset, path);
         }
 
         match node {
@@ -1742,6 +1777,32 @@ impl LocalEncodeStencilCompiler<'_> {
         self.helpers.push(StencilEncodeHelper::SequenceBytes {
             input_offset,
             thunks,
+            failure_index,
+        });
+        self.ops.push(EncodeStencilOp::Helper { helper_index });
+        Ok(())
+    }
+
+    fn push_subtree_encode(
+        &mut self,
+        encode: &crate::local_access::LocalThunk,
+        node: &WriterNode,
+        input_offset: usize,
+        path: &str,
+    ) -> Result<(), StencilError> {
+        let thunks =
+            self.thunks
+                .subtree_encode(encode)
+                .ok_or_else(|| StencilError::Unsupported {
+                    path: path.to_owned(),
+                    reason: "local subtree encode thunk is not bound",
+                })?;
+        let failure_index = self.push_helper_failure(path)?;
+        let helper_index = self.helpers.len();
+        self.helpers.push(StencilEncodeHelper::SubtreeEncode {
+            input_offset,
+            thunks,
+            root: node.clone(),
             failure_index,
         });
         self.ops.push(EncodeStencilOp::Helper { helper_index });
@@ -2633,6 +2694,7 @@ fn nested_local_element_encoder(
         entry: LocalEncodeStencilEntry::Helper {
             func,
             runtime: Box::new(StencilEncodeRuntime {
+                nodes: Vec::new(),
                 helpers: compiler.helpers,
             }),
         },
@@ -3610,6 +3672,7 @@ fn nested_local_payload_decoder_at_offset(
             func,
             runtime: Box::new(StencilRuntime {
                 writer_registry: writer_registry.clone(),
+                plan_nodes: plan_nodes.to_vec(),
                 helpers: compiler.helpers,
             }),
         },

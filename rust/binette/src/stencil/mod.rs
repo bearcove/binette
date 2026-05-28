@@ -18,9 +18,9 @@ use crate::local_access::{
     LocalEnumTagThunks, LocalOptionEncodeThunks, LocalOptionSequenceDecodeThunks,
     LocalSequenceDecodeThunks, LocalSequenceElementProjectIntoEncodeThunks,
     LocalSequenceElementPtrEncodeThunks, LocalSequenceEncodeThunks, LocalSequenceFixedDecodeThunks,
-    LocalThunkBindings, LocalTypeDescriptor, LocalValueLayout, LocalVariantConstructThunks,
-    LocalVariantProjectIntoThunks, LocalVariantProjectThunks, rust_facet_descriptor_for,
-    rust_facet_thunk_bindings_for,
+    LocalSubtreeDecodeThunks, LocalSubtreeEncodeThunks, LocalThunkBindings, LocalTypeDescriptor,
+    LocalValueLayout, LocalVariantConstructThunks, LocalVariantProjectIntoThunks,
+    LocalVariantProjectThunks, rust_facet_descriptor_for, rust_facet_thunk_bindings_for,
 };
 use crate::plan::{
     EnumPayloadPlan, EnumVariantPlan, PlanError, PlanNode, ReaderPlan, StructFieldPlan,
@@ -628,6 +628,7 @@ pub fn strict_local_stencil_encoder_from_plan(
         entry: LocalEncodeStencilEntry::Helper {
             func,
             runtime: Box::new(StencilEncodeRuntime {
+                nodes: plan.nodes().to_vec(),
                 helpers: compiler.helpers,
             }),
         },
@@ -674,6 +675,7 @@ pub fn hybrid_local_stencil_encoder_from_plan(
         entry: LocalEncodeStencilEntry::Helper {
             func,
             runtime: Box::new(StencilEncodeRuntime {
+                nodes: plan.nodes().to_vec(),
                 helpers: compiler.helpers,
             }),
         },
@@ -767,6 +769,7 @@ pub fn hybrid_local_stencil_decoder_from_plan(
             func,
             runtime: Box::new(StencilRuntime {
                 writer_registry: writer_registry.clone(),
+                plan_nodes: plan.nodes().to_vec(),
                 helpers: compiler.helpers,
             }),
         },
@@ -846,6 +849,7 @@ fn decode_helper_paths(helpers: &[StencilHelper], failures: &[StencilFailure]) -
             | StencilHelper::OptionSequenceBytes { failure_index, .. }
             | StencilHelper::Enum { failure_index, .. }
             | StencilHelper::DirectEnum { failure_index, .. }
+            | StencilHelper::SubtreeDecode { failure_index, .. }
             | StencilHelper::Skip { failure_index, .. } => helper_path(failures, *failure_index),
         })
         .collect()
@@ -863,7 +867,8 @@ fn encode_helper_paths(
             | StencilEncodeHelper::SequenceOwnedFixedElements { failure_index, .. }
             | StencilEncodeHelper::SequenceProjectedElements { failure_index, .. }
             | StencilEncodeHelper::Enum { failure_index, .. }
-            | StencilEncodeHelper::OptionSequenceBytes { failure_index, .. } => {
+            | StencilEncodeHelper::OptionSequenceBytes { failure_index, .. }
+            | StencilEncodeHelper::SubtreeEncode { failure_index, .. } => {
                 helper_path(failures, *failure_index)
             }
         })

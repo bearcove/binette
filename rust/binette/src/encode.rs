@@ -85,6 +85,11 @@ impl WriterPlan {
     pub(crate) fn root_node(&self) -> &WriterNode {
         &self.root
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn nodes(&self) -> &[WriterNode] {
+        &self.nodes
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +187,17 @@ pub fn encode_peek_with_plan(
         nodes: &plan.nodes,
     }
     .encode_node(peek, &plan.root)
+}
+
+pub(crate) unsafe fn encode_raw_shape_with_node(
+    out: &mut Vec<u8>,
+    value: *const u8,
+    shape: &'static Shape,
+    root: &WriterNode,
+    nodes: &[WriterNode],
+) -> Result<(), EncodeError> {
+    let peek = unsafe { Peek::unchecked_new(facet_core::PtrConst::new_sized(value), shape) };
+    WriterPlanExecutor { out, nodes }.encode_node(peek, root)
 }
 
 #[derive(Debug, Clone)]
